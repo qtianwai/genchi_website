@@ -119,3 +119,61 @@
 
 ### 修改的文件
 - `帮助文档/ClaudeCode使用指南.md` - 新增 Skills 使用说明章节
+
+## 2026-03-29 会话总结（3）
+
+### 会话主要目的
+- 将项目操作确认规则更新为完全自动执行模式
+
+### 完成的主要任务
+1. 更新 CLAUDE.md 中的"操作确认"规则，改为所有操作直接执行，不询问用户
+
+### 关键决策和解决方案
+- 等同于 `--dangerously-skip-permissions` 模式，所有边界和确认均自动通过
+
+### 使用的技术栈
+- Markdown
+
+### 修改的文件
+- `CLAUDE.md` - 更新操作确认规则
+
+## 2026-03-29 会话总结（4）
+
+### 会话主要目的
+- 配置 Claude 所有工具操作自动执行，无需手动确认
+
+### 完成的主要任务
+1. 修改 `.claude/settings.local.json`，添加 `Bash(*)`、`Edit(*)`、`Write(*)`、`Read(*)`、`WebFetch(*)` 等通配符权限
+
+### 关键决策和解决方案
+- 通过 `settings.local.json` 的 `permissions.allow` 列表添加通配符，覆盖所有工具调用，实现无确认自动执行
+
+### 使用的技术栈
+- Claude Code 权限配置（settings.local.json）
+
+### 修改的文件
+- `.claude/settings.local.json` - 添加全工具通配符权限
+- `README.md` - 追加本次会话总结
+
+## 2026-03-29 会话总结（3）
+
+### 会话主要目的
+- 修正 ClaudeCode使用指南.md 中 Skills 章节的错误内容
+- 补充正确的 Skills 使用说明，并区分 Skills 与 Slash Commands 的概念
+
+### 完成的主要任务
+1. 通过网络搜索获取 anthropics/skills 官方仓库的真实信息
+2. 重写「Skills」章节，明确 Skills 是带 SKILL.md 的文件夹结构，来自官方仓库
+3. 新增 Skills vs Slash Commands 对比表格
+4. 补充 SKILL.md 文件格式说明和官方 skills 列表（pdf/docx/xlsx/pptx）
+5. 将原来错误标注为 Skills 的内容，正确归类为「自定义斜杠命令」
+
+### 关键决策和解决方案
+- 原文档把 `.claude/commands/` 下的自定义角色命令误称为 Skills，本次修正为 Slash Commands
+- Skills 的核心是 SKILL.md + YAML frontmatter，由 Claude 自动识别触发或手动 `/skill名` 调用
+
+### 使用的技术栈
+- Markdown 表格语法
+
+### 修改的文件
+- `帮助文档/ClaudeCode使用指南.md` - 重写 Skills 章节
