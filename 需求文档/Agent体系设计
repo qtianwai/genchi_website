@@ -1,0 +1,107 @@
+# Claude Code Subagent 体系设计
+
+## 一、Subagent 机制说明
+
+Claude Code 的 subagent 通过 `.claude/commands/` 目录下的 `.md` 文件实现。
+每个文件定义一个角色，在对话中输入 `/角色名` 即可切换到该角色。
+
+---
+
+## 二、角色设计
+
+### /需求大师
+产品经理角色，负责需求分析和产品规划。
+- 输出用户故事、功能优先级、验收标准
+- 识别边界情况和潜在风险
+
+### /架构师
+技术架构师角色，负责技术方案设计。
+- 设计数据库表结构
+- 制定 API 接口规范
+- 输出系统架构和模块划分
+
+### /iOS开发
+iOS 开发工程师角色，负责 Swift + SwiftUI 客户端开发。
+- 还原 UI 设计稿
+- 实现业务逻辑，对接 API
+
+### /后端开发
+后端开发工程师角色，负责服务端开发。
+- 实现 RESTful API 和 WebSocket
+- 数据库操作和第三方服务集成
+
+### /测试工程师
+测试工程师角色，负责质量保障。
+- 编写测试用例（P0/P1/P2）
+- API 接口测试和性能测试方案
+
+### /UI设计
+UI 设计师角色，负责界面设计和原型输出。
+- 生成 H5 高保真原型页面
+- 制定设计规范（颜色、字体、间距）
+
+---
+
+## 三、目录结构
+
+```
+项目根目录/
+├── .claude/
+│   ├── commands/          ← Subagent 角色定义
+│   │   ├── 需求大师.md
+│   │   ├── 架构师.md
+│   │   ├── iOS开发.md
+│   │   ├── 后端开发.md
+│   │   ├── 测试工程师.md
+│   │   └── UI设计.md
+│   └── settings.json      ← MCP 服务器配置（可选）
+├── CLAUDE.md              ← 全局规则
+├── 需求文档/              ← 需求大师维护
+├── 技术文档/              ← 架构师维护
+│   ├── 数据库设计.md
+│   ├── API接口规范.md
+│   └── 系统架构.md
+├── UI设计/                ← UI设计师维护（H5 原型）
+└── docs/                  ← 开发计划文档
+```
+
+---
+
+## 四、各角色上下文文件夹
+
+| Agent | 工作时主要读取 |
+|-------|-------------|
+| 需求大师 | `需求文档/` |
+| 架构师 | `需求文档/`、`技术文档/` |
+| iOS 开发 | `UI设计/`、`技术文档/API接口规范.md` |
+| 后端开发 | `技术文档/数据库设计.md`、`技术文档/API接口规范.md` |
+| 测试工程师 | `需求文档/`、`技术文档/API接口规范.md` |
+| UI 设计 | `需求文档/` |
+
+---
+
+## 五、MCP 服务器（可选扩展）
+
+| MCP | 用途 | 配置命令 |
+|-----|------|---------|
+| filesystem | 跨目录文件访问 | `claude mcp add filesystem -- npx -y @modelcontextprotocol/server-filesystem /路径` |
+| github | GitHub 仓库操作 | `claude mcp add github -- npx -y @modelcontextprotocol/server-github` |
+| fetch | 抓取网页/文档 | `claude mcp add fetch -- npx -y @modelcontextprotocol/server-fetch` |
+| sqlite | SQLite 数据库查询 | `claude mcp add sqlite -- npx -y @modelcontextprotocol/server-sqlite` |
+
+---
+
+## 六、典型协作流程
+
+```
+/需求大师 分析某功能的需求
+    ↓
+/架构师 基于需求设计数据库和 API
+    ↓
+/UI设计 设计对应页面原型
+    ↓
+/后端开发 实现 API 接口
+/iOS开发 实现页面 UI
+    ↓
+/测试工程师 编写测试用例并验收
+```

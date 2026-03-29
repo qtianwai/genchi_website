@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm show @anthropic-ai/claude-code version)",
+      "Bash(brew install:*)",
+      "Bash(ssh-keygen -t ed25519 -C \"363234339@qq.com\" -f ~/.ssh/id_ed25519 -N \"\")",
+      "Bash(ssh -T git@github.com)"
+    ]
+  }
+}
