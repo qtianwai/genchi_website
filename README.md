@@ -76,3 +76,28 @@
 
 ### 修改的文件
 - `帮助文档/ClaudeCode使用指南.md` - 添加了命令汇总表
+
+## 2026-03-29 会话总结
+
+### 会话主要目的
+- 查询当前 Claude 配置的全局规则和项目规则
+- 将项目托管到 GitHub，实现云端同步
+
+### 完成的主要任务
+1. 查看并说明全局规则（`~/.claude/CLAUDE.md`）和项目规则（`CLAUDE.md`）的内容
+2. 生成 SSH 密钥并添加到 GitHub 账号
+3. 初始化 Git 仓库，创建 `.gitignore`
+4. 排查并修复全局 git 配置中 SSH 被强制转为 HTTPS 的问题
+5. 成功将项目推送到 GitHub 私有仓库
+
+### 关键决策和解决方案
+- 发现全局 git 配置存在 `url.https://github.com/.insteadof=git@github.com:` 规则，导致 SSH 推送失败，通过 `git config --global --unset` 删除该规则解决
+- 使用 ED25519 算法生成 SSH 密钥，安全性更高
+
+### 使用的技术栈
+- Git / GitHub
+- SSH (ED25519)
+
+### 修改的文件
+- `.gitignore` - 新建文件，忽略 .DS_Store 和 .cursor/
+- `README.md` - 追加本次会话总结
