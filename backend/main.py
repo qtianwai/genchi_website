@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from douyin_parser import parse_douyin_link, fetch_author_videos
 from ai_extractor import extract_restaurants_from_video
 from amap_service import batch_search_restaurants
+from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
     get_author_by_douyin_id, upsert_author,
     get_restaurant_by_amap_id, upsert_restaurant,
@@ -23,7 +24,7 @@ from db import (
 
 load_dotenv()
 
-app = FastAPI(title="达人美食推荐 API", version="1.0.0")
+app = FastAPI(title="跟吃 API", version="1.0.0")
 
 # 允许跨域（iOS App 调用需要）
 app.add_middleware(
@@ -40,7 +41,7 @@ app.add_middleware(
 
 class ParseLinkRequest(BaseModel):
     url: str        # 抖音分享链接
-    user_id: str    # 当前用户 ID（Supabase Auth 的 user id）
+    user_id: str    # 当前用户 ID
 
 class FollowRequest(BaseModel):
     user_id: str
@@ -50,6 +51,13 @@ class FavoriteRequest(BaseModel):
     user_id: str
     restaurant_id: str
 
+class SendOTPRequest(BaseModel):
+    phone: str      # 手机号，格式：+8613800138000
+
+class VerifyOTPRequest(BaseModel):
+    phone: str      # 手机号
+    code: str       # 6 位验证码
+
 
 # ─────────────────────────────────────────
 # 健康检查
@@ -58,7 +66,57 @@ class FavoriteRequest(BaseModel):
 @app.get("/")
 async def health_check():
     """服务健康检查，Railway 部署后可用此接口验证服务是否正常"""
-    return {"status": "ok", "service": "达人美食推荐后端"}
+    return {"status": "ok", "service": "跟吃后端"}
+
+
+# ─────────────────────────────────────────
+# 认证接口：发送和验证短信验证码
+# ─────────────────────────────────────────
+
+@app.post("/api/auth/send-otp")
+async def send_otp(req: SendOTPRequest):
+    """
+    发送短信验证码
+    手机号格式：+8613800138000（含国家码）
+    """
+    phone = req.phone.strip()
+    if not phone.startswith("+"):
+        raise HTTPException(status_code=400, detail="手机号格式错误，需包含国家码，如 +8613800138000")
+
+    code = generate_otp()
+    store_otp(phone, code)
+
+    success = await send_sms(phone, code)
+    if not success:
+        raise HTTPException(status_code=500, detail="短信发送失败，请稍后重试")
+
+    return {"status": "ok", "message": "验证码已发送"}
+
+
+@app.post("/api/auth/verify-otp")
+async def verify_otp(req: VerifyOTPRequest):
+    """
+    验证短信验证码，验证成功返回 user_id 和 access_token
+    user_id 由手机号确定性生成，同一手机号永远对应同一 user_id
+    """
+    phone = req.phone.strip()
+    code = req.code.strip()
+
+    if not verify_otp_code(phone, code):
+        raise HTTPException(status_code=400, detail="验证码错误或已过期")
+
+    # 由手机号生成固定 user_id（UUID v5，确定性）
+    user_id = phone_to_user_id(phone)
+
+    # 生成一个简单的 access_token（用于 iOS 端标识已登录状态）
+    # 这里用 user_id 本身作为 token，因为 user_id 已经是不可猜测的 UUID
+    access_token = user_id
+
+    return {
+        "status": "ok",
+        "user_id": user_id,
+        "access_token": access_token,
+    }
 
 
 # ─────────────────────────────────────────

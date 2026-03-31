@@ -1,6 +1,6 @@
-# 达人美食推荐 App
+# 跟吃 App
 
-把喜爱的抖音博主推荐的餐厅，变成你的专属美食地图。
+跟着喜爱的抖音博主，发现身边好店，变成你的专属美食地图。
 
 ---
 
@@ -162,3 +162,24 @@ python main.py
   - 用户认证使用 Supabase Auth 手机号 OTP
 - 技术栈：Python FastAPI + SwiftUI + Supabase + 通义千问 qwen-plus + 高德地图 API
 - 修改文件：新建 backend/ 和 ios/ 下共 17 个文件，README.md，.gitignore
+
+### 2026-04-01 第四次会话：产品命名
+- 主要目的：为产品取一个合适的名称
+- 完成任务：将产品名从"达人美食推荐"改为"跟吃"
+- 关键决策：选用"跟吃"——口语化、传播性强，一听就懂是跟着达人吃
+- 修改文件：README.md、LoginView.swift、backend/main.py、需求文档/Railway部署步骤.md、需求文档/Xcode项目创建步骤.md
+
+### 2026-04-01 第五次会话：替换短信服务为阿里云
+- 主要目的：解决登录页发送验证码失败问题，将短信服务从 Supabase Auth 改为阿里云短信
+- 完成任务：
+  - 新建 `backend/sms_service.py`：阿里云短信发送、验证码内存存储、手机号生成 user_id（UUID v5）
+  - 新增后端接口 `POST /api/auth/send-otp` 和 `POST /api/auth/verify-otp`
+  - 改写 `ios/FoodMap/FoodMap/Services/AuthState.swift`：改调后端接口，不再直接调 Supabase Auth
+  - 新建 `需求文档/阿里云短信开通步骤.md`：阿里云短信服务开通操作指引
+  - 更新 `需求文档/Railway部署步骤.md`：补充阿里云短信相关环境变量
+- 关键决策：
+  - user_id 用 UUID v5（手机号确定性生成），同一手机号永远对应同一 ID，无需用户表
+  - 验证码存内存（dict），5 分钟过期，验证成功即删除
+  - 未配置阿里云密钥时自动降级为打印日志（方便本地开发调试）
+- 待完成：阿里云短信签名和模板审核通过后，在 Railway 环境变量中填入 ALIYUN_ACCESS_KEY_ID、ALIYUN_ACCESS_KEY_SECRET、SMS_TEMPLATE_CODE
+- 修改文件：backend/main.py、backend/sms_service.py（新建）、ios/.../AuthState.swift、需求文档/阿里云短信开通步骤.md（新建）、需求文档/Railway部署步骤.md

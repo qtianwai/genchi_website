@@ -26,6 +26,10 @@ AMAP_API_KEY=ed74b2610dc920e300ae8e54838e659c
 SUPABASE_URL=https://ygsxhvsmivcckmjmjmhr.supabase.co
 SUPABASE_ANON_KEY=sb_publishable_gQdKpwmrgSIQOV2G45mghg_uWiIRnrd
 SUPABASE_SERVICE_ROLE_KEY=sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN
+ALIYUN_ACCESS_KEY_ID=（阿里云 AccessKey ID，审核通过后填入）
+ALIYUN_ACCESS_KEY_SECRET=（阿里云 AccessKey Secret，审核通过后填入）
+SMS_SIGN_NAME=跟吃
+SMS_TEMPLATE_CODE=（短信模板 Code，审核通过后填入，格式如 SMS_xxxxxxxxx）
 ```
 
 3. 点击「**Update Variables**」
@@ -42,7 +46,7 @@ SUPABASE_SERVICE_ROLE_KEY=sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN
 
 应该看到：
 ```json
-{"status": "ok", "service": "达人美食推荐后端"}
+{"status": "ok", "service": "跟吃后端"}
 ```
 
 访问 API 文档：`https://你的域名.railway.app/docs`
@@ -50,3 +54,5 @@ SUPABASE_SERVICE_ROLE_KEY=sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN
 ---
 
 **部署完成后，把域名告诉我，我来更新 iOS 代码中的 BASE_URL。**
+
+域名为：claudetest-production-c925.up
