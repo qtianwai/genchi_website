@@ -1,0 +1,4 @@
+# Railway 部署配置文件
+# Railway 会自动读取此文件来启动服务
+
+web: uvicorn main:app --host 0.0.0.0 --port $PORT

@@ -1,179 +1,164 @@
-# Claude Test 项目
+# 达人美食推荐 App
 
-## 2026-03-08 会话总结
-
-### 会话主要目的
-- 检查 node 和 openclaw 的安装状态
-- 解决终端报错 "node: command not found" 的问题
-- 在帮助文档目录添加 openclaw 使用指南
-
-### 完成的主要任务
-1. 发现 node 已通过 NVM 安装在 `~/.nvm/versions/node/v22.22.1/bin/`，但环境变量未正确配置
-2. 发现用户默认 shell 是 bash，需要配置 `~/.bashrc` 而不是 `~/.zshrc`
-3. 解决 git SSH 权限问题（`git@github.com: Permission denied`），配置 git 使用 HTTPS 替代 SSH
-4. 重新安装 openclaw（之前的安装文件损坏）
-5. 在帮助文档目录创建了 `OpenClaw使用指南.md`
-
-### 关键决策和解决方案
-- **问题根因**：用户的默认 shell 是 bash，但之前只配置了 `.zshrc`，新终端没有加载 node 路径
-- **解决方案**：在 `~/.bashrc` 中添加 node 的 PATH 配置
-- **Git 问题解决**：运行 `git config --global url."https://github.com/".insteadOf "git@github.com:"` 解决 SSH 权限问题
-
-### 使用的技术栈
-- NVM (- Node.js v22.Node Version Manager)
-22.1
-- npm 10.9.4
-- OpenClaw 2026.3.7
-
-### 修改的文件
-- `~/.zshrc` - 添加了 node PATH 配置
-- `~/.bashrc` - 添加了 node PATH 配置
-- `帮助文档/OpenClaw使用指南.md` - 新建文件
-
-## 2026-03-08 会话总结（2）
-
-### 会话主要目的
-- 解决 OpenClaw 网关控制台中显示的 "unauthorized: gateway password missing" 报错
-
-### 完成的主要任务
-1. 根据截图和官方文档，确认这是 Control UI 未配置网关认证 token/密码导致的未授权错误
-2. 给出通过 CLI 获取/生成网关 token，并在 Control UI 的设置中填写保存的完整操作步骤
-
-### 关键决策和解决方案
-- **问题根因**：网关开启了认证（`gateway auth`），但 Control UI 浏览器端没有保存匹配的 token/密码，因此所有状态检查请求都被网关拒绝
-- **解决方案**：
-  - 在终端中通过 `openclaw doctor --generate-gateway-token` 或 `openclaw config get gateway.auth.token` 获取 token；
-  - 打开 Control UI（网关仪表盘），在右上角齿轮图标进入设置，将 token 粘贴到网关认证/密码输入框中并保存；
-  - 如在本机个人环境可选地通过清空 `gateway.auth.token` 并重启网关来关闭认证（仅限本地、受防火墙保护环境）。
-
-### 使用的技术栈
-- OpenClaw 网关与 Control UI
-- OpenClaw CLI（`openclaw doctor`、`openclaw config` 等命令）
-
-### 修改的文件
-- `README.md` - 追加本次会话总结
+把喜爱的抖音博主推荐的餐厅，变成你的专属美食地图。
 
 ---
 
-## 2026-03-28 会话总结
+## 项目结构
 
-### 会话主要目的
-- 根据 `ClaudeCode使用指南.md` 帮助文档，用表格梳理 Claude Code 常用命令
-- 将汇总表格更新到文档中
+```
+达人美食推荐/
+├── backend/                    # Python FastAPI 后端
+│   ├── main.py                 # API 路由主程序
+│   ├── douyin_parser.py        # 抖音链接解析
+│   ├── ai_extractor.py         # 通义千问 AI 提取店铺信息
+│   ├── amap_service.py         # 高德地图地址搜索
+│   ├── db.py                   # Supabase 数据库操作
+│   ├── supabase_schema.sql     # 数据库建表 SQL
+│   ├── requirements.txt        # Python 依赖
+│   ├── Procfile                # Railway 部署配置
+│   ├── runtime.txt             # Python 版本
+│   └── .env                    # 环境变量（不提交 git）
+└── ios/FoodMap/FoodMap/        # SwiftUI iOS App
+    ├── FoodMapApp.swift         # App 入口
+    ├── Models/Models.swift      # 数据模型
+    ├── Services/
+    │   ├── APIService.swift     # 后端 API 调用
+    │   └── AuthState.swift      # 用户认证状态
+    └── Views/
+        ├── MainTabView.swift    # Tab 导航
+        ├── MapView.swift        # 地图主页面
+        ├── ParseLinkSheet.swift # 粘贴链接弹窗
+        ├── AuthorsView.swift    # 博主列表
+        ├── FavoritesView.swift  # 收藏列表
+        └── LoginView.swift      # 登录页面
+```
 
-### 完成的主要任务
-1. 读取并分析 `帮助文档/ClaudeCode使用指南.md` 的完整内容
-2. 从文档中提取所有命令，按类别整理为统一的汇总表格
-3. 将汇总表格添加到文档的"常用命令"章节中
+---
 
-### 关键决策和解决方案
-- 将命令分为 8 大类别：启动、对话、权限、工具、输出/调试、认证/系统、MCP、符号/工作流/管道/扩展
-- 表格设计为 4 列：类别、命令、解释、使用场景，便于快速查找
-- 添加了模型能力排序提示（Opus > Sonnet > Haiku）
+## 技术栈
 
-### 使用的技术栈
-- Markdown 表格语法
+| 层级 | 技术 | 说明 |
+|------|------|------|
+| iOS App | SwiftUI | 原生 iOS，支持 iOS 16+ |
+| 后端 | Python FastAPI | 轻量高性能 API 框架 |
+| 部署 | Railway | 免费起步，自动部署 |
+| 数据库 | Supabase (PostgreSQL) | 免费套餐，含用户认证 |
+| AI | 通义千问 qwen-plus | 提取视频中的店铺信息 |
+| 地图 | 高德地图 API | 地址搜索 + iOS 地图展示 |
+| 抖音解析 | 非官方接口 | 后期可替换为付费 API |
 
-### 修改的文件
-- `帮助文档/ClaudeCode使用指南.md` - 添加了命令汇总表
+---
 
-## 2026-03-29 会话总结
+## 部署步骤
 
-### 会话主要目的
-- 查询当前 Claude 配置的全局规则和项目规则
-- 将项目托管到 GitHub，实现云端同步
+### 第一步：初始化 Supabase 数据库
 
-### 完成的主要任务
-1. 查看并说明全局规则（`~/.claude/CLAUDE.md`）和项目规则（`CLAUDE.md`）的内容
-2. 生成 SSH 密钥并添加到 GitHub 账号
-3. 初始化 Git 仓库，创建 `.gitignore`
-4. 排查并修复全局 git 配置中 SSH 被强制转为 HTTPS 的问题
-5. 成功将项目推送到 GitHub 私有仓库
+1. 打开 [Supabase 控制台](https://supabase.com) → 进入你的项目
+2. 左侧菜单点击「SQL Editor」
+3. 将 `backend/supabase_schema.sql` 的全部内容粘贴进去
+4. 点击「Run」执行，创建所有数据表
 
-### 关键决策和解决方案
-- 发现全局 git 配置存在 `url.https://github.com/.insteadof=git@github.com:` 规则，导致 SSH 推送失败，通过 `git config --global --unset` 删除该规则解决
-- 使用 ED25519 算法生成 SSH 密钥，安全性更高
+### 第二步：在 Supabase 开启手机号登录
 
-### 使用的技术栈
-- Git / GitHub
-- SSH (ED25519)
+1. 左侧菜单「Authentication」→「Providers」
+2. 找到「Phone」，开启它
+3. 选择短信服务商（推荐 Twilio，有免费试用）
+4. 填入 Twilio 的 Account SID 和 Auth Token
 
-### 修改的文件
-- `.gitignore` - 新建文件，忽略 .DS_Store 和 .cursor/
-- `README.md` - 追加本次会话总结
+> 如果暂时不想配置短信，可以在 Supabase 的「Authentication」→「Settings」中开启「Enable email confirmations」关闭，然后用邮箱登录替代
 
-## 2026-03-29 会话总结（2）
+### 第三步：部署后端到 Railway
 
-### 会话主要目的
-- 在 ClaudeCode使用指南.md 中补充 Skills 使用说明
+1. 将项目推送到 GitHub（`backend/` 目录）
+2. 打开 [Railway](https://railway.app) → 「New Project」→「Deploy from GitHub repo」
+3. 选择你的仓库，Railway 会自动识别 `Procfile` 并部署
+4. 部署完成后，进入「Variables」添加环境变量：
+   ```
+   DASHSCOPE_API_KEY=sk-2c6e706e26524eb696026f1b4c9a57ad
+   AMAP_API_KEY=ed74b2610dc920e300ae8e54838e659c
+   SUPABASE_URL=https://ygsxhvsmivcckmjmjmhr.supabase.co
+   SUPABASE_ANON_KEY=sb_publishable_gQdKpwmrgSIQOV2G45mghg_uWiIRnrd
+   SUPABASE_SERVICE_ROLE_KEY=sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN
+   ```
+5. 复制 Railway 给你的域名（如 `https://xxx.railway.app`）
 
-### 完成的主要任务
-1. 读取所有 `.claude/commands/` 下的 skill 文件内容
-2. 在文档末尾新增「Skills（自定义技能）」章节，包含使用方式、创建方法、技能汇总表、协作流程表
+### 第四步：配置 iOS 项目
 
-### 关键决策和解决方案
-- 用两张表格呈现：一张汇总各技能的角色和职责，一张展示技能间的协作流程顺序
+1. 用 Xcode 打开 `ios/FoodMap/` 目录（需要先创建 Xcode 项目，见下方说明）
+2. 修改 [APIService.swift](ios/FoodMap/FoodMap/Services/APIService.swift) 第 10 行，将 `BASE_URL` 替换为 Railway 域名
+3. 在 Xcode 的 `Info.plist` 中添加：
+   - `NSLocationWhenInUseUsageDescription` → 值：`用于在地图上显示您附近的推荐店铺`
+   - `LSApplicationQueriesSchemes` → 添加：`iosamap`、`baidumap`（支持跳转导航 App）
+4. 连接 iPhone，点击运行
 
-### 使用的技术栈
-- Markdown 表格语法
+---
 
-### 修改的文件
-- `帮助文档/ClaudeCode使用指南.md` - 新增 Skills 使用说明章节
+## 创建 Xcode 项目（重要）
 
-## 2026-03-29 会话总结（3）
+由于 Xcode 项目文件（`.xcodeproj`）需要在 Xcode 中创建，请按以下步骤操作：
 
-### 会话主要目的
-- 将项目操作确认规则更新为完全自动执行模式
+1. 打开 Xcode → 「Create New Project」
+2. 选择「iOS」→「App」
+3. 填写：
+   - Product Name: `FoodMap`
+   - Bundle Identifier: `com.yourname.foodmap`（记住这个，高德 iOS Key 需要对应）
+   - Interface: `SwiftUI`
+   - Language: `Swift`
+4. 保存到 `ios/FoodMap/` 目录
+5. 将 `ios/FoodMap/FoodMap/` 下的所有 `.swift` 文件拖入 Xcode 项目（替换默认的 `ContentView.swift`）
+6. 删除 Xcode 自动生成的 `ContentView.swift`
 
-### 完成的主要任务
-1. 更新 CLAUDE.md 中的"操作确认"规则，改为所有操作直接执行，不询问用户
+---
 
-### 关键决策和解决方案
-- 等同于 `--dangerously-skip-permissions` 模式，所有边界和确认均自动通过
+## 本地开发后端
 
-### 使用的技术栈
-- Markdown
+```bash
+cd backend
+python -m venv venv
+source venv/bin/activate   # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python main.py
+# 服务启动在 http://localhost:8000
+# 访问 http://localhost:8000/docs 查看 API 文档
+```
 
-### 修改的文件
-- `CLAUDE.md` - 更新操作确认规则
+---
 
-## 2026-03-29 会话总结（4）
+## API 接口列表
 
-### 会话主要目的
-- 配置 Claude 所有工具操作自动执行，无需手动确认
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/parse-link` | 解析抖音链接，提取店铺 |
+| GET | `/api/map/restaurants?user_id=` | 获取地图店铺数据 |
+| GET | `/api/authors/following?user_id=` | 获取关注的博主 |
+| POST | `/api/authors/follow` | 关注博主 |
+| POST | `/api/authors/unfollow` | 取消关注 |
+| GET | `/api/favorites?user_id=` | 获取收藏列表 |
+| POST | `/api/favorites/add` | 收藏店铺 |
+| POST | `/api/favorites/remove` | 取消收藏 |
 
-### 完成的主要任务
-1. 修改 `.claude/settings.local.json`，添加 `Bash(*)`、`Edit(*)`、`Write(*)`、`Read(*)`、`WebFetch(*)` 等通配符权限
+---
 
-### 关键决策和解决方案
-- 通过 `settings.local.json` 的 `permissions.allow` 列表添加通配符，覆盖所有工具调用，实现无确认自动执行
+## 会话记录
 
-### 使用的技术栈
-- Claude Code 权限配置（settings.local.json）
+### 2026-03-31 第一次会话：产品分析与方案规划
+- 主要目的：分析产品需求，制定技术方案
+- 完成任务：技术栈选型、API 注册指引、确认多用户支持需求
+- 关键决策：AI 服务选用通义千问（国内易注册）、后端部署选 Railway、数据库选 Supabase
+- 技术栈：SwiftUI + FastAPI + Supabase + 通义千问 + 高德地图
+- 修改文件：无（仅分析规划）
 
-### 修改的文件
-- `.claude/settings.local.json` - 添加全工具通配符权限
-- `README.md` - 追加本次会话总结
-
-## 2026-03-29 会话总结（3）
-
-### 会话主要目的
-- 修正 ClaudeCode使用指南.md 中 Skills 章节的错误内容
-- 补充正确的 Skills 使用说明，并区分 Skills 与 Slash Commands 的概念
-
-### 完成的主要任务
-1. 通过网络搜索获取 anthropics/skills 官方仓库的真实信息
-2. 重写「Skills」章节，明确 Skills 是带 SKILL.md 的文件夹结构，来自官方仓库
-3. 新增 Skills vs Slash Commands 对比表格
-4. 补充 SKILL.md 文件格式说明和官方 skills 列表（pdf/docx/xlsx/pptx）
-5. 将原来错误标注为 Skills 的内容，正确归类为「自定义斜杠命令」
-
-### 关键决策和解决方案
-- 原文档把 `.claude/commands/` 下的自定义角色命令误称为 Skills，本次修正为 Slash Commands
-- Skills 的核心是 SKILL.md + YAML frontmatter，由 Claude 自动识别触发或手动 `/skill名` 调用
-
-### 使用的技术栈
-- Markdown 表格语法
-
-### 修改的文件
-- `帮助文档/ClaudeCode使用指南.md` - 重写 Skills 章节
+### 2026-03-31 第二次会话：搭建完整项目骨架
+- 主要目的：根据收集到的 API Key，搭建后端和 iOS 前端完整代码骨架
+- 完成任务：
+  - 后端：`main.py`（FastAPI 路由）、`douyin_parser.py`（抖音解析）、`ai_extractor.py`（通义千问）、`amap_service.py`（高德地图）、`db.py`（Supabase 操作）、`supabase_schema.sql`（数据库建表）、`Procfile`/`runtime.txt`（Railway 部署）
+  - iOS：`FoodMapApp.swift`（入口）、`Models.swift`（数据模型）、`APIService.swift`（网络请求）、`AuthState.swift`（认证）、`MapView.swift`（地图主页）、`ParseLinkSheet.swift`（粘贴链接）、`AuthorsView.swift`（博主列表）、`FavoritesView.swift`（收藏）、`LoginView.swift`（登录）、`MainTabView.swift`（Tab 导航）
+  - 配置：`.gitignore`、`README.md`
+- 关键决策：
+  - 博主已入库则直接复用数据，不重复调用 AI（节省费用）
+  - 地图标注叠加博主头像，支持按博主筛选
+  - 导航支持苹果地图、高德、百度三选一
+  - 用户认证使用 Supabase Auth 手机号 OTP
+- 技术栈：Python FastAPI + SwiftUI + Supabase + 通义千问 qwen-plus + 高德地图 API
+- 修改文件：新建 backend/ 和 ios/ 下共 17 个文件，README.md，.gitignore
