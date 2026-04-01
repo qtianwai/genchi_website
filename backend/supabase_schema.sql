@@ -17,6 +17,10 @@ create table if not exists authors (
   sec_uid       text,                   -- 抖音 sec_uid（用于获取视频列表）
   name          text not null,          -- 博主昵称
   avatar_url    text,                   -- 博主头像 URL
+  -- 自动更新检测相关字段（v2.4 新增）
+  auto_update_enabled    boolean default true,  -- 是否启用自动更新检测
+  last_update_check      timestamptz,          -- 上次执行自动检测的时间
+  no_new_food_video_days int default 0,         -- 连续未检测到新美食视频的天数
   created_at    timestamptz default now()
 );
 
@@ -145,7 +149,7 @@ create index if not exists idx_video_cache_videoid on video_parse_cache(video_id
 create table if not exists author_background_tasks (
   id              uuid primary key default uuid_generate_v4(),
   author_id       uuid not null references authors(id) on delete cascade,
-  task_type       text not null,        -- 'full_scan': 首次入库的全量扫描; 'incremental': 增量更新
+  task_type       text not null,        -- 'full_scan': 首次入库的全量扫描; 'incremental': 增量更新; 'auto_check': 自动更新检测
   total_videos    int default 0,        -- 该任务需要处理的总视频数
   processed_videos int default 0,        -- 已处理完成的视频数
   status          text not null default 'pending',  -- pending/running/completed/failed
@@ -159,6 +163,9 @@ create table if not exists author_background_tasks (
 -- 索引：按博主 ID 查最新任务状态
 create index if not exists idx_bg_tasks_author on author_background_tasks(author_id);
 create index if not exists idx_bg_tasks_status on author_background_tasks(status);
+
+-- 索引：按自动更新字段查询（v2.4 新增，用于定时任务）
+create index if not exists idx_authors_auto_update on authors(auto_update_enabled) where auto_update_enabled = true;
 
 
 -- ─────────────────────────────────────────
@@ -198,3 +205,16 @@ alter table author_restaurants enable row level security;
 create policy "博主信息公开可读" on authors for select using (true);
 create policy "店铺信息公开可读" on restaurants for select using (true);
 create policy "博主店铺关联公开可读" on author_restaurants for select using (true);
+
+-- authors 表允许更新（后端需要更新 auto_update_enabled 等字段）
+create policy "博主信息可更新" on authors for update using (true) with check (true);
+
+
+-- ─────────────────────────────────────────
+-- v2.4 迁移脚本：新增博主自动更新检测字段
+-- 如果 authors 表已存在，执行以下 ALTER 语句添加新字段
+-- ─────────────────────────────────────────
+-- ALTER TABLE authors ADD COLUMN IF NOT EXISTS auto_update_enabled boolean DEFAULT true;
+-- ALTER TABLE authors ADD COLUMN IF NOT EXISTS last_update_check timestamptz;
+-- ALTER TABLE authors ADD COLUMN IF NOT EXISTS no_new_food_video_days int DEFAULT 0;
+-- CREATE INDEX IF NOT EXISTS idx_authors_auto_update ON authors(auto_update_enabled) WHERE auto_update_enabled = true;

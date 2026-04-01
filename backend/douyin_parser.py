@@ -67,16 +67,19 @@ def extract_url_from_text(text: str) -> str:
 
 async def parse_douyin_link(url: str) -> dict:
     """
-    主入口：解析抖音分享链接，返回视频信息。
+    主入口：解析抖音分享链接，返回视频信息（优化版：合并获取扩展信息）。
 
-    两步流程：
+    三步流程：
     1. share-url-transfer/v1：将分享短链转换为 redirect_url，从中提取视频 ID
-    2. get-video-detail/v2：用视频 ID 获取完整的视频和博主信息
+    2. get-video-detail/v2：获取完整视频信息、博主信息、扩展信息（话题标签、城市）
+       （优化1：一次调用获取所有信息，避免重复调用）
+    3. 提取评论中博主点赞的评论（用于 AI 识别店铺）
 
     输入：抖音分享链接或包含链接的分享文字
     输出：{
         video_id, title, author_id, author_name, author_avatar,
-        author_sec_uid, comments: []
+        author_sec_uid, hashtags, city_name, author_liked_comments,
+        hot_comments, hot_comments_raw, all_comments
     }
     """
     # 第一步：从文本中提取纯链接（兼容用户粘贴整段分享文字的情况）
@@ -100,17 +103,18 @@ async def parse_douyin_link(url: str) -> dict:
     video_id = match.group(1)
     print(f"[抖音解析] 提取到视频 ID: {video_id}")
 
-    # 第三步：调用 get-video-detail/v2 获取完整视频和博主信息
+    # 第三步：调用 get-video-detail/v2 获取完整信息（优化1：一次调用获取所有字段）
     detail_result = await _aget("/api/douyin/get-video-detail/v2", {"videoId": video_id})
     print(f"[抖音解析] get-video-detail 返回 code={detail_result.get('code')}")
 
     if detail_result.get("code") != 0 or not detail_result.get("data"):
         raise ValueError(f"获取视频详情失败: {detail_result.get('message', '未知错误')}")
 
-    # 数据结构：data.aweme_detail.author
+    # 数据结构：data.aweme_detail
     aweme = detail_result["data"].get("aweme_detail", {})
     author = aweme.get("author", {})
 
+    # 基础信息
     title = aweme.get("desc", "")
     author_id = str(author.get("uid", ""))
     author_name = author.get("nickname", "")
@@ -122,7 +126,114 @@ async def parse_douyin_link(url: str) -> dict:
         or ""
     )
 
+    # 扩展信息（优化1：直接从这次调用中提取，不再单独调用 fetch_video_detail_extra）
+    # 从 text_extra 中提取话题标签（type=1 表示话题标签）
+    text_extras = aweme.get("text_extra", []) or []
+    hashtags = [
+        t.get("hashtag_name", "")
+        for t in text_extras
+        if t.get("type") == 1 and t.get("hashtag_name")
+    ]
+
+    # 城市编码转中文
+    city_code = str(aweme.get("city", ""))
+    city_map = {
+        # 直辖市
+        "110000": "北京", "120000": "天津", "310000": "上海", "500000": "重庆",
+        # 省会城市
+        "130100": "石家庄", "140100": "太原", "150100": "呼和浩特", "210100": "沈阳",
+        "220100": "长春", "230100": "哈尔滨", "320100": "南京", "330100": "杭州",
+        "340100": "合肥", "350100": "福州", "360100": "南昌", "370100": "济南",
+        "410100": "郑州", "420100": "武汉", "430100": "长沙", "440100": "广州",
+        "450100": "南宁", "460100": "海口", "510100": "成都", "520100": "贵阳",
+        "530100": "昆明", "540100": "拉萨", "610100": "西安", "620100": "兰州",
+        "630100": "西宁", "640100": "银川", "650100": "乌鲁木齐",
+        # 重点城市
+        "440300": "深圳", "320500": "苏州", "330200": "宁波", "350200": "厦门",
+        "370200": "青岛", "440400": "珠海", "440600": "佛山", "441300": "惠州",
+        "441900": "东莞", "442000": "中山", "445100": "潮州", "445200": "揭阳",
+        "510700": "绵阳", "511100": "乐山", "610200": "铜川", "610300": "宝鸡",
+    }
+    city_name_from_code = city_map.get(city_code, "未知" if not city_code or city_code == "0" else city_code)
+
+    # 从标题和话题标签中提取城市（优先级高于 city_code）
+    CITY_NAMES = [
+        "北京", "天津", "上海", "重庆",
+        "石家庄", "太原", "呼和浩特", "沈阳", "长春", "哈尔滨",
+        "南京", "杭州", "合肥", "福州", "南昌", "济南",
+        "郑州", "武汉", "长沙", "广州", "南宁", "海口",
+        "成都", "贵阳", "昆明", "拉萨", "西安", "兰州",
+        "西宁", "银川", "乌鲁木齐",
+        "深圳", "苏州", "宁波", "厦门", "青岛", "珠海",
+        "佛山", "惠州", "东莞", "中山", "潮州", "揭阳",
+        "绵阳", "乐山", "宝鸡", "常州", "无锡", "温州",
+        "嘉兴", "金华", "台州", "泉州", "漳州", "赣州",
+        "烟台", "威海", "济宁", "临沂", "洛阳", "南阳",
+        "宜昌", "襄阳", "株洲", "湘潭", "衡阳", "汕头",
+        "江门", "湛江", "茂名", "肇庆", "清远", "梅州",
+        "遵义", "大理", "丽江", "桂林", "柳州", "北海",
+        "三亚", "海南", "西双版纳", "德宏",
+        "大连", "鞍山", "抚顺", "本溪", "丹东",
+        "哈尔滨", "齐齐哈尔", "牡丹江", "佳木斯",
+        "包头", "鄂尔多斯", "呼伦贝尔",
+        "唐山", "保定", "邯郸", "秦皇岛",
+        "运城", "大同", "晋城",
+        "徐州", "南通", "连云港", "淮安", "盐城", "扬州", "镇江", "泰州",
+        "芜湖", "马鞍山", "安庆", "黄山",
+        "郫县", "郫都",
+    ]
+    title_city = next((c for c in CITY_NAMES if c in title), None)
+    tag_city = None
+    if not title_city:
+        for tag in hashtags:
+            tag_city = next((c for c in CITY_NAMES if c in tag), None)
+            if tag_city:
+                break
+    city_name = title_city or tag_city or city_name_from_code
+
+    # 评论信息（从这次详情调用中获取）
+    author_liked_comments = []
+    hot_comments = []
+    hot_comments_raw = []
+    all_comments = []
+
+    comments_result = await _aget(
+        "/api/douyin/get-video-comment/v1",
+        {"awemeId": video_id, "page": 1},
+    )
+    if comments_result.get("code") == 0:
+        raw_comments = (comments_result.get("data") or {}).get("comments", []) or []
+        for c in raw_comments:
+            text = c.get("text", "")
+            if not text:
+                continue
+            digg = c.get("digg_count", 0)
+            comment_data = {"text": text, "digg_count": digg}
+
+            all_comments.append(comment_data)
+
+            # 博主点赞的评论：P1 最高优先级
+            if c.get("is_author_digged"):
+                author_liked_comments.append(comment_data)
+
+            # 热门评论：P2 次优先级，同时保留 cid 供回复轮询使用
+            if c.get("is_hot"):
+                hot_comments.append(comment_data)
+                hot_comments_raw.append({
+                    "cid": c.get("cid", ""),
+                    "text": text,
+                    "digg_count": digg,
+                })
+
+        # 按点赞数降序排列
+        author_liked_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        hot_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        hot_comments_raw.sort(key=lambda x: x["digg_count"], reverse=True)
+        all_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+
     print(f"[抖音解析] 解析成功: video_id={video_id}, author={author_name}, sec_uid={author_sec_uid[:20] if author_sec_uid else ''}")
+    print(f"[抖音解析] 扩展信息: 话题={hashtags}, 城市={city_name}, "
+          f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条, 总评论={len(all_comments)}条")
 
     return {
         "video_id": video_id,
@@ -131,8 +242,34 @@ async def parse_douyin_link(url: str) -> dict:
         "author_name": author_name,
         "author_avatar": author_avatar,
         "author_sec_uid": author_sec_uid,
-        "comments": [],  # 评论通过单独接口获取，此处不获取
+        "hashtags": hashtags,
+        "city_name": city_name,
+        "author_liked_comments": author_liked_comments,
+        "hot_comments": hot_comments,
+        "hot_comments_raw": hot_comments_raw,
+        "all_comments": all_comments,
     }
+
+
+def extract_video_id_from_url(url: str) -> str | None:
+    """
+    从抖音 URL 中提取视频 ID（用于缓存命中检查）。
+
+    支持格式：
+    - https://v.douyin.com/xxx/ （短链，需要调用 API 转换）
+    - https://www.iesdouyin.com/share/video/123456789/ （直接包含 video_id）
+    - 123456789 （纯数字 video_id）
+    """
+    # 如果是纯数字，直接返回
+    if re.match(r'^\d+$', url.strip()):
+        return url.strip()
+
+    # 尝试从 URL 中提取 video_id
+    match = re.search(r'/video/(\d+)', url)
+    if match:
+        return match.group(1)
+
+    return None
 
 
 async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
@@ -448,7 +585,7 @@ def is_food_related_comment(comment_text: str) -> bool:
 async def poll_comment_replies_for_confidence(
     hot_comments_raw: list[dict],
     author_uid: str,
-    max_polls: int = 3,
+    max_polls: int = 2,
 ) -> dict:
     """
     轮询热门评论的回复，直到找到博主确认或置信度提升的信息
@@ -457,7 +594,7 @@ async def poll_comment_replies_for_confidence(
     1. 只轮询与美食店铺相关的热门评论（通过关键词过滤）
     2. 优先轮询点赞数高的评论
     3. 如果找到博主回复且内容与店铺相关，立即返回
-    4. 最多轮询 max_polls 次（默认 3 次），控制成本
+    4. 最多轮询 max_polls 次（默认 2 次），控制成本
 
     返回：
     - polled_replies: 所有轮询到的回复 [{"comment_text": "...", "replies": [...]}]

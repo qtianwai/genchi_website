@@ -10,7 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, poll_comment_replies_for_confidence
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, extract_video_id_from_url, poll_comment_replies_for_confidence
+from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies, filter_food_video_titles
 from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies
 from amap_service import batch_search_restaurants
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
@@ -27,7 +28,10 @@ from db import (
     update_video_cache_failed, get_video_cache_by_id,
     create_bg_task, update_bg_task_started, update_bg_task_progress,
     complete_bg_task, fail_bg_task, get_latest_bg_task,
+    is_author_in_cool_down,  # 新增：博主扫描冷却期检查（优化 3.3）
     get_videos_by_restaurant,
+    # 新增：博主自动更新相关（v2.4）
+    enable_author_auto_update,
 )
 
 load_dotenv()
@@ -326,24 +330,24 @@ async def parse_single_video_fast(
     author_id: str,
 ) -> dict:
     """
-    快速解析单个视频的核心逻辑（优化版：获取评论和扩展信息以提升识别率）
-    用于 parse_link 主流程，平衡速度和准确性
+    快速解析单个视频的核心逻辑（优化版：使用 parse_douyin_link 已获取的扩展信息）。
 
-    新增：置信度 medium 时，调用评论回复接口补充信息（成本控制）
+    优化1：parse_douyin_link 已获取完整的扩展信息（话题标签、城市、评论），
+           此函数不再单独调用 fetch_video_detail_extra，节省 1 次 JustOneAPI 调用。
+
+    v2.6 优化：置信度 medium 或 high 但缺分店信息时，调用评论回复接口补充信息。
     """
     vid = video_info.get("video_id", "")
     title = video_info.get("title", "")
     author_name = video_info.get("author_name", "")
 
-    # 获取扩展信息（内部已包含评论，无需再单独调用 fetch_video_comments）
-    extra = await fetch_video_detail_extra(vid, author_id)
-
-    hashtags = extra.get("hashtags", [])
-    city = extra.get("city_name", "未知")
-    author_liked_comments = extra.get("author_liked_comments", [])
-    hot_comments = extra.get("hot_comments", [])
-    all_comments = extra.get("all_comments", [])
-    hot_comments_raw = extra.get("hot_comments_raw", [])
+    # 使用 parse_douyin_link 已获取的扩展信息（优化1：避免重复调用）
+    hashtags = video_info.get("hashtags", [])
+    city = video_info.get("city_name", "未知")
+    author_liked_comments = video_info.get("author_liked_comments", [])
+    hot_comments = video_info.get("hot_comments", [])
+    all_comments = video_info.get("all_comments", [])
+    hot_comments_raw = video_info.get("hot_comments_raw", [])
 
     # AI 提取（使用完整信息，优先级算法）
     # v2.3：废弃降级算法，优先级算法返回空时直接返回空，不再降级到旧算法
@@ -358,15 +362,21 @@ async def parse_single_video_fast(
         all_comments=all_comments,
     )
 
-    # 置信度判断：medium 时调用评论回复接口补充信息
-    if extracted and extracted[0].get("confidence") == "medium":
+    # 置信度判断（v2.6 优化：high 但缺分店信息时也调用评论回复）
+    should_call_replies = extracted and extracted[0].get("confidence") == "medium"
+    if not should_call_replies and extracted and extracted[0].get("confidence") == "high":
+        # v2.6：high 置信度但缺分店信息时，调用评论回复获取分店
+        parsed_name = extracted[0].get("name", "")
+        if not any(keyword in parsed_name for keyword in ["店", "广场", "分店", "路", "街"]):
+            should_call_replies = True
+    if should_call_replies:
         if can_call_comment_reply():
-            print(f"[解析策略] 置信度 medium，调用评论回复接口补充信息")
+            print(f"[解析策略] 置信度 medium 或缺分店信息，调用评论回复接口补充信息")
             # 轮询热门评论的回复（最多 3 次）
             reply_data = await poll_comment_replies_for_confidence(
                 hot_comments_raw=hot_comments_raw,
                 author_uid=author_id,
-                max_polls=3,
+                max_polls=2,
             )
             increment_comment_reply_calls(reply_data.get("polls_used", 0))
 
@@ -382,10 +392,16 @@ async def parse_single_video_fast(
                     all_comments=all_comments,
                     polled_replies=reply_data.get("polled_replies", []),
                 )
-                # 如果带回复的提取结果置信度更高，使用新结果
-                if extracted_with_replies and extracted_with_replies[0].get("confidence") == "high":
-                    print(f"[解析策略] 评论回复提升置信度: medium → high")
-                    extracted = extracted_with_replies
+                # v2.6：如果带回复的提取结果更好（high，或有分店信息），使用新结果
+                if extracted_with_replies:
+                    new_conf = extracted_with_replies[0].get("confidence")
+                    old_conf = extracted[0].get("confidence")
+                    new_name = extracted_with_replies[0].get("name", "")
+                    old_name = extracted[0].get("name", "")
+                    # 置信度提升，或分店信息更完整时采用新结果
+                    if new_conf == "high" or (new_conf == old_conf and len(new_name) > len(old_name)):
+                        print(f"[解析策略] 评论回复优化结果: {old_name} → {new_name}")
+                        extracted = extracted_with_replies
         else:
             print(f"[解析策略] 今日评论回复调用已达上限，跳过")
 
@@ -446,16 +462,25 @@ def parse_author_all_videos_background(author_id: str, sec_uid: str, current_vid
 
 async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video_id: str):
     """
-    异步执行:获取博主视频列表并逐一解析(排除当前视频)
-    每次只解析视频标题(不获取评论),节省 API 调用
+    异步执行：获取博主视频列表并逐一解析（排除当前视频）
 
-    调试模式:当 DEBUG_MODE=true 时,最多解析 DEBUG_MAX_VIDEOS 条视频
+    优化 3.2：新增 AI 标题过滤，过滤掉非美食/探店类视频，零 JustOneAPI 成本
+    优化 3.3：新增冷却期检查，1 天内重复扫描时直接跳过
+
+    调试模式：当 DEBUG_MODE=true 时，最多解析 DEBUG_MAX_VIDEOS 条视频
     """
     if not sec_uid:
-        print(f"[后台解析] 博主无 sec_uid,跳过历史视频解析: {author_id}")
+        print(f"[后台解析] 博主无 sec_uid，跳过历史视频解析: {author_id}")
         return
 
-    # 获取博主视频列表(最多 30 个,排除当前视频)
+    # 优化 3.3：冷却期检查（1 天内不重复扫描）
+    if is_author_in_cool_down(author_id, hours=24):
+        recent_task = get_latest_bg_task(author_id)
+        task_status = recent_task.get("status", "unknown") if recent_task else "unknown"
+        print(f"[后台解析] 博主 {author_id} 在冷却期内（最近任务状态: {task_status}），跳过本次扫描")
+        return
+
+    # 获取博主视频列表（最多 30 个，排除当前视频）
     videos = await fetch_author_videos(sec_uid, max_count=30)
     video_list = [
         {
@@ -470,9 +495,9 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         print(f"[后台解析] 博主 {author_id} 无历史视频")
         return
 
-    # 调试模式:限制解析数量
+    # 调试模式：限制解析数量
     if DEBUG_MODE and len(video_list) > DEBUG_MAX_VIDEOS:
-        print(f"[后台解析] 调试模式已启用,限制解析数量: {len(video_list)} -> {DEBUG_MAX_VIDEOS}")
+        print(f"[后台解析] 调试模式已启用，限制解析数量: {len(video_list)} -> {DEBUG_MAX_VIDEOS}")
         video_list = video_list[:DEBUG_MAX_VIDEOS]
 
     # 创建后台任务记录
@@ -480,22 +505,35 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
     task_id = task.get("id", "")
     update_bg_task_started(task_id)
 
-    print(f"[后台解析] 开始解析博主 {author_id} 的 {len(video_list)} 个历史视频...")
+    # 优化 3.2：AI 标题过滤 - 过滤掉非美食/探店类视频
+    food_videos = await filter_food_video_titles(video_list)
+
+    # 过滤掉数据库中已有成功解析记录的视频（使用 video_id）
+    pending_videos = []
+    for video in food_videos:
+        vid = video.get("video_id", "")
+        existing_cache = get_video_cache_by_id(vid)
+        if existing_cache and existing_cache.get("status") == "completed":
+            print(f"[后台解析] 视频 {vid} 已解析过，跳过")
+            continue
+        pending_videos.append(video)
+
+    print(f"[后台解析] AI 过滤完成: {len(video_list)} -> {len(food_videos)} 条美食视频 -> {len(pending_videos)} 条待解析")
+
+    if not pending_videos:
+        print(f"[后台解析] 博主 {author_id} 无需解析的历史视频")
+        complete_bg_task(task_id, 0)
+        return
+
+    print(f"[后台解析] 开始解析博主 {author_id} 的 {len(pending_videos)} 个历史视频...")
 
     saved_count = 0
-    for i, video in enumerate(video_list):
+    for i, video in enumerate(pending_videos):
         vid = video.get("video_id", "")
         title = video.get("title", "")
 
-        # 检查视频是否已在缓存(已有成功结果的跳过)
-        existing_cache = get_video_cache_by_id(vid)
-        if existing_cache and existing_cache.get("status") == "completed":
-            print(f"[后台解析] 视频 {vid} 已解析过,跳过")
-            update_bg_task_progress(task_id, i + 1, saved_count)
-            continue
-
         # 创建该视频的缓存记录
-        # 优先使用真实的 share_url(可在抖音中打开),没有则构造基础链接
+        # 优先使用真实的 share_url（可在抖音中打开），没有则构造基础链接
         share_url = video.get("share_url", "")
         video_url = share_url if share_url else f"https://www.iesdouyin.com/share/video/{vid}/"
         upsert_video_cache({
@@ -506,7 +544,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         })
 
         try:
-            # 获取视频扩展信息(P1:标签+城市+评论)
+            # 获取视频扩展信息（P1:标签+城市+评论）
             extra = await fetch_video_detail_extra(vid, author_id)
 
             # AI 提取（v2.3：废弃降级算法，优先级算法返回空时直接返回空）
@@ -520,14 +558,21 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                 all_comments=extra.get("all_comments", []),
             )
 
-            # 置信度 medium 时，调用评论回复接口补充信息（成本控制）
-            if extracted and extracted[0].get("confidence") == "medium":
+            # 置信度判断（v2.6 优化：high 但缺分店信息时也调用评论回复）
+            should_call_replies = extracted and extracted[0].get("confidence") == "medium"
+            if not should_call_replies and extracted and extracted[0].get("confidence") == "high":
+                # v2.6：high 置信度但缺分店信息时，调用评论回复获取分店
+                parsed_name = extracted[0].get("name", "")
+                if not any(keyword in parsed_name for keyword in ["店", "广场", "分店", "路", "街"]):
+                    should_call_replies = True
+            if should_call_replies:
                 if can_call_comment_reply():
-                    print(f"[后台解析] 视频 {vid} 置信度 medium，调用评论回复补充")
+                    conf_tag = "medium" if (extracted and extracted[0].get("confidence") == "medium") else "缺分店"
+                    print(f"[后台解析] 视频 {vid} 置信度 {conf_tag}，调用评论回复补充")
                     reply_data = await poll_comment_replies_for_confidence(
                         hot_comments_raw=extra.get("hot_comments_raw", []),
                         author_uid=author_id,
-                        max_polls=3,
+                        max_polls=2,
                     )
                     increment_comment_reply_calls(reply_data.get("polls_used", 0))
                     if reply_data.get("polled_replies"):
@@ -541,9 +586,15 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                             all_comments=extra.get("all_comments", []),
                             polled_replies=reply_data.get("polled_replies", []),
                         )
-                        if extracted_with_replies and extracted_with_replies[0].get("confidence") == "high":
-                            print(f"[后台解析] 视频 {vid} 评论回复提升置信度: medium → high")
-                            extracted = extracted_with_replies
+                        # v2.6：如果带回复的提取结果更好（high，或有分店信息），使用新结果
+                        if extracted_with_replies:
+                            new_conf = extracted_with_replies[0].get("confidence")
+                            old_conf = extracted[0].get("confidence")
+                            new_name = extracted_with_replies[0].get("name", "")
+                            old_name = extracted[0].get("name", "")
+                            if new_conf == "high" or (new_conf == old_conf and len(new_name) > len(old_name)):
+                                print(f"[后台解析] 视频 {vid} 评论回复优化: {old_name} → {new_name}")
+                                extracted = extracted_with_replies
                 else:
                     print(f"[后台解析] 今日评论回复调用已达上限，跳过视频 {vid}")
 
@@ -588,25 +639,42 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
     解析抖音分享链接（新流程）
 
     优化策略：
-    1. 先用原始链接在 video_parse_cache 查缓存，命中则直接返回
-    2. 未命中则解析当前视频（优先快速路径），立即返回结果
+    1. 先从 URL 提取 video_id，用 video_id 精确匹配缓存（同一视频多链接复用）
+    2. 未命中则解析当前视频（优化1：一次调用获取所有信息），立即返回结果
     3. 启动后台任务异步解析博主历史探店视频（不阻塞用户）
+       - 优化3.3：冷却期检查（1 天内不重复扫描）
+       - 优化3.2：AI 标题过滤（非美食视频跳过）
     """
     try:
         raw_url = req.url.strip()
         # 先提取纯 URL（去掉分享文字前缀），确保缓存命中不受分享格式影响
         clean_url = extract_url_from_text(raw_url)
 
-        # 第一步：检查视频地址缓存（用提取后的纯 URL 精确匹配）
+        # 第一步：尝试从 URL 提取 video_id（优化2：支持同一视频多个分享格式）
+        vid = extract_video_id_from_url(clean_url)
+
+        # 第二步：检查视频缓存
+        # 优先用 video_id 精确匹配（同一视频多链接共享缓存）
+        if vid:
+            cached = get_video_cache_by_id(vid)
+            if cached and cached.get("status") == "completed":
+                # 命中缓存，直接返回（同时更新该 URL 的缓存记录）
+                print(f"[解析链接] 视频 ID 缓存命中，直接返回: video_id={vid}")
+                update_video_cache_restaurant(clean_url, cached.get("restaurant_id", ""), {
+                    "name": cached.get("restaurant_name", ""),
+                })
+                return {
+                    "status": "cached",
+                    "restaurant": _cache_to_restaurant(cached),
+                    "author_id": cached.get("author_id", ""),
+                    "message": "已从缓存加载",
+                    "is_background_running": False,
+                    "background_progress": None,
+                }
+
+        # 第三步：检查 URL 精确匹配（兜底）
         cached = get_video_cache_by_url(clean_url)
         if cached and cached.get("status") == "completed":
-            # 命中缓存，直接返回
-            author = get_author_by_douyin_id(
-                cached.get("author_id", "") if cached.get("author_id") else ""
-            )
-            if not author and cached.get("author_id"):
-                # 尝试从 authors 表查询
-                pass
             print(f"[解析链接] 视频地址缓存命中，直接返回: {clean_url}")
             return {
                 "status": "cached",
@@ -617,7 +685,8 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
                 "background_progress": None,
             }
 
-        # 第二步：解析抖音链接获取视频和博主信息
+        # 第四步：解析抖音链接获取视频和博主信息
+        # 优化1：parse_douyin_link 一次调用获取完整信息（基础+扩展+评论）
         video_info = await parse_douyin_link(raw_url)
         author_douyin_id = video_info.get("author_id", "")
         author_sec_uid = video_info.get("author_sec_uid", "")
@@ -627,16 +696,16 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             author_douyin_id = f"video_{vid}"
             print(f"[解析链接] 未获取到博主 ID，使用视频 ID 兜底: {author_douyin_id}")
 
-        # 第三步：检查该视频是否已解析过（用 video_id 判断）
+        # 第五步：再次检查 video_id 缓存（解析过程中可能其他请求已入库）
         video_cache_by_id = get_video_cache_by_id(vid)
         if video_cache_by_id and video_cache_by_id.get("status") == "completed":
             # 视频已解析过，但 URL 不同（比如同一个视频多个分享格式）
             # 更新该 URL 的缓存记录
             update_video_cache_restaurant(clean_url, video_cache_by_id["restaurant_id"],
                                           {"name": video_cache_by_id.get("restaurant_name", "")})
-            print(f"[解析链接] 视频 {vid} 已解析过（URL 不同），更新缓存")
+            print(f"[解析链接] 视频 {vid} 已解析过（解析中入库），更新缓存")
 
-        # 第四步：查询或创建博主记录
+        # 第六步：查询或创建博主记录
         existing_author = get_author_by_douyin_id(author_douyin_id)
         if existing_author:
             author_id = existing_author["id"]
@@ -650,7 +719,7 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             })
             author_id = author_record["id"]
 
-        # 第五步：为当前视频创建/更新缓存记录（parsing 状态）
+        # 第七步：为当前视频创建/更新缓存记录（parsing 状态）
         upsert_video_cache({
             "video_url": clean_url,
             "video_id": vid,
@@ -658,11 +727,11 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             "status": "parsing",
         })
 
-        # 第六步：快速解析当前视频（不获取评论，不等待其他视频）
+        # 第八步：快速解析当前视频（使用已获取的完整信息，不再单独调用）
         parse_result = await parse_single_video_fast(clean_url, video_info, author_id)
         restaurant = parse_result.get("restaurant")
 
-        # 第七步：建立博主-店铺关联（当前视频的店铺）
+        # 第九步：建立博主-店铺关联（当前视频的店铺）
         is_new_restaurant = False
         if restaurant:
             existing = get_restaurant_by_amap_id(restaurant["amap_id"])
@@ -682,11 +751,32 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             if restaurant_id:
                 link_author_restaurant(author_id, restaurant_id, vid)
 
-        # 第八步：自动关注博主
+        # 第十步：自动关注博主
         follow_author(req.user_id, author_id)
 
-        # 第九步：启动后台任务解析博主历史视频
-        # 已入库博主检查是否有未完成的后台任务；新博主直接创建任务
+        # 第十一步：启用/重新激活博主的自动更新检测（v2.4 新增）
+        # 逻辑：
+        # - 新博主：首次解析时自动启用
+        # - 已有博主但自动更新被关闭：如果当前视频识别出了美食店铺，重新激活
+        try:
+            from db import get_author_by_id
+            existing_author_record = get_author_by_id(author_id)
+            if existing_author_record:
+                auto_update_enabled = existing_author_record.get("auto_update_enabled", True)
+                if not auto_update_enabled and restaurant:
+                    # 自动更新被关闭，但当前视频识别出了店铺，说明博主仍在更新，重新激活
+                    enable_author_auto_update(author_id)
+                    print(f"[解析链接] 博主 {author_id} 自动更新已重新激活（发现新美食视频）")
+                elif auto_update_enabled is None:
+                    # 新博主（auto_update_enabled 为 NULL），首次解析时自动启用
+                    enable_author_auto_update(author_id)
+                    print(f"[解析链接] 新博主 {author_id} 自动更新已启用")
+        except Exception as e:
+            # 自动更新逻辑不应阻塞主流程
+            print(f"[解析链接] 自动更新启用出错: {e}")
+
+        # 第十二步：启动后台任务解析博主历史视频
+        # 优化3.3：冷却期检查 - 1 天内不重复扫描
         latest_task = get_latest_bg_task(author_id)
         should_start_bg = (
             latest_task is None  # 新博主，从未创建过后台任务
@@ -694,18 +784,22 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         )
         is_bg_running = False
         if should_start_bg and author_sec_uid:
-            background_tasks.add_task(
-                parse_author_all_videos_background,
-                author_id,
-                author_sec_uid,
-                vid,
-            )
-            is_bg_running = True
-            print(f"[解析链接] 已启动后台任务，异步解析博主 {author_id} 的历史视频")
+            # 冷却期检查
+            if is_author_in_cool_down(author_id, hours=24):
+                print(f"[解析链接] 博主 {author_id} 在冷却期内（24小时），跳过后台任务")
+            else:
+                background_tasks.add_task(
+                    parse_author_all_videos_background,
+                    author_id,
+                    author_sec_uid,
+                    vid,
+                )
+                is_bg_running = True
+                print(f"[解析链接] 已启动后台任务，异步解析博主 {author_id} 的历史视频")
         elif latest_task and latest_task.get("status") in ("pending", "running"):
             is_bg_running = True
 
-        # 第十步：返回结果
+        # 第十二步：返回结果
         return {
             "status": "parsed",
             "restaurant": restaurant,

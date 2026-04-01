@@ -325,3 +325,144 @@ def get_latest_bg_task(author_id: str) -> dict | None:
     )
     rows = result.data
     return rows[0] if rows else None
+
+
+def get_latest_bg_task_within_hours(author_id: str, hours: int = 24) -> dict | None:
+    """
+    获取博主最近 N 小时内创建的后台任务（用于冷却期判断，优化 3.3）。
+
+    如果存在未完成或最近创建的任务，说明在冷却期内，应跳过扫描。
+    """
+    from datetime import datetime, timedelta, timezone
+
+    # 计算截止时间
+    cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    result = (
+        supabase.table("author_background_tasks")
+        .select("*")
+        .eq("author_id", author_id)
+        .gte("created_at", cutoff_time.isoformat())  # 大于等于截止时间
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data
+    return rows[0] if rows else None
+
+
+def is_author_in_cool_down(author_id: str, hours: int = 24) -> bool:
+    """
+    检查博主是否在扫描冷却期内（优化 3.3）。
+
+    返回 True 表示在冷却期内（应跳过扫描），返回 False 表示可以扫描。
+    """
+    recent_task = get_latest_bg_task_within_hours(author_id, hours)
+    if not recent_task:
+        return False
+
+    # 如果最近任务是 pending 或 running，说明有任务正在执行或等待执行
+    # 如果最近任务是 completed 或 failed，看创建时间
+    status = recent_task.get("status", "")
+    if status in ("pending", "running"):
+        return True
+
+    # completed 或 failed 的任务，检查创建时间是否在冷却期内
+    created_at = recent_task.get("created_at", "")
+    if not created_at:
+        return False
+
+    from datetime import datetime, timedelta, timezone
+    try:
+        # 解析时间（处理 ISO 格式）
+        if isinstance(created_at, str):
+            # 尝试解析 ISO 格式时间
+            if created_at.endswith("Z"):
+                created_at = created_at[:-1] + "+00:00"
+            task_time = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+        else:
+            task_time = created_at
+
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=hours)
+        return task_time > cutoff_time
+    except Exception:
+        # 解析失败，保守处理为不在冷却期内
+        return False
+
+
+# ─────────────────────────────────────────
+# 博主自动更新检测相关操作（v2.4 新增）
+# ─────────────────────────────────────────
+
+def get_author_by_id(author_id: str) -> dict | None:
+    """根据 author_id 获取博主信息"""
+    result = supabase.table("authors").select("*").eq("id", author_id).execute()
+    rows = result.data
+    return rows[0] if rows else None
+
+
+def get_authors_with_auto_update_enabled(limit: int = 50) -> list[dict]:
+    """
+    获取所有启用了自动更新检测的博主
+
+    用于定时任务，遍历所有需要检测的博主
+    """
+    result = (
+        supabase.table("authors")
+        .select("*")
+        .eq("auto_update_enabled", True)
+        .not_is("sec_uid", "null")  # 必须有 sec_uid 才能获取视频列表
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def update_author_auto_check_time(author_id: str) -> dict:
+    """更新博主的上次自动检测时间"""
+    result = supabase.table("authors").update({
+        "last_update_check": "now()",
+    }).eq("id", author_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def increment_no_new_food_video_days(author_id: str) -> dict:
+    """增加博主连续无新美食视频天数"""
+    # 先获取当前值
+    author = get_author_by_id(author_id)
+    if author:
+        current_days = author.get("no_new_food_video_days", 0)
+        result = supabase.table("authors").update({
+            "no_new_food_video_days": current_days + 1,
+        }).eq("id", author_id).execute()
+        return result.data[0] if result.data else {}
+    return {}
+
+
+def reset_no_new_food_video_days(author_id: str) -> dict:
+    """重置博主连续无新美食视频天数为 0"""
+    result = supabase.table("authors").update({
+        "no_new_food_video_days": 0,
+    }).eq("id", author_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def disable_author_auto_update(author_id: str) -> dict:
+    """关闭博主的自动更新检测"""
+    result = supabase.table("authors").update({
+        "auto_update_enabled": False,
+    }).eq("id", author_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def enable_author_auto_update(author_id: str) -> dict:
+    """
+    启用博主的自动更新检测
+
+    用于重新激活：用户手动提交该博主的新视频链接时触发
+    """
+    result = supabase.table("authors").update({
+        "auto_update_enabled": True,
+        "no_new_food_video_days": 0,  # 重置天数
+    }).eq("id", author_id).execute()
+    return result.data[0] if result.data else {}
