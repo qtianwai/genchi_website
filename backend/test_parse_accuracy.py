@@ -6,8 +6,8 @@
 
 import asyncio
 import sys
-from douyin_parser import parse_douyin_link, fetch_video_detail_extra
-from ai_extractor import extract_restaurants_priority, extract_restaurants_from_video
+from douyin_parser import parse_douyin_link, fetch_video_detail_extra, poll_comment_replies_for_confidence
+from ai_extractor import extract_restaurants_priority, extract_restaurants_with_replies
 from amap_service import batch_search_restaurants
 
 # 测试用例（从测试验证数据文件提取）
@@ -167,6 +167,7 @@ async def test_single_video(case: dict) -> dict:
         author_liked_comments = extra.get("author_liked_comments", [])
         hot_comments = extra.get("hot_comments", [])
         all_comments = extra.get("all_comments", [])
+        hot_comments_raw = extra.get("hot_comments_raw", [])
 
         print(f"\n[扩展信息]")
         print(f"  话题标签: {hashtags}")
@@ -187,6 +188,38 @@ async def test_single_video(case: dict) -> dict:
             all_comments=all_comments,
         )
 
+        # 第四步（v2.4）：置信度 medium 或未识别到时，调用评论回复接口补充信息
+        # 与 main.py 保持一致，但测试脚本不做每日限额控制
+        confidence = restaurants[0].get("confidence") if restaurants else "none"
+        if confidence in ("medium", "none"):
+            print(f"\n[评论回复] 置信度={confidence}，尝试获取评论回复补充信息...")
+            reply_data = await poll_comment_replies_for_confidence(
+                hot_comments_raw=hot_comments_raw,
+                author_uid=author_id,
+                max_polls=3,
+            )
+            if reply_data.get("polled_replies"):
+                print(f"[评论回复] 获取到回复，重新调用 AI 提取...")
+                restaurants_with_replies = await extract_restaurants_with_replies(
+                    video_title=title,
+                    author_name=author_name,
+                    hashtags=hashtags,
+                    city_name=city_name,
+                    author_liked_comments=author_liked_comments,
+                    hot_comments=hot_comments,
+                    all_comments=all_comments,
+                    polled_replies=reply_data.get("polled_replies", []),
+                )
+                # 带回复的结果优先（无论置信度，只要有结果就采用）
+                if restaurants_with_replies:
+                    print(f"[评论回复] 带回复算法识别到店铺，采用新结果")
+                    restaurants = restaurants_with_replies
+                elif not restaurants:
+                    # 带回复也没识别到，保持空
+                    pass
+            else:
+                print(f"[评论回复] 未获取到有效回复")
+
         if not restaurants:
             print(f"\n[AI 提取] 未识别到店铺")
             result["parsed_name"] = None
@@ -203,7 +236,7 @@ async def test_single_video(case: dict) -> dict:
             print(f"  城市: {result['parsed_city']}")
             print(f"  置信度: {result['confidence']}")
 
-            # 第四步：高德地图搜索验证
+            # 第五步：高德地图搜索验证
             amap_results = await batch_search_restaurants(restaurants)
             if amap_results:
                 amap_result = amap_results[0]

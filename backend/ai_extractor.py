@@ -225,6 +225,24 @@ async def extract_restaurants_priority(
 
 只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 null。
 
+=== 反例示范（这些情况必须返回 null）===
+
+反例1 - 标题描述当店铺名（错误做法）：
+  标题：婆罗门云集的老成都冒烤鸭，紧实的鸭肉裹着淡淡的卤水香
+  错误输出：{{"name": "婆罗门云集的老成都冒烤鸭", ...}}  ← 这是标题描述，不是店铺名！
+  正确输出：null  ← 标题只描述了食物，没有具体店铺名
+
+反例2 - 话题标签人名当店铺名（错误做法）：
+  标题：上海这家烧烤摊一般人根本吃不到！
+  话题标签：#上海探店 #乔妹妹 #上海夜宵 #云南烧烤
+  错误输出：{{"name": "乔妹妹云南烧烤", ...}}  ← "乔妹妹"是人名标签，不是店铺名！
+  正确输出：null  ← 话题标签中的人名不能拼接成店铺名
+
+正例 - 话题标签中的真实店铺名：
+  标题：新的普陀之光诞生了！#上海探店 #悦来芳 #上海话
+  正确输出：{{"name": "悦来芳", "city": "上海", "category": "餐厅", "confidence": "high"}}  ← "悦来芳"是真实店铺名（专有名词，非人名/食物名）
+
+=== 正式输出 ===
 示例格式：
 {{"name": "最山城不改良重庆火锅（人民广场店）", "city": "上海", "category": "火锅", "confidence": "high"}}"""
 
@@ -236,7 +254,7 @@ async def extract_restaurants_priority(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=300,
+            max_tokens=400,
         )
 
         result_text = response.choices[0].message.content.strip()
@@ -386,6 +404,24 @@ async def extract_restaurants_with_replies(
 
 只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 null。
 
+=== 反例示范（这些情况必须返回 null）===
+
+反例1 - 标题描述当店铺名（错误做法）：
+  标题：婆罗门云集的老成都冒烤鸭，紧实的鸭肉裹着淡淡的卤水香
+  错误输出：{{"name": "婆罗门云集的老成都冒烤鸭", ...}}  ← 这是标题描述，不是店铺名！
+  正确输出：null  ← 标题只描述了食物，没有具体店铺名
+
+反例2 - 话题标签人名当店铺名（错误做法）：
+  标题：上海这家烧烤摊一般人根本吃不到！
+  话题标签：#上海探店 #乔妹妹 #上海夜宵 #云南烧烤
+  错误输出：{{"name": "乔妹妹云南烧烤", ...}}  ← "乔妹妹"是人名标签，不是店铺名！
+  正确输出：null  ← 话题标签中的人名不能拼接成店铺名
+
+正例 - 话题标签中的真实店铺名：
+  标题：新的普陀之光诞生了！#上海探店 #悦来芳 #上海话
+  正确输出：{{"name": "悦来芳", "city": "上海", "category": "餐厅", "confidence": "high"}}  ← "悦来芳"是真实店铺名（专有名词，非人名/食物名）
+
+=== 正式输出 ===
 示例格式：
 {{"name": "最山城不改良重庆火锅（人民广场店）", "city": "上海", "category": "火锅", "confidence": "high"}}"""
 
@@ -397,7 +433,7 @@ async def extract_restaurants_with_replies(
                 {"role": "user", "content": prompt},
             ],
             temperature=0.1,
-            max_tokens=300,
+            max_tokens=400,
         )
 
         result_text = response.choices[0].message.content.strip()
