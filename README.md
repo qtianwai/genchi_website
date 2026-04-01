@@ -622,3 +622,201 @@ python main.py
 2. 多源验证：结合大众点评、美团等平台数据交叉验证
 3. 用户反馈：增加"识别错误"反馈按钮，持续优化算法
 4. 缓存预热：热门博主的视频提前解析，减少用户等待时间
+
+---
+
+## 会话记录 2026-04-01（第三轮）
+
+### 主要目的
+提交 v2.0 优化代码到 Railway，并基于测试验证数据对当前解析算法进行准确率验证，生成识别结果报告和优化方案。
+
+### 完成的主要任务
+1. 提交并推送 v2.0 优化代码（触发 Railway 自动部署）
+2. 编写测试脚本 `backend/test_parse_accuracy.py`，对 16 个测试用例逐一验证
+3. 生成《解析算法准确率测试报告.md》，记录每条用例的识别结果和失败原因
+4. 生成《解析算法优化方案.md》，提出 5 个优化方向，等待用户确认后实施
+
+### 关键发现
+- 当前准确率：**25%（4/16）**
+- 4 个成功：示例 2（南宁二十四味）、9（尤兔头）、12（陈桥老饭店）、14（悦来芳）
+- 12 个失败，主要原因：
+  - AI 过度识别（应为空却强行给结果）：3 例
+  - 非美食视频未过滤：2 例
+  - 博主自己的回复评论未被获取：3 例
+  - AI 识别食物名而非店铺名：3 例
+  - 城市编码不可靠：2 例
+
+### 优化方案（待确认）
+| 方案 | 内容 | 预期收益 |
+|------|------|---------|
+| A | 非美食视频过滤 | 避免脏数据入库 |
+| B | 强化"不确定返回 null" | 减少过度识别 |
+| C | 获取博主自己发布的评论 | 命中最权威信息 |
+| D | 区分店铺名与食物名 | 提升识别精度 |
+| E | 城市信息降级策略 | 改善搜索范围 |
+
+优化后预期准确率：**69%~81%**
+
+### 修改的文件
+- `backend/test_parse_accuracy.py`（新增，测试脚本）
+- `需求文档&技术方案/解析算法准确率测试报告.md`（新增）
+- `需求文档&技术方案/解析算法优化方案.md`（新增）
+
+---
+
+## 会话记录 2026-04-01：新增微信登录功能
+
+### 主要目的
+在现有手机号登录基础上，新增微信授权登录方式，提升用户登录体验。
+
+### 完成的主要任务
+
+#### 1. 后端新增微信登录 API
+- `backend/main.py` 新增 `POST /api/auth/wechat-login` 接口
+- 接收 iOS 端传来的微信授权 code
+- 调用微信 API 换取 access_token 和 openid
+- 用 openid 生成确定性 user_id（UUID v5）
+- 返回 user_id 和 access_token
+
+#### 2. iOS 端集成微信 SDK
+- 新建 `WechatAuthManager.swift`：封装微信 SDK 调用逻辑
+- 实现微信授权流程：发起授权 → 获取 code → 回调处理
+- 支持检测微信是否已安装
+- 预留 WXApiDelegate 实现（待集成 SDK 后取消注释）
+
+#### 3. iOS 登录页面优化
+- `LoginView.swift` 新增微信登录按钮（微信绿色主题）
+- 新增分隔线"或"，区分手机号登录和微信登录
+- 新增微信登录加载状态管理
+- 实现 `handleWechatLogin()` 函数，调用微信授权并发送 code 到后端
+
+#### 4. AuthState 新增微信登录方法
+- `AuthState.swift` 新增 `signInWithWechat(code:)` 方法
+- 调用后端 `/api/auth/wechat-login` 接口
+- 成功后保存 user_id 到本地，更新登录状态
+- 新增 `AuthError.wechatLoginFailed` 错误类型
+
+#### 5. 配置文件更新
+- `Info.plist` 新增微信 URL Scheme 配置（`CFBundleURLTypes`）
+- `Info.plist` 新增微信白名单（`LSApplicationQueriesSchemes`）
+- `FoodMapApp.swift` 在 App 启动时注册微信 SDK
+- `backend/.env` 新增微信配置项（`WECHAT_APP_ID`、`WECHAT_APP_SECRET`）
+
+#### 6. 配置文档
+- 新建 `帮助文档/微信登录配置指南.md`：完整的微信开放平台申请和配置步骤
+- 包含 iOS 端配置、后端配置、常见问题、安全建议等
+
+### 关键决策和解决方案
+
+**微信登录流程设计**：
+1. iOS 调用微信 SDK 发起授权
+2. 微信返回 code（一次性有效）
+3. iOS 把 code 发给后端
+4. 后端用 code 换取 openid
+5. 后端用 openid 生成确定性 user_id
+6. 返回 user_id，iOS 保存并完成登录
+
+**user_id 生成策略**：
+- 手机号登录：`uuid.uuid5(namespace, f"phone:{phone}")`
+- 微信登录：`uuid.uuid5(namespace, f"wechat:{openid}")`
+- 同一账号永远对应同一 user_id，无需用户表
+
+**配置占位符策略**：
+- 所有配置项使用 `YOUR_WECHAT_APP_ID` 等占位符
+- 代码框架完整，用户申请微信开放平台后直接替换即可
+- 微信 SDK 相关代码用 `// TODO: 集成微信 SDK 后取消注释` 标记
+
+**降级处理**：
+- 后端未配置微信密钥时，返回友好错误提示
+- iOS 端未安装微信时，提示用户先安装微信客户端
+- 微信 SDK 未集成时，返回"SDK 尚未集成"错误
+
+### 使用的技术栈
+- 后端：FastAPI + httpx（调用微信 API）
+- iOS：SwiftUI + 微信 OpenSDK（待集成）
+- 认证：微信开放平台 OAuth 2.0
+
+### 修改的文件
+- `backend/main.py`：新增微信登录接口和请求模型
+- `backend/.env`：新增微信配置项
+- `ios/FoodMap/genchi/genchi/Services/WechatAuthManager.swift`（新建）：微信登录管理类
+- `ios/FoodMap/genchi/genchi/Services/AuthState.swift`：新增微信登录方法
+- `ios/FoodMap/genchi/genchi/Views/LoginView.swift`：新增微信登录按钮和处理逻辑
+- `ios/FoodMap/genchi/genchi/FoodMapApp.swift`：注册微信 SDK
+- `ios/FoodMap/genchi/genchi/Info.plist`：新增微信 URL Scheme 和白名单
+- `帮助文档/微信登录配置指南.md`（新建）：完整配置文档
+
+### 待完成事项
+1. 在微信开放平台申请移动应用，获取 AppID 和 AppSecret
+2. 替换所有 `YOUR_WECHAT_APP_ID` 占位符为真实值
+3. 通过 CocoaPods 或 SPM 集成微信 OpenSDK
+4. 取消 `WechatAuthManager.swift` 中所有 `// TODO` 注释
+5. 配置 Universal Link（iOS 9+ 必需）
+6. 测试完整登录流程
+
+---
+
+---
+
+## 会话记录 2026-04-01（第四轮）
+
+### 主要目的
+接入评论回复接口（`/api/douyin/get-video-sub-comment/v1`），在置信度 medium 时补充调用，提升店铺识别准确率，同时控制成本。
+
+### 完成的主要任务
+1. 新增评论回复分级调用策略（置信度 medium 才触发，high 直接跳过）
+2. 新增美食相关性过滤（只对含店铺关键词的评论获取回复）
+3. 新增轮询逻辑（找到博主确认即停止，单视频最多 3 次）
+4. 新增每日调用上限（`COMMENT_REPLY_DAILY_LIMIT`，默认 100 次，Railway 可配置）
+5. 更新技术方案文档和优化方案文档
+
+### 关键设计决策
+- 置信度 high → 不调用评论回复（节省成本）
+- 置信度 medium → 调用评论回复（最多 3 次轮询）
+- 评论回复作为 P0 最高优先级传给 AI
+- 每日上限内存计数，服务重启后重置
+
+### 修改的文件
+- `backend/douyin_parser.py`：新增 `fetch_comment_replies`、`is_food_related_comment`、`poll_comment_replies_for_confidence`；`fetch_video_detail_extra` 新增 `hot_comments_raw` 字段（含 cid）
+- `backend/ai_extractor.py`：新增 `extract_restaurants_with_replies`（P0 优先级含博主回复）
+- `backend/main.py`：新增 `can_call_comment_reply`、`increment_comment_reply_calls`；快速路径和后台任务均集成评论回复逻辑；新增 `COMMENT_REPLY_DAILY_LIMIT` 环境变量读取
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`：新增 v2.1 版本记录，更新配置项说明
+
+---
+
+## 会话记录 2026-04-01（第五轮）
+
+### 主要目的
+实施解析算法优化方案 A/B/D/E，通过 AI Prompt 优化和城市提取逻辑改进，全面提升店铺识别准确率。
+
+### 完成的主要任务
+1. **方案 A（非美食视频过滤）**：在 Prompt 第一步判断是否为美食探店视频，非美食视频直接返回 null
+2. **方案 B（强化不确定时返回 null）**：明确 5 种必须返回 null 的情况（多候选店铺、只有食物品类、人名地名误判等）
+3. **方案 D（区分店铺名与食物名）**：新增店铺名识别规则，明确食物品类描述、地名+食物、人名不是店铺名
+4. **方案 E（城市信息降级策略）**：优先从标题和话题标签提取城市，city_code 仅作兜底，扩展城市列表到 100+ 个
+5. 同时更新 `extract_restaurants_priority` 和 `extract_restaurants_with_replies` 两个函数的 Prompt
+6. 更新技术方案文档和优化方案文档
+
+### 关键设计决策
+- 所有优化均为 Prompt 和逻辑调整，无新增 API 调用，不增加成本
+- 城市提取优先级：标题城市 > 标签城市 > city_code 城市
+- 城市列表扩展到 100+ 个，覆盖直辖市、省会、重点城市及常见美食城市（如郫县）
+- AI Prompt 增加明确的"必须返回 null"条件，减少过度识别
+
+### 使用的技术栈
+- AI Prompt 工程：通义千问 qwen-plus
+- 城市提取：正则匹配 + 优先级策略
+
+### 修改的文件
+- `backend/ai_extractor.py`：优化 `extract_restaurants_priority` 和 `extract_restaurants_with_replies` 的 Prompt（方案 A/B/D）
+- `backend/douyin_parser.py`：`fetch_video_detail_extra` 新增城市降级策略（方案 E），从标题和话题标签提取城市，扩展城市列表到 100+ 个
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`：新增 v2.2 版本记录
+- `需求文档&技术方案/解析算法优化方案.md`：标记方案 A/B/D/E 为已实现，新增 v2.2 实施总结
+
+### 预期效果
+- 店铺识别准确率从 25% 提升到 69-81%
+- 减少非美食视频脏数据入库
+- 减少过度识别（应为空却强行给结果）
+- 提升城市识别覆盖率到 90%+
+- 减少食物名误判为店铺名
+- `需求文档&技术方案/解析算法优化方案.md`：标记方案 C 已实现，更新实施顺序

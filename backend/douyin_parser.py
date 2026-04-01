@@ -274,12 +274,61 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
         "441900": "东莞", "442000": "中山", "445100": "潮州", "445200": "揭阳",
         "510700": "绵阳", "511100": "乐山", "610200": "铜川", "610300": "宝鸡",
     }
-    city_name = city_map.get(city_code, "未知" if not city_code or city_code == "0" else city_code)
+    city_name_from_code = city_map.get(city_code, "未知" if not city_code or city_code == "0" else city_code)
+
+    # 方案 E：从标题和话题标签中提取城市（优先级高于 city_code）
+    # 原因：city_code 是博主注册城市，不一定是视频拍摄城市
+    CITY_NAMES = [
+        # 直辖市
+        "北京", "天津", "上海", "重庆",
+        # 省会城市
+        "石家庄", "太原", "呼和浩特", "沈阳", "长春", "哈尔滨",
+        "南京", "杭州", "合肥", "福州", "南昌", "济南",
+        "郑州", "武汉", "长沙", "广州", "南宁", "海口",
+        "成都", "贵阳", "昆明", "拉萨", "西安", "兰州",
+        "西宁", "银川", "乌鲁木齐",
+        # 重点城市
+        "深圳", "苏州", "宁波", "厦门", "青岛", "珠海",
+        "佛山", "惠州", "东莞", "中山", "潮州", "揭阳",
+        "绵阳", "乐山", "宝鸡", "常州", "无锡", "温州",
+        "嘉兴", "金华", "台州", "泉州", "漳州", "赣州",
+        "烟台", "威海", "济宁", "临沂", "洛阳", "南阳",
+        "宜昌", "襄阳", "株洲", "湘潭", "衡阳", "汕头",
+        "江门", "湛江", "茂名", "肇庆", "清远", "梅州",
+        "遵义", "大理", "丽江", "桂林", "柳州", "北海",
+        "三亚", "海南", "西双版纳", "德宏",
+        "大连", "鞍山", "抚顺", "本溪", "丹东",
+        "哈尔滨", "齐齐哈尔", "牡丹江", "佳木斯",
+        "包头", "鄂尔多斯", "呼伦贝尔",
+        "唐山", "保定", "邯郸", "秦皇岛",
+        "运城", "大同", "晋城",
+        "徐州", "南通", "连云港", "淮安", "盐城", "扬州", "镇江", "泰州",
+        "芜湖", "马鞍山", "安庆", "黄山",
+        "郫县", "郫都",  # 成都下辖区，常见于美食视频
+    ]
+    # 先从标题中查找城市名
+    video_title_for_city = aweme.get("desc", "")
+    title_city = next((c for c in CITY_NAMES if c in video_title_for_city), None)
+    # 再从话题标签中查找城市名（如果标题没找到）
+    tag_city = None
+    if not title_city:
+        for tag in hashtags:
+            tag_city = next((c for c in CITY_NAMES if c in tag), None)
+            if tag_city:
+                break
+    # 优先级：标题城市 > 标签城市 > city_code 城市
+    city_name = title_city or tag_city or city_name_from_code
+    if title_city:
+        print(f"[抖音解析] 城市来源：标题（{title_city}），city_code 城市={city_name_from_code}")
+    elif tag_city:
+        print(f"[抖音解析] 城市来源：话题标签（{tag_city}），city_code 城市={city_name_from_code}")
 
     # 获取博主点赞的评论（通过评论接口的 is_author_digged 字段）
     author_liked_comments = []
     hot_comments = []
     all_comments = []
+    # 热门评论的完整原始数据（含 cid），供后续评论回复轮询使用
+    hot_comments_raw = []
 
     comments_result = await _aget(
         "/api/douyin/get-video-comment/v1",
@@ -301,13 +350,19 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
             if c.get("is_author_digged"):
                 author_liked_comments.append(comment_data)
 
-            # 热门评论：P2 次优先级
+            # 热门评论：P2 次优先级，同时保留 cid 供回复轮询使用
             if c.get("is_hot"):
                 hot_comments.append(comment_data)
+                hot_comments_raw.append({
+                    "cid": c.get("cid", ""),
+                    "text": text,
+                    "digg_count": digg,
+                })
 
         # 按点赞数降序排列
         author_liked_comments.sort(key=lambda x: x["digg_count"], reverse=True)
         hot_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        hot_comments_raw.sort(key=lambda x: x["digg_count"], reverse=True)
         all_comments.sort(key=lambda x: x["digg_count"], reverse=True)
 
     print(f"[抖音解析] 视频扩展信息: 话题={hashtags}, 城市={city_name}, "
@@ -319,5 +374,160 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
         "city_name": city_name,
         "author_liked_comments": author_liked_comments,
         "hot_comments": hot_comments,
+        "hot_comments_raw": hot_comments_raw,  # 含 cid，供评论回复轮询使用
         "all_comments": all_comments,
+    }
+
+
+async def fetch_comment_replies(comment_id: str, author_uid: str = "") -> dict:
+    """
+    获取某条评论的回复列表（评论回复接口）
+
+    返回字段：
+    - replies: 回复列表 [{"text": "...", "digg_count": 0, "is_author": False}, ...]
+    - has_author_reply: 是否有博主回复
+    - author_reply_text: 博主回复内容（如果有）
+    """
+    result = await _aget(
+        "/api/douyin/get-video-sub-comment/v1",
+        {"commentId": comment_id, "page": 1},
+    )
+
+    if result.get("code") != 0:
+        print(f"[评论回复] 获取失败: {result.get('message')} (code={result.get('code')})")
+        return {"replies": [], "has_author_reply": False, "author_reply_text": ""}
+
+    raw_replies = (result.get("data") or {}).get("comments", []) or []
+    replies = []
+    has_author_reply = False
+    author_reply_text = ""
+
+    for r in raw_replies:
+        text = r.get("text", "")
+        if not text:
+            continue
+
+        reply_user_uid = str(r.get("user", {}).get("uid", ""))
+        is_author = (reply_user_uid == author_uid) if author_uid else False
+
+        replies.append({
+            "text": text,
+            "digg_count": r.get("digg_count", 0),
+            "is_author": is_author,
+        })
+
+        if is_author:
+            has_author_reply = True
+            author_reply_text = text
+
+    print(f"[评论回复] 获取到 {len(replies)} 条回复，博主回复={has_author_reply}")
+    return {
+        "replies": replies,
+        "has_author_reply": has_author_reply,
+        "author_reply_text": author_reply_text,
+    }
+
+
+def is_food_related_comment(comment_text: str) -> bool:
+    """
+    判断评论是否与美食店铺相关
+
+    策略：评论中包含以下关键词之一，认为与店铺相关：
+    - 店铺名相关：店、馆、家、坊、轩、阁、楼、居、苑、记、号
+    - 地点相关：哪里、在哪、地址、位置、路、街、区、市
+    - 询问相关：叫什么、什么店、店名、哪家
+    """
+    keywords = [
+        "店", "馆", "家", "坊", "轩", "阁", "楼", "居", "苑", "记", "号",
+        "哪里", "在哪", "地址", "位置", "路", "街", "区", "市",
+        "叫什么", "什么店", "店名", "哪家", "名字",
+    ]
+    return any(kw in comment_text for kw in keywords)
+
+
+async def poll_comment_replies_for_confidence(
+    hot_comments_raw: list[dict],
+    author_uid: str,
+    max_polls: int = 3,
+) -> dict:
+    """
+    轮询热门评论的回复，直到找到博主确认或置信度提升的信息
+
+    策略：
+    1. 只轮询与美食店铺相关的热门评论（通过关键词过滤）
+    2. 优先轮询点赞数高的评论
+    3. 如果找到博主回复且内容与店铺相关，立即返回
+    4. 最多轮询 max_polls 次（默认 3 次），控制成本
+
+    返回：
+    - polled_replies: 所有轮询到的回复 [{"comment_text": "...", "replies": [...]}]
+    - has_author_confirmation: 是否找到博主确认
+    - author_confirmation_text: 博主确认内容
+    - polls_used: 实际轮询次数
+    """
+    polled_replies = []
+    has_author_confirmation = False
+    author_confirmation_text = ""
+    polls_used = 0
+
+    # 过滤出与美食店铺相关的热门评论
+    food_related_comments = [
+        c for c in hot_comments_raw
+        if is_food_related_comment(c.get("text", ""))
+    ]
+
+    if not food_related_comments:
+        print("[评论回复轮询] 无美食相关评论，跳过轮询")
+        return {
+            "polled_replies": [],
+            "has_author_confirmation": False,
+            "author_confirmation_text": "",
+            "polls_used": 0,
+        }
+
+    print(f"[评论回复轮询] 找到 {len(food_related_comments)} 条美食相关评论，开始轮询（最多 {max_polls} 次）")
+
+    for comment in food_related_comments[:max_polls]:
+        cid = comment.get("cid", "")
+        comment_text = comment.get("text", "")
+
+        if not cid:
+            continue
+
+        # 调用评论回复接口
+        reply_data = await fetch_comment_replies(cid, author_uid)
+        polls_used += 1
+
+        polled_replies.append({
+            "comment_text": comment_text,
+            "replies": reply_data.get("replies", []),
+        })
+
+        # 检查是否有博主回复
+        if reply_data.get("has_author_reply"):
+            author_reply = reply_data.get("author_reply_text", "")
+            # 博主回复内容与店铺相关（包含店名关键词或肯定表达）
+            if is_food_related_comment(author_reply) or any(
+                kw in author_reply for kw in ["是的", "对", "没错", "就是", "嗯", "对的"]
+            ):
+                has_author_confirmation = True
+                author_confirmation_text = author_reply
+                print(f"[评论回复轮询] 找到博主确认: {author_reply[:50]}")
+                break  # 找到博主确认，立即停止轮询
+
+        # 检查回复中是否有高赞确认（网友确认）
+        high_digg_replies = [
+            r for r in reply_data.get("replies", [])
+            if r.get("digg_count", 0) >= 10
+        ]
+        if high_digg_replies:
+            print(f"[评论回复轮询] 找到 {len(high_digg_replies)} 条高赞回复")
+
+    print(f"[评论回复轮询] 完成，轮询次数={polls_used}，博主确认={has_author_confirmation}")
+
+    return {
+        "polled_replies": polled_replies,
+        "has_author_confirmation": has_author_confirmation,
+        "author_confirmation_text": author_confirmation_text,
+        "polls_used": polls_used,
     }

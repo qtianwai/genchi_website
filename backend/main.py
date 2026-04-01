@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text
-from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, poll_comment_replies_for_confidence
+from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies
 from amap_service import batch_search_restaurants
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
@@ -35,6 +35,31 @@ load_dotenv()
 # 读取调试模式配置
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 DEBUG_MAX_VIDEOS = int(os.getenv("DEBUG_MAX_VIDEOS", "5"))
+
+# 读取评论回复调用限制配置
+COMMENT_REPLY_DAILY_LIMIT = int(os.getenv("COMMENT_REPLY_DAILY_LIMIT", "100"))
+
+# 全局计数器：评论回复接口每日调用次数（内存存储，重启后重置）
+_comment_reply_calls_today = 0
+_comment_reply_calls_date = datetime.now().date()
+
+def can_call_comment_reply() -> bool:
+    """检查今日是否还能调用评论回复接口"""
+    global _comment_reply_calls_today, _comment_reply_calls_date
+
+    # 检查日期是否变化，变化则重置计数器
+    today = datetime.now().date()
+    if today != _comment_reply_calls_date:
+        _comment_reply_calls_today = 0
+        _comment_reply_calls_date = today
+
+    return _comment_reply_calls_today < COMMENT_REPLY_DAILY_LIMIT
+
+def increment_comment_reply_calls(count: int = 1):
+    """增加评论回复调用次数"""
+    global _comment_reply_calls_today
+    _comment_reply_calls_today += count
+    print(f"[评论回复限制] 今日已调用 {_comment_reply_calls_today}/{COMMENT_REPLY_DAILY_LIMIT} 次")
 
 app = FastAPI(title="跟吃 API", version="1.0.0")
 
@@ -76,6 +101,9 @@ class ManualAddRestaurantRequest(BaseModel):
     restaurant_name: str    # 店铺名称
     city: str               # 所在城市
     category: str = ""      # 美食分类（可选）
+
+class WechatLoginRequest(BaseModel):
+    code: str               # 微信授权后返回的 code
 
 
 # ─────────────────────────────────────────
@@ -138,6 +166,87 @@ async def verify_otp(req: VerifyOTPRequest):
     }
 
 
+@app.post("/api/auth/wechat-login")
+async def wechat_login(req: WechatLoginRequest):
+    """
+    微信登录接口
+
+    流程：
+    1. iOS 端调用微信 SDK 获取 code
+    2. 后端用 code 换取 access_token 和 openid
+    3. 用 openid 生成确定性 user_id
+    4. 返回 user_id 和 access_token
+
+    配置：需要在 .env 中配置 WECHAT_APP_ID 和 WECHAT_APP_SECRET
+    """
+    import httpx
+
+    code = req.code.strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="微信授权码不能为空")
+
+    # 从环境变量读取微信配置
+    wechat_app_id = os.getenv("WECHAT_APP_ID", "")
+    wechat_app_secret = os.getenv("WECHAT_APP_SECRET", "")
+
+    if not wechat_app_id or not wechat_app_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="服务器未配置微信登录，请联系管理员"
+        )
+
+    # 调用微信接口换取 access_token 和 openid
+    wechat_url = "https://api.weixin.qq.com/sns/oauth2/access_token"
+    params = {
+        "appid": wechat_app_id,
+        "secret": wechat_app_secret,
+        "code": code,
+        "grant_type": "authorization_code",
+    }
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(wechat_url, params=params, timeout=10)
+            result = response.json()
+
+            # 检查微信接口返回的错误
+            if "errcode" in result:
+                error_msg = result.get("errmsg", "未知错误")
+                print(f"[微信登录] 微信接口返回错误: {result}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"微信登录失败: {error_msg}"
+                )
+
+            # 获取 openid
+            openid = result.get("openid", "")
+            if not openid:
+                raise HTTPException(status_code=400, detail="微信登录失败：未获取到用户标识")
+
+            # 用 openid 生成确定性 user_id（与手机号登录类似）
+            import uuid
+            namespace = uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8")
+            user_id = str(uuid.uuid5(namespace, f"wechat:{openid}"))
+
+            # 生成 access_token（简化版，直接用 user_id）
+            access_token = user_id
+
+            return {
+                "status": "ok",
+                "user_id": user_id,
+                "access_token": access_token,
+            }
+
+    except httpx.RequestError as e:
+        print(f"[微信登录] 网络请求失败: {e}")
+        raise HTTPException(status_code=500, detail="微信登录失败：网络错误")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[微信登录] 未知错误: {e}")
+        raise HTTPException(status_code=500, detail=f"微信登录失败: {str(e)}")
+
+
 # ─────────────────────────────────────────
 # 核心功能：解析抖音链接（重构版）
 # 核心策略：用户提交链接后，优先解析当前视频快速返回，
@@ -191,8 +300,7 @@ async def parse_single_video_fast(
     快速解析单个视频的核心逻辑（优化版：获取评论和扩展信息以提升识别率）
     用于 parse_link 主流程，平衡速度和准确性
 
-    注意：fetch_video_detail_extra 内部已经调用了评论接口并返回 all_comments，
-    无需再单独调用 fetch_video_comments，避免重复 API 请求。
+    新增：置信度 medium 时，调用评论回复接口补充信息（成本控制）
     """
     vid = video_info.get("video_id", "")
     title = video_info.get("title", "")
@@ -206,8 +314,9 @@ async def parse_single_video_fast(
     author_liked_comments = extra.get("author_liked_comments", [])
     hot_comments = extra.get("hot_comments", [])
     all_comments = extra.get("all_comments", [])
+    hot_comments_raw = extra.get("hot_comments_raw", [])
 
-    # 调用 AI 提取店铺（使用完整信息，提升识别率）
+    # 第一次 AI 提取（使用完整信息，提升识别率）
     extracted = await extract_restaurants_priority(
         video_title=title,
         author_name=author_name,
@@ -225,6 +334,37 @@ async def parse_single_video_fast(
             comments=all_comments,
             author_name=author_name,
         )
+
+    # 置信度判断：medium 时调用评论回复接口补充信息
+    if extracted and extracted[0].get("confidence") == "medium":
+        if can_call_comment_reply():
+            print(f"[解析策略] 置信度 medium，调用评论回复接口补充信息")
+            # 轮询热门评论的回复（最多 3 次）
+            reply_data = await poll_comment_replies_for_confidence(
+                hot_comments_raw=hot_comments_raw,
+                author_uid=author_id,
+                max_polls=3,
+            )
+            increment_comment_reply_calls(reply_data.get("polls_used", 0))
+
+            # 如果找到有价值的回复，重新调用 AI 提取
+            if reply_data.get("polled_replies"):
+                extracted_with_replies = await extract_restaurants_with_replies(
+                    video_title=title,
+                    author_name=author_name,
+                    hashtags=hashtags,
+                    city_name=city,
+                    author_liked_comments=author_liked_comments,
+                    hot_comments=hot_comments,
+                    all_comments=all_comments,
+                    polled_replies=reply_data.get("polled_replies", []),
+                )
+                # 如果带回复的提取结果置信度更高，使用新结果
+                if extracted_with_replies and extracted_with_replies[0].get("confidence") == "high":
+                    print(f"[解析策略] 评论回复提升置信度: medium → high")
+                    extracted = extracted_with_replies
+        else:
+            print(f"[解析策略] 今日评论回复调用已达上限，跳过")
 
     if not extracted:
         return {"restaurant": None, "status": "not_found"}
@@ -362,6 +502,33 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                     comments=extra.get("all_comments", []),
                     author_name="",
                 )
+
+            # 置信度 medium 时，调用评论回复接口补充信息（成本控制）
+            if extracted and extracted[0].get("confidence") == "medium":
+                if can_call_comment_reply():
+                    print(f"[后台解析] 视频 {vid} 置信度 medium，调用评论回复补充")
+                    reply_data = await poll_comment_replies_for_confidence(
+                        hot_comments_raw=extra.get("hot_comments_raw", []),
+                        author_uid=author_id,
+                        max_polls=3,
+                    )
+                    increment_comment_reply_calls(reply_data.get("polls_used", 0))
+                    if reply_data.get("polled_replies"):
+                        extracted_with_replies = await extract_restaurants_with_replies(
+                            video_title=title,
+                            author_name="",
+                            hashtags=extra.get("hashtags", []),
+                            city_name=extra.get("city_name", "未知"),
+                            author_liked_comments=extra.get("author_liked_comments", []),
+                            hot_comments=extra.get("hot_comments", []),
+                            all_comments=extra.get("all_comments", []),
+                            polled_replies=reply_data.get("polled_replies", []),
+                        )
+                        if extracted_with_replies and extracted_with_replies[0].get("confidence") == "high":
+                            print(f"[后台解析] 视频 {vid} 评论回复提升置信度: medium → high")
+                            extracted = extracted_with_replies
+                else:
+                    print(f"[后台解析] 今日评论回复调用已达上限，跳过视频 {vid}")
 
             if extracted:
                 # 高德搜索
