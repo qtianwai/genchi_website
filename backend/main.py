@@ -177,12 +177,15 @@ async def parse_link(req: ParseLinkRequest):
 
         # 第四步：获取博主所有视频并逐一解析（最多处理 20 个视频）
         all_restaurants = []
+        videos = []
 
         if author_sec_uid:
             # 获取博主视频列表
             videos = await fetch_author_videos(author_sec_uid, max_count=20)
-        else:
-            # 如果获取不到视频列表，至少处理当前这个视频
+
+        # 视频列表为空（获取失败或无 sec_uid），回退到当前视频
+        if not videos:
+            print(f"[解析链接] 视频列表为空，回退到当前视频: {video_info.get('video_id')}")
             videos = [{"video_id": video_info["video_id"], "title": video_info["title"]}]
 
         # 对每个视频调用 AI 提取店铺
