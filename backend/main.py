@@ -151,19 +151,20 @@ async def parse_link(req: ParseLinkRequest):
         existing_author = get_author_by_douyin_id(author_douyin_id)
 
         if existing_author:
-            # 博主已入库，直接返回已有数据，不重复解析
             author_id = existing_author["id"]
             restaurants = get_restaurants_by_author(author_id)
 
-            # 自动关注该博主
-            follow_author(req.user_id, author_id)
-
-            return {
-                "status": "cached",  # 表示使用了缓存数据
-                "author": existing_author,
-                "restaurants": restaurants,
-                "message": f"已从数据库加载 {len(restaurants)} 家店铺",
-            }
+            if restaurants:
+                # 博主已入库且有店铺数据，直接返回缓存
+                follow_author(req.user_id, author_id)
+                return {
+                    "status": "cached",
+                    "author": existing_author,
+                    "restaurants": restaurants,
+                    "message": f"已从数据库加载 {len(restaurants)} 家店铺",
+                }
+            # 博主已入库但店铺为空（上次解析失败），继续往下重新解析
+            print(f"[解析链接] 博主已入库但无店铺数据，重新解析: {author_douyin_id}")
 
         # 第三步：新博主，先存入博主信息
         author_record = upsert_author({
