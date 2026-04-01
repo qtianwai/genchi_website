@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments
 from ai_extractor import extract_restaurants_from_video
 from amap_service import batch_search_restaurants
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
@@ -188,13 +188,16 @@ async def parse_link(req: ParseLinkRequest):
             print(f"[解析链接] 视频列表为空，回退到当前视频: {video_info.get('video_id')}")
             videos = [{"video_id": video_info["video_id"], "title": video_info["title"]}]
 
-        # 对每个视频调用 AI 提取店铺
+        # 对每个视频调用 AI 提取店铺（同时获取评论，评论中往往含有具体店名）
         for video in videos:
+            vid = video.get("video_id", "")
+            comments = await fetch_video_comments(vid) if vid else []
             extracted = await extract_restaurants_from_video(
                 video_title=video.get("title", ""),
-                comments=[],  # 批量处理时暂不获取评论，节省时间
+                comments=comments,
                 author_name=video_info.get("author_name", ""),
             )
+            print(f"[解析链接] 视频 {vid} 提取到 {len(extracted)} 家店铺")
             all_restaurants.extend(extracted)
 
         # 第五步：去重（同名同城市的店铺只保留一个）

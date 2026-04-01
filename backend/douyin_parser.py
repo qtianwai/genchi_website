@@ -124,8 +124,8 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
     """
     获取博主发布的视频列表（用于批量解析博主所有探店视频）。
 
-    使用 JustOneAPI get-user-video-list/v1 接口，支持分页，
-    相比直接调用抖音 API 稳定得多。
+    优先使用 v3 接口（v1 容易限流返回 code=301）。
+    支持分页，直到达到 max_count 或无更多数据。
 
     返回格式：[{"video_id": "...", "title": "..."}, ...]
     """
@@ -134,7 +134,7 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
 
     while len(videos) < max_count:
         result = await _aget(
-            "/api/douyin/get-user-video-list/v1",
+            "/api/douyin/get-user-video-list/v3",  # v3 比 v1 更稳定
             {"secUid": sec_uid, "maxCursor": max_cursor},
         )
 
@@ -164,3 +164,27 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
 
     print(f"[抖音解析] 获取到博主视频 {len(videos)} 条")
     return videos
+
+
+async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[str]:
+    """
+    获取视频评论列表，用于辅助 AI 识别店铺名称。
+    评论中往往包含用户提到的具体店名，是识别店铺的关键信息来源。
+
+    返回格式：["评论文本1", "评论文本2", ...]
+    """
+    result = await _aget(
+        "/api/douyin/get-video-comment/v1",
+        {"awemeId": video_id, "page": 1},
+    )
+
+    if result.get("code") != 0:
+        print(f"[抖音解析] 获取评论失败: {result.get('message')} (code={result.get('code')})")
+        return []
+
+    comments_data = (result.get("data") or {}).get("comments", []) or []
+    comments = [c.get("text", "") for c in comments_data if c.get("text")]
+    comments = comments[:max_count]  # 最多取前 max_count 条
+
+    print(f"[抖音解析] 获取到评论 {len(comments)} 条")
+    return comments
