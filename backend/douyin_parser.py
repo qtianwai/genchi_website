@@ -120,17 +120,36 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
             return []
 
 
+def extract_url_from_text(text: str) -> str:
+    """
+    从分享文字中提取抖音链接
+    用户粘贴的通常是整段分享文字，如：
+    "5.82 复制打开抖音，看看【xxx】... https://v.douyin.com/xxx/ 04/09 ..."
+    需要从中提取出 https:// 开头的链接
+    """
+    # 匹配 http:// 或 https:// 开头的 URL（到空格或换行为止）
+    match = re.search(r'https?://\S+', text)
+    if match:
+        # 去掉末尾可能粘连的标点符号
+        url = match.group(0).rstrip('.,;:!?，。；：！？')
+        return url
+    return text.strip()  # 没找到则原样返回（可能本身就是纯链接）
+
+
 async def parse_douyin_link(url: str) -> dict:
     """
     主入口：解析抖音分享链接，返回视频信息 + 评论
 
-    输入：抖音分享链接（短链或完整链接）
+    输入：抖音分享链接或包含链接的分享文字
     输出：{
         video_id, title, author_id, author_name, author_avatar,
         author_sec_uid, comments: [评论文本列表]
     }
     """
-    # 第一步：如果是短链，先解析为完整链接
+    # 第一步：从文本中提取纯链接（兼容用户粘贴整段分享文字的情况）
+    url = extract_url_from_text(url)
+
+    # 第二步：如果是短链，先解析为完整链接
     if "v.douyin.com" in url or "douyin.com" in url:
         full_url = await resolve_short_url(url)
     else:
