@@ -152,11 +152,27 @@ async def parse_link(req: ParseLinkRequest):
 
         if existing_author:
             author_id = existing_author["id"]
-            restaurants = get_restaurants_by_author(author_id)
+            author_restaurants = get_restaurants_by_author(author_id)
 
-            if restaurants:
+            if author_restaurants:
                 # 博主已入库且有店铺数据，直接返回缓存
                 follow_author(req.user_id, author_id)
+                # 将 Supabase 嵌套数据拍平：{id, restaurant_id, restaurants: {...}} → 扁平 RestaurantResult
+                restaurants = [
+                    {
+                        "id": row.get("restaurant_id", ""),
+                        "name": (row.get("restaurants") or {}).get("name", ""),
+                        "address": (row.get("restaurants") or {}).get("address"),
+                        "city": (row.get("restaurants") or {}).get("city"),
+                        "latitude": (row.get("restaurants") or {}).get("latitude"),
+                        "longitude": (row.get("restaurants") or {}).get("longitude"),
+                        "amap_id": (row.get("restaurants") or {}).get("amap_id"),
+                        "category": (row.get("restaurants") or {}).get("category"),
+                    }
+                    for row in author_restaurants
+                    if (row.get("restaurants") or {}).get("name")
+                ]
+                print(f"[解析链接] 缓存返回 {len(restaurants)} 家店铺")
                 return {
                     "status": "cached",
                     "author": existing_author,
@@ -228,9 +244,12 @@ async def parse_link(req: ParseLinkRequest):
             if key not in seen:
                 seen.add(key)
                 unique_restaurants.append(r)
+        print(f"[解析链接] AI 提取后去重，{len(unique_restaurants)} 家店铺")
 
         # 第六步：调用高德地图搜索精确地址和坐标
+        print(f"[解析链接] 开始高德搜索，共 {len(unique_restaurants)} 家...")
         restaurants_with_location = await batch_search_restaurants(unique_restaurants)
+        print(f"[解析链接] 高德搜索完成，找到 {len(restaurants_with_location)} 家有坐标的店铺")
 
         # 第七步：存入数据库并建立博主-店铺关联
         saved_restaurants = []
