@@ -230,6 +230,7 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
     - city_name: 城市名称（通过编码推断的中文城市名）
     - author_liked_comments: 博主点赞的评论列表（最高优先级信息来源）
     - hot_comments: 热门评论列表
+    - all_comments: 所有评论列表（按点赞数降序）
 
     这些信息会按优先级传递给 AI，帮助更精准地识别店铺名称。
     """
@@ -242,6 +243,7 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
             "city_name": "未知",
             "author_liked_comments": [],
             "hot_comments": [],
+            "all_comments": [],
         }
 
     aweme = result["data"].get("aweme_detail", {})
@@ -253,27 +255,31 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
         if t.get("type") == 1 and t.get("hashtag_name")
     ]
 
-    # 城市编码转中文（常见城市编码）
+    # 城市编码转中文（扩展到全国主要城市）
     city_code = str(aweme.get("city", ""))
     city_map = {
-        "310000": "上海",
-        "110000": "北京",
-        "440100": "广州",
-        "440300": "深圳",
-        "330100": "杭州",
-        "320500": "苏州",
-        "500000": "重庆",
-        "610100": "西安",
-        "420100": "武汉",
-        "320100": "南京",
-        "510100": "成都",
-        "350200": "厦门",
+        # 直辖市
+        "110000": "北京", "120000": "天津", "310000": "上海", "500000": "重庆",
+        # 省会城市
+        "130100": "石家庄", "140100": "太原", "150100": "呼和浩特", "210100": "沈阳",
+        "220100": "长春", "230100": "哈尔滨", "320100": "南京", "330100": "杭州",
+        "340100": "合肥", "350100": "福州", "360100": "南昌", "370100": "济南",
+        "410100": "郑州", "420100": "武汉", "430100": "长沙", "440100": "广州",
+        "450100": "南宁", "460100": "海口", "510100": "成都", "520100": "贵阳",
+        "530100": "昆明", "540100": "拉萨", "610100": "西安", "620100": "兰州",
+        "630100": "西宁", "640100": "银川", "650100": "乌鲁木齐",
+        # 重点城市
+        "440300": "深圳", "320500": "苏州", "330200": "宁波", "350200": "厦门",
+        "370200": "青岛", "440400": "珠海", "440600": "佛山", "441300": "惠州",
+        "441900": "东莞", "442000": "中山", "445100": "潮州", "445200": "揭阳",
+        "510700": "绵阳", "511100": "乐山", "610200": "铜川", "610300": "宝鸡",
     }
-    city_name = city_map.get(city_code, city_code)
+    city_name = city_map.get(city_code, "未知" if not city_code or city_code == "0" else city_code)
 
     # 获取博主点赞的评论（通过评论接口的 is_author_digged 字段）
     author_liked_comments = []
     hot_comments = []
+    all_comments = []
 
     comments_result = await _aget(
         "/api/douyin/get-video-comment/v1",
@@ -288,6 +294,9 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
             digg = c.get("digg_count", 0)
             comment_data = {"text": text, "digg_count": digg}
 
+            # 所有评论都加入列表
+            all_comments.append(comment_data)
+
             # 博主点赞的评论：P1 最高优先级
             if c.get("is_author_digged"):
                 author_liked_comments.append(comment_data)
@@ -299,9 +308,10 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
         # 按点赞数降序排列
         author_liked_comments.sort(key=lambda x: x["digg_count"], reverse=True)
         hot_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        all_comments.sort(key=lambda x: x["digg_count"], reverse=True)
 
     print(f"[抖音解析] 视频扩展信息: 话题={hashtags}, 城市={city_name}, "
-          f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条")
+          f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条, 总评论={len(all_comments)}条")
 
     return {
         "hashtags": hashtags,
@@ -309,4 +319,5 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
         "city_name": city_name,
         "author_liked_comments": author_liked_comments,
         "hot_comments": hot_comments,
+        "all_comments": all_comments,
     }

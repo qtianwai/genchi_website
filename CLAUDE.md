@@ -45,3 +45,20 @@
 - 技术栈变化（引入新框架、新依赖库、新服务等）
 - 主要功能模块的架构调整
 - 构建或部署流程变化
+
+## iOS 项目路径
+
+**唯一正确的 iOS 源码路径是 `ios/FoodMap/genchi/genchi/`**，Xcode 项目文件为 `ios/FoodMap/genchi/genchi.xcodeproj`。
+
+所有 iOS 代码修改必须在 `ios/FoodMap/genchi/genchi/` 目录下进行，不存在其他 iOS 源码目录。
+
+## 数据库 Schema 维护规则
+
+当涉及数据库表结构变化时，必须同步复核并更新 `backend/supabase_schema.sql`。
+
+具体包括但不限于：
+- 新增表或删除表
+- 修改表字段（新增、删除、重命名、类型变更）
+- 修改索引、约束、触发器
+- 修改 RLS（Row Level Security）策略
+- 修改函数或存储过程

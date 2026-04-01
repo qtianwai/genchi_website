@@ -190,21 +190,22 @@ async def parse_single_video_fast(
     """
     快速解析单个视频的核心逻辑（优化版：获取评论和扩展信息以提升识别率）
     用于 parse_link 主流程，平衡速度和准确性
+
+    注意：fetch_video_detail_extra 内部已经调用了评论接口并返回 all_comments，
+    无需再单独调用 fetch_video_comments，避免重复 API 请求。
     """
     vid = video_info.get("video_id", "")
     title = video_info.get("title", "")
     author_name = video_info.get("author_name", "")
 
-    # 并行获取扩展信息和评论（提升识别率）
-    extra_task = fetch_video_detail_extra(vid, author_id)
-    comments_task = fetch_video_comments(vid, max_count=15)
-
-    extra, all_comments = await asyncio.gather(extra_task, comments_task)
+    # 获取扩展信息（内部已包含评论，无需再单独调用 fetch_video_comments）
+    extra = await fetch_video_detail_extra(vid, author_id)
 
     hashtags = extra.get("hashtags", [])
     city = extra.get("city_name", "未知")
     author_liked_comments = extra.get("author_liked_comments", [])
     hot_comments = extra.get("hot_comments", [])
+    all_comments = extra.get("all_comments", [])
 
     # 调用 AI 提取店铺（使用完整信息，提升识别率）
     extracted = await extract_restaurants_priority(
@@ -342,9 +343,8 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         })
 
         try:
-            # 获取视频扩展信息(P1:标签+城市)
+            # 获取视频扩展信息(P1:标签+城市+评论)
             extra = await fetch_video_detail_extra(vid, author_id)
-            comments = await fetch_video_comments(vid, max_count=10) if vid else []
 
             # AI 提取
             extracted = await extract_restaurants_priority(
@@ -354,12 +354,12 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                 city_name=extra.get("city_name", "未知"),
                 author_liked_comments=extra.get("author_liked_comments", []),
                 hot_comments=extra.get("hot_comments", []),
-                all_comments=comments,
+                all_comments=extra.get("all_comments", []),
             )
             if not extracted:
                 extracted = await extract_restaurants_from_video(
                     video_title=title,
-                    comments=comments,
+                    comments=extra.get("all_comments", []),
                     author_name="",
                 )
 
