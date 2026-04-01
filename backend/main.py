@@ -287,8 +287,14 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
 
     # 获取博主视频列表（最多 30 个，排除当前视频）
     videos = await fetch_author_videos(sec_uid, max_count=30)
-    video_list = [{"video_id": v.get("video_id", ""), "title": v.get("title", "")}
-                  for v in videos if v.get("video_id") != current_video_id]
+    video_list = [
+        {
+            "video_id": v.get("video_id", ""),
+            "title": v.get("title", ""),
+            "share_url": v.get("share_url", ""),
+        }
+        for v in videos if v.get("video_id") != current_video_id
+    ]
 
     if not video_list:
         print(f"[后台解析] 博主 {author_id} 无历史视频")
@@ -314,7 +320,9 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
             continue
 
         # 创建该视频的缓存记录
-        video_url = f"bg://{vid}"  # 后台任务用特殊 URL
+        # 优先使用真实的 share_url（可在抖音中打开），没有则构造基础链接
+        share_url = video.get("share_url", "")
+        video_url = share_url if share_url else f"https://www.iesdouyin.com/share/video/{vid}/"
         upsert_video_cache({
             "video_url": video_url,
             "video_id": vid,

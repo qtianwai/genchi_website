@@ -124,13 +124,19 @@ struct RestaurantVideo: Identifiable, Codable {
     let author_id: String
     let author_name: String
     let author_avatar_url: String?
+    let video_url: String?    // 后端返回的真实抖音分享链接（可能为 nil）
     let created_at: String
 
     var id: String { video_id }
 
-    // 抖音视频链接
+    // 抖音视频链接：优先用后端返回的真实 share_url，否则用 URL Scheme 构造
     var douyinURL: URL? {
-        URL(string: "snssdk1128://aweme/detail/\(video_id)")
+        // 优先使用真实分享链接（iesdouyin.com 格式，抖音 App 可识别）
+        if let urlStr = video_url, !urlStr.isEmpty, let url = URL(string: urlStr) {
+            return url
+        }
+        // 降级：用 video_id 构造抖音内部 URL Scheme
+        return URL(string: "snssdk1128://aweme/detail/\(video_id)")
     }
 }
 

@@ -1,5 +1,6 @@
--- 新增：获取店铺关联的视频信息
+-- 获取店铺关联的视频信息
 -- 用于在店铺详情页显示该店铺相关的抖音视频列表
+-- video_url 从 video_parse_cache 表中获取（真实的抖音分享链接）
 
 create or replace function get_videos_by_restaurant(p_restaurant_id uuid)
 returns table (
@@ -7,6 +8,7 @@ returns table (
   author_id uuid,
   author_name text,
   author_avatar_url text,
+  video_url text,       -- 抖音视频分享链接（可直接在抖音中打开）
   created_at timestamptz
 ) as $$
 begin
@@ -16,9 +18,17 @@ begin
     a.id as author_id,
     a.name as author_name,
     a.avatar_url as author_avatar_url,
+    -- 从 video_parse_cache 获取真实链接，过滤掉 bg:// 占位符
+    case
+      when vpc.video_url is not null and vpc.video_url not like 'bg://%'
+        then vpc.video_url
+      else null
+    end as video_url,
     ar.created_at
   from author_restaurants ar
   join authors a on ar.author_id = a.id
+  -- 关联 video_parse_cache 获取视频链接（left join 避免无缓存记录时丢失数据）
+  left join video_parse_cache vpc on vpc.video_id = ar.video_id
   where ar.restaurant_id = p_restaurant_id
     and ar.video_id is not null
     and ar.video_id != ''

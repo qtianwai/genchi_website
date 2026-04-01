@@ -324,7 +324,9 @@ struct RestaurantCard: View {
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
-        .task {
+        // 关键修复：用 restaurant.id 作为 task 的 id，店铺切换时自动取消旧任务并重新执行
+        .task(id: restaurant.id) {
+            videos = []  // 先清空旧数据，避免状态复用
             await loadVideos()
         }
     }

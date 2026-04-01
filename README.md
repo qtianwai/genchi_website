@@ -414,3 +414,29 @@ python main.py
 - `需求文档&技术方案/手动输入店铺功能设计.md`（新建）：功能设计文档
 
 ---
+
+---
+
+## 会话记录 2026-04-01（video_url 迁移收尾）
+
+### 主要目的
+完成 `video_parse_cache.video_url` 字段从 `bg://` 占位符到真实抖音分享链接的全量迁移，并验证 Supabase SQL 函数更新生效。
+
+### 完成的主要任务
+1. 在 Supabase SQL Editor 执行 `backend/get_videos_function.sql`，更新 `get_videos_by_restaurant` 函数以返回 `video_url` 字段
+2. 编写验证脚本 `backend/verify_video_url.py`，确认函数返回真实 `https://v.douyin.com/...` 链接
+3. 排查并修复剩余 2 条 `bg://` 记录，降级为 `https://www.iesdouyin.com/share/video/{video_id}/` 格式
+4. 最终确认数据库中 `bg://` 记录清零
+
+### 关键决策
+- SQL 函数参数名为 `p_restaurant_id`（非 `restaurant_id_param`），调用时需注意
+- JustOneAPI 本地 SSL 连接失败时，直接使用 iesdouyin 标准分享链接作为降级方案
+
+### 技术栈
+- Python + requests（直接调用 Supabase REST API）
+- Supabase PostgreSQL RPC 函数
+
+### 修改的文件
+- `backend/get_videos_function.sql`（已在 Supabase 执行）
+- `backend/verify_video_url.py`（新增，验证脚本）
+- `backend/check_failed_migrations.py`（新增，排查脚本）

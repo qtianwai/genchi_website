@@ -142,7 +142,8 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
     优先使用 v3 接口（v1 容易限流返回 code=301）。
     支持分页，直到达到 max_count 或无更多数据。
 
-    返回格式：[{"video_id": "...", "title": "..."}, ...]
+    返回格式：[{"video_id": "...", "title": "...", "share_url": "..."}, ...]
+    share_url 是可以在抖音中打开的视频链接
     """
     videos = []
     max_cursor = 0  # 分页游标，0 表示第一页
@@ -164,9 +165,17 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
             break  # 没有更多视频了
 
         for v in aweme_list:
+            video_id = v.get("aweme_id", "")
+            # 提取 share_url（可在抖音中打开的链接）
+            share_url = v.get("share_url", "") or v.get("share_info", {}).get("share_url", "")
+            # 如果没有 share_url，用 video_id 构造一个基础链接
+            if not share_url and video_id:
+                share_url = f"https://www.iesdouyin.com/share/video/{video_id}/"
+
             videos.append({
-                "video_id": v.get("aweme_id", ""),
+                "video_id": video_id,
                 "title": v.get("desc", ""),
+                "share_url": share_url,
             })
             if len(videos) >= max_count:
                 break
