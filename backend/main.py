@@ -66,6 +66,13 @@ class VerifyOTPRequest(BaseModel):
     phone: str      # 手机号
     code: str       # 6 位验证码
 
+class ManualAddRestaurantRequest(BaseModel):
+    video_url: str          # 原始视频链接
+    user_id: str            # 用户 ID
+    restaurant_name: str    # 店铺名称
+    city: str               # 所在城市
+    category: str = ""      # 美食分类（可选）
+
 
 # ─────────────────────────────────────────
 # 健康检查
@@ -177,19 +184,25 @@ async def parse_single_video_fast(
     author_id: str,
 ) -> dict:
     """
-    快速解析单个视频的核心逻辑（不获取评论，不获取额外信息）
-    用于 parse_link 主流程，确保用户等待时间最短
+    快速解析单个视频的核心逻辑（优化版：获取评论和扩展信息以提升识别率）
+    用于 parse_link 主流程，平衡速度和准确性
     """
     vid = video_info.get("video_id", "")
     title = video_info.get("title", "")
     author_name = video_info.get("author_name", "")
-    city = "未知"
-    hashtags = []
-    author_liked_comments = []
-    hot_comments = []
-    all_comments = []
 
-    # 调用 AI 提取店铺（只用标题、标签等 P1 信息，最快路径）
+    # 并行获取扩展信息和评论（提升识别率）
+    extra_task = fetch_video_detail_extra(vid, author_id)
+    comments_task = fetch_video_comments(vid, max_count=15)
+
+    extra, all_comments = await asyncio.gather(extra_task, comments_task)
+
+    hashtags = extra.get("hashtags", [])
+    city = extra.get("city_name", "未知")
+    author_liked_comments = extra.get("author_liked_comments", [])
+    hot_comments = extra.get("hot_comments", [])
+
+    # 调用 AI 提取店铺（使用完整信息，提升识别率）
     extracted = await extract_restaurants_priority(
         video_title=title,
         author_name=author_name,
@@ -204,7 +217,7 @@ async def parse_single_video_fast(
     if not extracted:
         extracted = await extract_restaurants_from_video(
             video_title=title,
-            comments=[],
+            comments=all_comments,
             author_name=author_name,
         )
 
@@ -710,6 +723,111 @@ async def remove_from_favorites(req: FavoriteRequest):
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# 手动添加店铺接口
+# ─────────────────────────────────────────
+
+@app.post("/api/manual-add-restaurant")
+async def manual_add_restaurant(req: ManualAddRestaurantRequest):
+    """
+    用户手动添加店铺（当 AI 无法识别时）
+
+    流程：
+    1. 从视频缓存中获取 video_id 和 author_id
+    2. 调用高德地图搜索店铺坐标
+    3. 入库 restaurants 表
+    4. 关联 author_restaurants 表
+    5. 更新 video_parse_cache 状态为 completed
+    """
+    try:
+        # 参数验证
+        if not req.restaurant_name or len(req.restaurant_name.strip()) < 2:
+            raise HTTPException(status_code=400, detail="店铺名称至少需要 2 个字符")
+        if not req.city or len(req.city.strip()) < 2:
+            raise HTTPException(status_code=400, detail="请选择所在城市")
+
+        # 从视频缓存中获取 video_id 和 author_id
+        clean_url = extract_url_from_text(req.video_url)
+        cached = get_video_cache_by_url(clean_url)
+
+        if not cached:
+            raise HTTPException(status_code=404, detail="未找到该视频的解析记录，请先解析视频")
+
+        video_id = cached.get("video_id", "")
+        author_id = cached.get("author_id", "")
+
+        if not video_id or not author_id:
+            raise HTTPException(status_code=400, detail="视频信息不完整，无法添加店铺")
+
+        # 调用高德地图搜索
+        restaurant_data = {
+            "name": req.restaurant_name.strip(),
+            "city": req.city.strip(),
+            "category": req.category.strip() if req.category else "",
+        }
+
+        search_results = await batch_search_restaurants([restaurant_data])
+
+        if not search_results:
+            raise HTTPException(
+                status_code=404,
+                detail=f"高德地图未找到"{req.restaurant_name}"，请检查店铺名称和城市是否正确"
+            )
+
+        # 取第一条搜索结果
+        amap_result = search_results[0]
+        restaurant_data.update({
+            "address": amap_result.get("address", ""),
+            "latitude": amap_result.get("latitude"),
+            "longitude": amap_result.get("longitude"),
+            "amap_id": amap_result.get("amap_id"),
+        })
+
+        # 检查店铺是否已存在
+        existing = get_restaurant_by_amap_id(restaurant_data["amap_id"])
+        if existing:
+            restaurant_id = existing["id"]
+            print(f"[手动添加] 店铺已存在: {existing['name']}")
+        else:
+            # 入库新店铺
+            saved = upsert_restaurant({
+                "name": restaurant_data["name"],
+                "address": restaurant_data["address"],
+                "city": restaurant_data["city"],
+                "latitude": restaurant_data["latitude"],
+                "longitude": restaurant_data["longitude"],
+                "amap_id": restaurant_data["amap_id"],
+                "category": restaurant_data.get("category", ""),
+            })
+            restaurant_id = saved["id"]
+            print(f"[手动添加] 新店铺入库: {restaurant_data['name']}")
+
+        # 关联博主-店铺
+        link_author_restaurant(author_id, restaurant_id, video_id)
+
+        # 更新视频缓存状态
+        update_video_cache_restaurant(clean_url, restaurant_id, restaurant_data)
+
+        # 自动关注博主（如果尚未关注）
+        try:
+            follow_author(req.user_id, author_id)
+        except Exception:
+            pass  # 已关注时会报错，忽略
+
+        return {
+            "status": "success",
+            "restaurant": restaurant_data,
+            "restaurant_id": restaurant_id,
+            "message": "店铺已添加到地图",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[手动添加] 未知错误: {e}")
+        raise HTTPException(status_code=500, detail=f"添加失败: {str(e)}")
 
 
 # ─────────────────────────────────────────

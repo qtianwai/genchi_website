@@ -176,6 +176,37 @@ class APIService {
         )
         return resp.videos
     }
+
+    // ─────────────────────────────────────────
+    // 手动添加店铺
+    // ─────────────────────────────────────────
+
+    func manualAddRestaurant(
+        videoUrl: String,
+        userId: String,
+        restaurantName: String,
+        city: String,
+        category: String
+    ) async throws -> ManualAddRestaurantResponse {
+        struct Body: Codable {
+            let video_url: String
+            let user_id: String
+            let restaurant_name: String
+            let city: String
+            let category: String
+        }
+        return try await post(
+            path: "/api/manual-add-restaurant",
+            body: Body(
+                video_url: videoUrl,
+                user_id: userId,
+                restaurant_name: restaurantName,
+                city: city,
+                category: category
+            ),
+            responseType: ManualAddRestaurantResponse.self
+        )
+    }
 }
 
 // 自定义错误类型

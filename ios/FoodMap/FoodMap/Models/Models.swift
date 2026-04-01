@@ -133,3 +133,13 @@ struct RestaurantVideo: Identifiable, Codable {
         URL(string: "snssdk1128://aweme/detail/\(video_id)")
     }
 }
+
+// ─────────────────────────────────────────
+// 手动添加店铺响应
+// ─────────────────────────────────────────
+struct ManualAddRestaurantResponse: Codable {
+    let status: String
+    let restaurant: RestaurantResult?
+    let restaurant_id: String?
+    let message: String
+}

@@ -19,6 +19,8 @@ struct ParseLinkSheet: View {
     @State private var showBgProgress = false
     @State private var bgStatusMessage: String = ""
     @State private var bgCompletedMessage: String? = nil
+    // 是否显示手动添加店铺弹窗
+    @State private var showManualAddSheet = false
 
     var body: some View {
         NavigationView {
@@ -106,8 +108,10 @@ struct ParseLinkSheet: View {
 
                     // ── 解析结果 ──
                     if let result = result {
-                        ParseResultView(result: result)
-                            .padding(.horizontal, 20)
+                        ParseResultView(result: result, onManualAdd: {
+                            showManualAddSheet = true
+                        })
+                        .padding(.horizontal, 20)
                     }
 
                     Spacer(minLength: 30)
@@ -146,6 +150,19 @@ struct ParseLinkSheet: View {
         }
         .onDisappear {
             bgProgressTimer?.invalidate()
+        }
+        .sheet(isPresented: $showManualAddSheet) {
+            if let result = result {
+                ManualAddRestaurantSheet(
+                    videoUrl: linkText,
+                    authorName: result.author?.name ?? "未知博主",
+                    onSuccess: {
+                        // 手动添加成功后刷新地图
+                        onSuccess()
+                    }
+                )
+                .environmentObject(authState)
+            }
         }
     }
 
@@ -259,6 +276,7 @@ struct BgProgressView: View {
 // ─────────────────────────────────────────
 struct ParseResultView: View {
     let result: ParseLinkResponse
+    let onManualAdd: () -> Void
 
     // 兼容新旧格式：优先用 restaurants（旧格式），降级用 restaurant（新格式）
     private var restaurants: [RestaurantResult] {
@@ -373,6 +391,25 @@ struct ParseResultView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .padding(.top, 2)
+
+            // 手动添加店铺按钮（当未识别到店铺时显示）
+            if restaurants.isEmpty {
+                Button(action: onManualAdd) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "hand.point.up.left.fill")
+                            .font(.caption)
+                        Text("手动添加店铺")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(Color.orange.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+                .padding(.top, 8)
+            }
         }
     }
 
