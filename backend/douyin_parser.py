@@ -55,8 +55,9 @@ async def parse_douyin_link(url: str) -> dict:
     """
     主入口：解析抖音分享链接，返回视频信息。
 
-    使用 JustOneAPI share-url-transfer/v1 接口，直接将分享短链转换为结构化数据。
-    相比自行爬取，稳定性大幅提升，且能获取完整的博主 sec_uid。
+    两步流程：
+    1. share-url-transfer/v1：将分享短链转换为 redirect_url，从中提取视频 ID
+    2. get-video-detail/v2：用视频 ID 获取完整的视频和博主信息
 
     输入：抖音分享链接或包含链接的分享文字
     输出：{
@@ -68,23 +69,35 @@ async def parse_douyin_link(url: str) -> dict:
     share_url = extract_url_from_text(url)
     print(f"[抖音解析] 提取到链接: {share_url}")
 
-    # 第二步：调用 JustOneAPI 分享链接解析接口
+    # 第二步：调用 share-url-transfer/v1，拿到 redirect_url
     result = await _aget("/api/douyin/share-url-transfer/v1", {"shareUrl": share_url})
     print(f"[抖音解析] share-url-transfer 返回 code={result.get('code')}")
 
     if result.get("code") != 0 or not result.get("data"):
         raise ValueError(f"JustOneAPI 解析失败: {result.get('message', '未知错误')} (code={result.get('code')})")
 
-    data = result["data"]
+    # 从 redirect_url 中提取视频 ID
+    # redirect_url 格式：https://www.iesdouyin.com/share/video/7621134274259171761/?...
+    redirect_url = result["data"].get("redirect_url", "")
+    match = re.search(r'/video/(\d+)/', redirect_url)
+    if not match:
+        raise ValueError(f"无法从 redirect_url 提取视频 ID: {redirect_url}")
+    video_id = match.group(1)
+    print(f"[抖音解析] 提取到视频 ID: {video_id}")
 
-    # 第三步：从返回数据中提取视频和博主信息
-    # JustOneAPI 返回的数据结构与抖音原始 aweme 结构一致
-    aweme = data.get("aweme_detail") or data  # 兼容不同版本的返回结构
+    # 第三步：调用 get-video-detail/v2 获取完整视频和博主信息
+    detail_result = await _aget("/api/douyin/get-video-detail/v2", {"videoId": video_id})
+    print(f"[抖音解析] get-video-detail 返回 code={detail_result.get('code')}")
+
+    if detail_result.get("code") != 0 or not detail_result.get("data"):
+        raise ValueError(f"获取视频详情失败: {detail_result.get('message', '未知错误')}")
+
+    # 数据结构：data.aweme_detail.author
+    aweme = detail_result["data"].get("aweme_detail", {})
     author = aweme.get("author", {})
 
-    video_id = aweme.get("aweme_id", "")
     title = aweme.get("desc", "")
-    author_id = author.get("uid", "")
+    author_id = str(author.get("uid", ""))
     author_name = author.get("nickname", "")
     author_sec_uid = author.get("sec_uid", "")
     # 头像取 url_list 第一个
