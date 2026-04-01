@@ -6,7 +6,7 @@
 2. 点击「**Create New Project**」
 3. 选择平台：**iOS** → 模板选「**App**」→ 点击「Next」
 4. 填写项目信息：
-   - **Product Name**：`FoodMap`
+   - **Product Name**：`GēnChī`（或保留 `FoodMap`，上架时再改）
    - **Team**：先选「None」（上架时再配置）
    - **Organization Identifier**：`com.yourname`（随便填，如 `com.qtianwai`）
    - **Bundle Identifier** 会自动生成为 `com.yourname.FoodMap`

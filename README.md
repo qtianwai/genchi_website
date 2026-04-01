@@ -183,3 +183,30 @@ python main.py
   - 未配置阿里云密钥时自动降级为打印日志（方便本地开发调试）
 - 待完成：阿里云短信签名和模板审核通过后，在 Railway 环境变量中填入 ALIYUN_ACCESS_KEY_ID、ALIYUN_ACCESS_KEY_SECRET、SMS_TEMPLATE_CODE
 - 修改文件：backend/main.py、backend/sms_service.py（新建）、ios/.../AuthState.swift、需求文档/阿里云短信开通步骤.md（新建）、需求文档/Railway部署步骤.md
+
+### 2026-04-01 第六次会话：修复抖音解析 - 完整 JSON 提取
+- 主要目的：修复 _ROUTER_DATA JSON 被截断导致解析失败的问题，并讨论提升店铺识别准确率的方向
+- 完成任务：
+  - 调试发现 iesdouyin.com 分享页的 `window._ROUTER_DATA` 包含完整视频信息（desc、author、sec_uid、头像），但之前的正则提取在 8964 字符处截断
+  - 实现 `extract_json_object()` 函数，用括号深度匹配方式提取完整 JSON，彻底解决截断问题
+  - 验证解析结果：title="上海超级巨无敌好吃的不改良重庆火锅...#上海火锅去哪吃 #上海火锅店"，author="不吃西瓜不要关注"，sec_uid 完整
+- 关键决策：
+  - 放弃 og:title/og:description（JS 渲染页面无法获取），改为直接解析 _ROUTER_DATA 内嵌 JSON
+  - 视频 desc 包含完整话题标签（含城市信息），比单纯标题信息量大很多，AI 提取店铺更准确
+  - 评论 API 反爬严重，暂不获取；可通过批量处理博主多个视频的 desc 来弥补信息量不足
+- 修改文件：backend/douyin_parser.py
+
+### 2026-04-01 第七次会话：替换抖音解析服务为 JustOneAPI
+- 主要目的：解决自行爬取抖音不稳定、无法批量获取博主视频的问题，改用 JustOneAPI 第三方服务
+- 完成任务：
+  - 完全重写 `backend/douyin_parser.py`：移除所有自行爬取逻辑，改用 JustOneAPI 的三个核心接口
+    - `share-url-transfer/v1`：分享短链直接解析为结构化视频数据（替代原来的 HTML 爬取）
+    - `get-user-video-list/v1`：稳定获取博主视频列表，支持分页（替代原来调用抖音 API 经常失败的方案）
+  - 更新 `backend/.env`：新增 `JUSTONEAPI_TOKEN=2UJdMdkQiP4xaOIS`
+  - 更新 `backend/requirements.txt`：新增 `justoneapi>=2.0.1` 依赖
+- 关键决策：
+  - token 通过 query 参数传递（JustOneAPI 的标准认证方式）
+  - 保留 `extract_url_from_text()` 函数，兼容用户粘贴整段分享文字的场景
+  - 视频列表支持自动翻页，直到达到 max_count 或无更多数据
+  - 对外接口（`parse_douyin_link` / `fetch_author_videos`）签名不变，main.py 无需修改
+- 修改文件：backend/douyin_parser.py、backend/.env、backend/requirements.txt

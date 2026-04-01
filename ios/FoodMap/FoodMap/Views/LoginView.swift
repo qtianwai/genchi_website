@@ -23,9 +23,9 @@ struct LoginView: View {
                 Image(systemName: "fork.knife.circle.fill")
                     .font(.system(size: 64))
                     .foregroundColor(.orange)
-                Text("达人美食地图")
+                Text("跟吃")
                     .font(.title).fontWeight(.bold)
-                Text("关注喜爱的博主，发现身边好店")
+                Text("跟着达人，发现身边好店")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }

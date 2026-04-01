@@ -1,10 +1,27 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npm show @anthropic-ai/claude-code version)",
-      "Bash(brew install:*)",
-      "Bash(ssh-keygen -t ed25519 -C \"363234339@qq.com\" -f ~/.ssh/id_ed25519 -N \"\")",
-      "Bash(ssh -T git@github.com)"
+      "Bash(*)",
+      "Edit(*)",
+      "Write(*)",
+      "Read(*)",
+      "WebFetch(*)",
+      "WebSearch",
+      "mcp__notion__*"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/notify-complete.sh",
+            "timeout": 10,
+            "async": true
+          }
+        ]
+      }
     ]
   }
 }

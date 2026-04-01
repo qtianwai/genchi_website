@@ -5,7 +5,7 @@ import Foundation
 
 // 后端服务地址，部署到 Railway 后替换为真实地址
 // 本地开发时使用 http://localhost:8000
-let BASE_URL = "https://your-app.railway.app"  // ← 部署后替换此地址
+let BASE_URL = "https://claudetest-production-c925.up.railway.app"  // Railway 部署地址
 
 class APIService {
     static let shared = APIService()
