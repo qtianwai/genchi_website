@@ -773,7 +773,7 @@ async def manual_add_restaurant(req: ManualAddRestaurantRequest):
         if not search_results:
             raise HTTPException(
                 status_code=404,
-                detail=f"高德地图未找到"{req.restaurant_name}"，请检查店铺名称和城市是否正确"
+                detail=f"高德地图未找到「{req.restaurant_name}」，请检查店铺名称和城市是否正确"
             )
 
         # 取第一条搜索结果
