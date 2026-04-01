@@ -48,58 +48,92 @@ def extract_user_id(url: str) -> Optional[str]:
     return None
 
 
-async def fetch_video_info(video_id: str) -> dict:
+async def fetch_video_info_from_page(video_id: str, full_url: str) -> dict:
     """
-    通过视频 ID 获取视频基本信息（标题、描述、作者信息）
-    使用抖音网页端接口，无需登录
+    从抖音视频页面 HTML 提取视频标题和博主信息
+    抖音内部 API 有反爬限制，改为直接解析页面 meta 标签
     """
-    api_url = f"https://www.douyin.com/aweme/v1/web/aweme/detail/?aweme_id={video_id}&aid=6383&version_name=23.5.0"
+    # 先尝试从 URL 参数中提取博主 ID（重定向后的 URL 通常含有 share_author_id）
+    author_id_from_url = ""
+    sec_uid_from_url = ""
+    match_author = re.search(r'share_author_id=([^&]+)', full_url)
+    if match_author:
+        author_id_from_url = match_author.group(1)
+    match_sec = re.search(r'sec_uid=([^&]+)', full_url)
+    if match_sec:
+        sec_uid_from_url = match_sec.group(1)
 
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
-        try:
-            resp = await client.get(api_url)
-            data = resp.json()
-            aweme = data.get("aweme_detail", {})
+    # 请求视频页面，从 HTML meta 标签提取标题和博主名
+    try:
+        async with httpx.AsyncClient(headers=HEADERS, timeout=20, follow_redirects=True) as client:
+            resp = await client.get(f"https://www.douyin.com/video/{video_id}")
+            html = resp.text
 
-            # 提取博主信息
-            author = aweme.get("author", {})
+        # 从 og:title 提取视频标题
+        title = ""
+        title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html)
+        if title_match:
+            title = title_match.group(1)
+        else:
+            # 备用：从 <title> 标签提取
+            title_match2 = re.search(r'<title>([^<]+)</title>', html)
+            if title_match2:
+                title = title_match2.group(1).split('-')[0].strip()
 
-            return {
-                "video_id": video_id,
-                "title": aweme.get("desc", ""),          # 视频标题/描述
-                "author_id": author.get("uid", ""),       # 博主 uid
-                "author_name": author.get("nickname", ""), # 博主昵称
-                "author_avatar": author.get("avatar_thumb", {}).get("url_list", [""])[0],  # 博主头像
-                "author_sec_uid": author.get("sec_uid", ""),  # 博主 sec_uid（唯一标识）
-            }
-        except Exception as e:
-            # 如果接口失败，返回空数据，后续流程会处理
-            print(f"[抖音解析] 获取视频信息失败: {e}")
-            return {"video_id": video_id, "title": "", "author_id": "", "author_name": "", "author_avatar": "", "author_sec_uid": ""}
+        # 从 og:description 或页面内容提取博主名
+        author_name = ""
+        desc_match = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html)
+        if desc_match:
+            # description 通常格式为 "博主名 - 视频标题"
+            author_name = desc_match.group(1).split('-')[0].strip()
 
+        # 从页面 JSON 数据中提取更完整的博主信息（抖音会在页面内嵌入 __NEXT_DATA__）
+        json_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+        if json_match:
+            try:
+                next_data = json.loads(json_match.group(1))
+                # 尝试从嵌入数据中找博主信息
+                video_detail = next_data.get("props", {}).get("pageProps", {}).get("videoInfoRes", {})
+                item_list = video_detail.get("item_list", [])
+                if item_list:
+                    item = item_list[0]
+                    author = item.get("author", {})
+                    return {
+                        "video_id": video_id,
+                        "title": item.get("desc", title),
+                        "author_id": author.get("uid", author_id_from_url),
+                        "author_name": author.get("nickname", author_name),
+                        "author_avatar": author.get("avatar_thumb", {}).get("url_list", [""])[0],
+                        "author_sec_uid": author.get("sec_uid", sec_uid_from_url),
+                    }
+            except Exception:
+                pass  # JSON 解析失败则继续用 meta 标签数据
 
-async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[str]:
-    """
-    获取视频评论列表，用于辅助 AI 识别店铺信息
-    评论中经常有用户补充的店铺地址、名称等信息
-    """
-    api_url = f"https://www.douyin.com/aweme/v1/web/comment/list/?aweme_id={video_id}&count={max_count}&cursor=0"
-
-    async with httpx.AsyncClient(headers=HEADERS, timeout=15) as client:
-        try:
-            resp = await client.get(api_url)
-            data = resp.json()
-            comments = data.get("comments", []) or []
-            # 只提取评论文本内容
-            return [c.get("text", "") for c in comments if c.get("text")]
-        except Exception as e:
-            print(f"[抖音解析] 获取评论失败: {e}")
-            return []
+        print(f"[抖音解析] 从页面提取: title={title}, author={author_name}, author_id={author_id_from_url}")
+        return {
+            "video_id": video_id,
+            "title": title,
+            "author_id": author_id_from_url,
+            "author_name": author_name,
+            "author_avatar": "",
+            "author_sec_uid": sec_uid_from_url,
+        }
+    except Exception as e:
+        print(f"[抖音解析] 获取视频信息失败: {e}")
+        return {
+            "video_id": video_id,
+            "title": "",
+            "author_id": author_id_from_url,
+            "author_name": "",
+            "author_avatar": "",
+            "author_sec_uid": sec_uid_from_url,
+        }
 
 
 async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
     """
     获取博主的视频列表（用于批量解析博主所有探店视频）
+    抖音 API 有反爬，失败时返回空列表，调用方会降级为只处理当前视频
     """
     api_url = f"https://www.douyin.com/aweme/v1/web/aweme/post/?sec_user_id={sec_uid}&count={max_count}&max_cursor=0"
 
@@ -116,7 +150,7 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
                 for v in videos
             ]
         except Exception as e:
-            print(f"[抖音解析] 获取博主视频列表失败: {e}")
+            print(f"[抖音解析] 获取博主视频列表失败（将只处理当前视频）: {e}")
             return []
 
 
@@ -138,34 +172,33 @@ def extract_url_from_text(text: str) -> str:
 
 async def parse_douyin_link(url: str) -> dict:
     """
-    主入口：解析抖音分享链接，返回视频信息 + 评论
+    主入口：解析抖音分享链接，返回视频信息
 
-    输入：抖音分享链接或包含链接的分享文字
+    输入：抖音分享链接或包含链接的分享文字（兼容整段分享文字）
     输出：{
         video_id, title, author_id, author_name, author_avatar,
-        author_sec_uid, comments: [评论文本列表]
+        author_sec_uid, comments: []
     }
     """
     # 第一步：从文本中提取纯链接（兼容用户粘贴整段分享文字的情况）
     url = extract_url_from_text(url)
 
-    # 第二步：如果是短链，先解析为完整链接
+    # 第二步：跟随重定向，将短链解析为完整链接（含视频 ID）
     if "v.douyin.com" in url or "douyin.com" in url:
         full_url = await resolve_short_url(url)
     else:
         full_url = url
 
-    # 第二步：提取视频 ID
+    print(f"[抖音解析] 重定向后 URL: {full_url}")
+
+    # 第三步：从完整 URL 中提取视频 ID
     video_id = extract_video_id(full_url)
     if not video_id:
-        raise ValueError(f"无法从链接中提取视频 ID: {url}")
+        raise ValueError(f"无法从链接中提取视频 ID: {full_url}")
 
-    # 第三步：并发获取视频信息和评论（提高速度）
-    import asyncio
-    video_info, comments = await asyncio.gather(
-        fetch_video_info(video_id),
-        fetch_video_comments(video_id),
-    )
+    # 第四步：从页面 HTML 提取视频标题和博主信息（不调用内部 API，避免反爬）
+    video_info = await fetch_video_info_from_page(video_id, full_url)
 
-    video_info["comments"] = comments
+    # 评论 API 同样有反爬限制，暂不获取，AI 仅根据视频标题提取店铺
+    video_info["comments"] = []
     return video_info

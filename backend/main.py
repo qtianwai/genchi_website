@@ -142,7 +142,10 @@ async def parse_link(req: ParseLinkRequest):
         author_sec_uid = video_info.get("author_sec_uid", "")
 
         if not author_douyin_id:
-            raise HTTPException(status_code=400, detail="无法识别博主信息，请检查链接是否正确")
+            # 抖音反爬导致无法获取博主 ID 时，用视频 ID 作为兜底唯一标识
+            # 这样至少能完成本次解析，不会直接报错
+            author_douyin_id = f"video_{video_info.get('video_id', 'unknown')}"
+            print(f"[解析链接] 未获取到博主 ID，使用视频 ID 兜底: {author_douyin_id}")
 
         # 第二步：检查博主是否已入库
         existing_author = get_author_by_douyin_id(author_douyin_id)
