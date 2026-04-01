@@ -75,6 +75,7 @@ def link_author_restaurant(author_id: str, restaurant_id: str, video_id: str = "
     """
     建立博主和店铺的关联关系
     一个博主可以推荐多个店铺，一个店铺也可以被多个博主推荐
+    同一博主-店铺组合可以有多个视频记录
     """
     data = {
         "author_id": author_id,
@@ -83,7 +84,7 @@ def link_author_restaurant(author_id: str, restaurant_id: str, video_id: str = "
     }
     result = supabase.table("author_restaurants").upsert(
         data,
-        on_conflict="author_id,restaurant_id"
+        on_conflict="author_id,restaurant_id,video_id"
     ).execute()
     return result.data[0] if result.data else {}
 

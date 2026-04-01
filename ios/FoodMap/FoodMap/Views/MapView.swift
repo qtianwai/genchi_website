@@ -448,8 +448,8 @@ struct NavigationButtons: View {
     }
 
     func openBaiduMap() {
-        // 百度地图 URL Scheme - 使用 UTF-8 编码
-        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        // 百度地图 URL Scheme - 使用完整的百分号编码
+        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? name
         let urlString = "baidumap://map/direction?destination=latlng:\(coordinate.latitude),\(coordinate.longitude)|name:\(encodedName)&mode=driving&coord_type=gcj02"
         if let url = URL(string: urlString), UIApplication.shared.canOpenURL(url) {
             UIApplication.shared.open(url)

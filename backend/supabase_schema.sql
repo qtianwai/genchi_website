@@ -56,11 +56,12 @@ create table if not exists author_restaurants (
   restaurant_id   uuid not null references restaurants(id) on delete cascade,
   video_id        text,                 -- 来源视频 ID（可追溯）
   created_at      timestamptz default now(),
-  unique(author_id, restaurant_id)      -- 同一博主不重复关联同一店铺
+  unique(author_id, restaurant_id, video_id)  -- 同一博主-店铺-视频组合唯一
 );
 
 create index if not exists idx_author_restaurants_author on author_restaurants(author_id);
 create index if not exists idx_author_restaurants_restaurant on author_restaurants(restaurant_id);
+create index if not exists idx_author_restaurants_video on author_restaurants(video_id);
 
 
 -- ─────────────────────────────────────────
