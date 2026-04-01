@@ -25,15 +25,29 @@ def _get(path: str, params: dict) -> dict:
         return resp.json()
 
 
-async def _aget(path: str, params: dict) -> dict:
+async def _aget(path: str, params: dict, max_retries: int = 2) -> dict:
     """
     异步调用 JustOneAPI GET 接口（供 async 函数使用）。
+    自动重试 301/500/502/503/504 等临时错误，提升接口稳定性。
     """
-    params["token"] = JUSTONEAPI_TOKEN
-    params = {k: v for k, v in params.items() if v is not None}
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
-        resp = await client.get(f"{JUSTONEAPI_BASE}{path}", params=params)
-        return resp.json()
+    for attempt in range(max_retries + 1):
+        params["token"] = JUSTONEAPI_TOKEN
+        params = {k: v for k, v in params.items() if v is not None}
+        try:
+            async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                resp = await client.get(f"{JUSTONEAPI_BASE}{path}", params=params)
+                result = resp.json()
+            code = result.get("code", -1)
+            # 301/500/502/503/504 表示临时错误，可以重试
+            if code in (301, 500, 502, 503, 504) and attempt < max_retries:
+                print(f"[JustOneAPI] 尝试 {attempt+1} 失败 (code={code})，重试中...")
+                continue
+            return result
+        except Exception as e:
+            if attempt < max_retries:
+                print(f"[JustOneAPI] 网络错误 (attempt {attempt+1}): {e}，重试中...")
+                continue
+            raise
 
 
 def extract_url_from_text(text: str) -> str:
@@ -79,7 +93,8 @@ async def parse_douyin_link(url: str) -> dict:
     # 从 redirect_url 中提取视频 ID
     # redirect_url 格式：https://www.iesdouyin.com/share/video/7621134274259171761/?...
     redirect_url = result["data"].get("redirect_url", "")
-    match = re.search(r'/video/(\d+)/', redirect_url)
+    # 匹配 /video/数字 格式（可能后面是 / 或 ? 或 &）
+    match = re.search(r'/video/(\d+)', redirect_url)
     if not match:
         raise ValueError(f"无法从 redirect_url 提取视频 ID: {redirect_url}")
     video_id = match.group(1)
@@ -194,3 +209,95 @@ async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[dict]
 
     print(f"[抖音解析] 获取到评论 {len(comments)} 条，最高点赞: {comments[0]['digg_count'] if comments else 0}")
     return comments
+
+
+async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
+    """
+    获取视频的扩展信息，用于辅助 AI 精准提取店铺名称。
+
+    返回字段：
+    - hashtags: 标题中的话题标签列表（如 ["上海火锅去哪吃", "上海火锅店"]）
+    - city_code: 城市编码（310000=上海，110000=北京）
+    - city_name: 城市名称（通过编码推断的中文城市名）
+    - author_liked_comments: 博主点赞的评论列表（最高优先级信息来源）
+    - hot_comments: 热门评论列表
+
+    这些信息会按优先级传递给 AI，帮助更精准地识别店铺名称。
+    """
+    result = await _aget("/api/douyin/get-video-detail/v2", {"videoId": video_id})
+    if result.get("code") != 0:
+        print(f"[抖音解析] 获取视频详情扩展信息失败: {result.get('message')}")
+        return {
+            "hashtags": [],
+            "city_code": "",
+            "city_name": "未知",
+            "author_liked_comments": [],
+            "hot_comments": [],
+        }
+
+    aweme = result["data"].get("aweme_detail", {})
+    # 从 text_extra 中提取话题标签（type=1 表示话题标签）
+    text_extras = aweme.get("text_extra", []) or []
+    hashtags = [
+        t.get("hashtag_name", "")
+        for t in text_extras
+        if t.get("type") == 1 and t.get("hashtag_name")
+    ]
+
+    # 城市编码转中文（常见城市编码）
+    city_code = str(aweme.get("city", ""))
+    city_map = {
+        "310000": "上海",
+        "110000": "北京",
+        "440100": "广州",
+        "440300": "深圳",
+        "330100": "杭州",
+        "320500": "苏州",
+        "500000": "重庆",
+        "610100": "西安",
+        "420100": "武汉",
+        "320100": "南京",
+        "510100": "成都",
+        "350200": "厦门",
+    }
+    city_name = city_map.get(city_code, city_code)
+
+    # 获取博主点赞的评论（通过评论接口的 is_author_digged 字段）
+    author_liked_comments = []
+    hot_comments = []
+
+    comments_result = await _aget(
+        "/api/douyin/get-video-comment/v1",
+        {"awemeId": video_id, "page": 1},
+    )
+    if comments_result.get("code") == 0:
+        raw_comments = (comments_result.get("data") or {}).get("comments", []) or []
+        for c in raw_comments:
+            text = c.get("text", "")
+            if not text:
+                continue
+            digg = c.get("digg_count", 0)
+            comment_data = {"text": text, "digg_count": digg}
+
+            # 博主点赞的评论：P1 最高优先级
+            if c.get("is_author_digged"):
+                author_liked_comments.append(comment_data)
+
+            # 热门评论：P2 次优先级
+            if c.get("is_hot"):
+                hot_comments.append(comment_data)
+
+        # 按点赞数降序排列
+        author_liked_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        hot_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+
+    print(f"[抖音解析] 视频扩展信息: 话题={hashtags}, 城市={city_name}, "
+          f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条")
+
+    return {
+        "hashtags": hashtags,
+        "city_code": city_code,
+        "city_name": city_name,
+        "author_liked_comments": author_liked_comments,
+        "hot_comments": hot_comments,
+    }

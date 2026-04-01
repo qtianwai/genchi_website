@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments
-from ai_extractor import extract_restaurants_from_video
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra
+from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority
 from amap_service import batch_search_restaurants
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
@@ -188,15 +188,35 @@ async def parse_link(req: ParseLinkRequest):
             print(f"[解析链接] 视频列表为空，回退到当前视频: {video_info.get('video_id')}")
             videos = [{"video_id": video_info["video_id"], "title": video_info["title"]}]
 
-        # 对每个视频调用 AI 提取店铺（同时获取评论，评论中往往含有具体店名）
+        # 对每个视频调用 AI 提取店铺（使用优先级算法）
         for video in videos:
             vid = video.get("video_id", "")
-            comments = await fetch_video_comments(vid) if vid else []
-            extracted = await extract_restaurants_from_video(
+            # 获取视频扩展信息（P1：标题话题标签、城市；P2：博主点赞评论）
+            extra = await fetch_video_detail_extra(vid, author_id) if vid else {
+                "hashtags": [], "city_name": "未知", "author_liked_comments": [], "hot_comments": []
+            }
+            # 获取所有评论（P4 兜底）
+            comments = await fetch_video_comments(vid, max_count=20) if vid else []
+
+            # 使用优先级提取算法（相比旧算法增加了博主点赞评论、话题标签等高优先级信息）
+            extracted = await extract_restaurants_priority(
                 video_title=video.get("title", ""),
-                comments=comments,
                 author_name=video_info.get("author_name", ""),
+                hashtags=extra.get("hashtags", []),
+                city_name=extra.get("city_name", "未知"),
+                author_liked_comments=extra.get("author_liked_comments", []),
+                hot_comments=extra.get("hot_comments", []),
+                all_comments=comments,
             )
+
+            # 如果优先级算法未识别到，降级为旧算法兜底
+            if not extracted:
+                extracted = await extract_restaurants_from_video(
+                    video_title=video.get("title", ""),
+                    comments=comments,
+                    author_name=video_info.get("author_name", ""),
+                )
+
             print(f"[解析链接] 视频 {vid} 提取到 {len(extracted)} 家店铺")
             all_restaurants.extend(extracted)
 

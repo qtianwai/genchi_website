@@ -46,7 +46,7 @@
 | 数据库 | Supabase (PostgreSQL) | 免费套餐，含用户认证 |
 | AI | 通义千问 qwen-plus | 提取视频中的店铺信息 |
 | 地图 | 高德地图 API | 地址搜索 + iOS 地图展示 |
-| 抖音解析 | 非官方接口 | 后期可替换为付费 API |
+| 抖音解析 | JustOneAPI | 第三方付费 API，稳定获取视频详情和博主视频列表 |
 
 ---
 
@@ -210,3 +210,30 @@ python main.py
   - 视频列表支持自动翻页，直到达到 max_count 或无更多数据
   - 对外接口（`parse_douyin_link` / `fetch_author_videos`）签名不变，main.py 无需修改
 - 修改文件：backend/douyin_parser.py、backend/.env、backend/requirements.txt
+
+### 2026-04-01 第八次会话：优化抖音店铺解析算法（优先级策略）
+- 主要目的：优化店铺识别准确率，解决一个视频解析出多个模糊店名的问题
+- 验证结果（通过示例链接 https://v.douyin.com/4zIppExRIAg/）：
+  - `parse_douyin_link` ✅ 正常：获取到视频ID、作者信息（"不吃西瓜不要关注"）、sec_uid
+  - `fetch_author_videos` ✅ 正常：获取到博主20条视频，其中13条识别为探店相关
+  - `fetch_video_comments` ✅ 正常：获取到评论，且评论包含 `is_author_digged`（博主点赞）和 `is_hot`（热门）字段
+  - `get-video-detail` ✅ 正常：包含 `text_extra`（话题标签）、`city`（城市编码310000=上海）等高价值字段
+  - 发现：评论接口每页约19条，支持分页（page=1/2/3...）
+- 完成任务：
+  - `douyin_parser.py` 新增 `fetch_video_detail_extra()` 函数：提取话题标签、城市编码、博主点赞评论、热门评论
+  - `douyin_parser.py` 修复正则 bug：`/video/(\d+)/` → `/video/(\d+)`，解决链接格式差异导致提取失败
+  - `douyin_parser.py` `_aget()` 增加自动重试（最多2次），应对 JustOneAPI 偶发 301 错误
+  - `ai_extractor.py` 新增 `extract_restaurants_priority()` 函数：实现优先级提取策略
+    - P1（最高）：视频标题 + 话题标签 + 博主昵称 + 城市
+    - P2（高）：博主点赞评论（is_author_digged=True）
+    - P3（中）：热门评论（is_hot=True）
+    - P4（低）：普通评论兜底
+  - `ai_extractor.py` 修复变量名：`client` → `dashscope_client`（统一客户端命名）
+  - `main.py` 集成新函数：每个视频先调用 `fetch_video_detail_extra` 获取 P1/P2 信息，再调用 `extract_restaurants_priority`，未识别时降级旧算法
+- 关键决策：
+  - 博主点赞评论（is_author_digged=True）是最高价值的评论来源，博主认可即代表视频核心内容
+  - 热门评论（is_hot=True）代表大众共识，往往有人直接说出店名
+  - 标题和话题标签是最直接的店铺信息来源（如"#上海重庆火锅天花板"直接暗示了火锅店）
+  - P1 信息不充分时才依赖评论兜底，避免被误导
+- 技术栈：Python FastAPI + JustOneAPI + 通义千问 qwen-plus
+- 修改文件：backend/douyin_parser.py、backend/ai_extractor.py、backend/main.py
