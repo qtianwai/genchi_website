@@ -50,15 +50,23 @@ struct MapRestaurant: Identifiable, Codable {
 }
 
 // ─────────────────────────────────────────
-// 解析链接的 API 响应
+// 解析链接的 API 响应（新版本）
+// 后端优先解析当前视频快速返回，博主其他视频在后台异步处理
 // ─────────────────────────────────────────
 struct ParseLinkResponse: Codable {
-    let status: String          // "cached" 或 "parsed"
-    let author: Author
-    let restaurants: [RestaurantResult]
+    let status: String           // "cached" / "parsed"
+    // 缓存命中时用 restaurant（新格式，单个店铺）
+    let restaurant: RestaurantResult?
+    // cached 返回时还有 author_id（用于查询解析状态）
+    let author_id: String?
+    let author: Author?          // parsed 返回时包含博主信息
+    let restaurants: [RestaurantResult]?  // 向后兼容旧格式
     let message: String
+    let is_background_running: Bool   // 是否有后台任务正在运行
+    let background_progress: BackgroundProgress?
 }
 
+// 单个餐厅结果（兼容新旧两种后端格式）
 struct RestaurantResult: Codable, Identifiable {
     let id: String?
     let name: String
@@ -68,6 +76,34 @@ struct RestaurantResult: Codable, Identifiable {
     let longitude: Double?
     let amap_id: String?
     let category: String?
+
+    // 兼容旧的 Restaurant 类型，转换为坐标
+    var coordinate: CLLocationCoordinate2D? {
+        guard let lat = latitude, let lng = longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+// 后台解析任务进度
+struct BackgroundProgress: Codable {
+    let status: String          // pending / running / completed / failed
+    let total_videos: Int
+    let processed_videos: Int
+    let new_restaurants_found: Int
+    let task_type: String       // full_scan / incremental
+}
+
+// 后台任务状态查询响应
+struct ParseStatusResponse: Codable {
+    let has_task: Bool
+    let status: String
+    let task_type: String?
+    let total_videos: Int?
+    let processed_videos: Int?
+    let new_restaurants_found: Int?
+    let started_at: String?
+    let completed_at: String?
+    let message: String
 }
 
 // ─────────────────────────────────────────

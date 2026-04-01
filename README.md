@@ -80,6 +80,7 @@
    SUPABASE_URL=https://ygsxhvsmivcckmjmjmhr.supabase.co
    SUPABASE_ANON_KEY=sb_publishable_gQdKpwmrgSIQOV2G45mghg_uWiIRnrd
    SUPABASE_SERVICE_ROLE_KEY=sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN
+   JUSTONEAPI_TOKEN=2UJdMdkQiP4xaOIS
    ```
 5. 复制 Railway 给你的域名（如 `https://xxx.railway.app`）
 
@@ -237,3 +238,61 @@ python main.py
   - P1 信息不充分时才依赖评论兜底，避免被误导
 - 技术栈：Python FastAPI + JustOneAPI + 通义千问 qwen-plus
 - 修改文件：backend/douyin_parser.py、backend/ai_extractor.py、backend/main.py
+
+---
+
+## 会话 2026-04-01：优化解析流程 + 解决前端超时问题
+
+### 主要目的
+解决"前端提示超时但后端继续解析"的前后端不一致问题，同时优化用户体验：
+1. 视频地址优先缓存命中，不再重复解析
+2. 优先解析当前视频快速返回，不等博主所有历史视频
+3. 博主历史探店视频在后台异步解析，不阻塞用户
+4. 前端展示后台解析进度，让用户感知任务正在进行
+
+### 完成的主要任务
+- 新增数据库表 `video_parse_cache`：按视频分享链接精确缓存解析结果
+- 新增数据库表 `author_background_tasks`：管理博主历史视频的后台异步解析任务
+- `db.py` 新增 11 个函数：视频缓存读写、后台任务状态管理
+- 重构 `main.py` `/api/parse-link` 接口：新逻辑流程（缓存优先→快速解析当前→后台异步）
+- 新增 `GET /api/parse-status/{author_id}` 接口：前端轮询查询后台任务进度
+- 新增后台异步函数 `parse_author_all_videos_background`：独立事件循环解析博主历史视频
+- 前端 Models 新增 `BackgroundProgress`、`ParseStatusResponse` 模型
+- 前端 APIService 新增 `getParseStatus` 方法
+- 前端 ParseLinkSheet 新增后台进度指示器（BgProgressView）、轮询机制、解析完成通知
+
+### 关键决策和解决方案
+- **视频级缓存**：用用户提交的原始链接作为唯一键（`video_url`），精确匹配避免重复解析
+- **快速返回**：当前视频只用标题解析（不获取评论/额外信息），节省 1-2 个 API 调用
+- **后台任务隔离**：使用 `asyncio.new_event_loop()` 在独立线程中执行后台任务，避免 FastAPI 事件循环阻塞
+- **任务状态持久化**：后台任务进度写入 `author_background_tasks` 表，前端通过轮询 `/api/parse-status` 获取
+- **新旧格式兼容**：前端 `ParseResultView` 同时支持返回 `restaurants`（旧） 和 `restaurant`（新）两种格式
+
+### 技术栈
+- Python FastAPI + BackgroundTasks + asyncio
+- Supabase（PostgreSQL）
+- SwiftUI + Combine（定时轮询）
+
+### 修改文件
+- `backend/supabase_schema.sql`：新增 `video_parse_cache` 表和 `author_background_tasks` 表
+- `backend/db.py`：新增 11 个数据库操作函数
+- `backend/main.py`：重构 `/api/parse-link` 接口，新增 `/api/parse-status` 接口，新增后台解析函数
+- `ios/FoodMap/FoodMap/Models/Models.swift`：新增模型适配新 API 响应
+- `ios/FoodMap/FoodMap/Services/APIService.swift`：新增 `getParseStatus` 方法
+- `ios/FoodMap/FoodMap/Views/ParseLinkSheet.swift`：新增后台进度 UI 和轮询逻辑
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`：同步更新
+- `ios/FoodMap/genchi/genchi/Services/APIService.swift`：同步更新
+- `ios/FoodMap/genchi/genchi/Views/ParseLinkSheet.swift`：同步更新
+
+---
+
+## 会话记录 2026-04-01
+
+### 主要目的
+强化项目规则中对核心技术文档的维护要求。
+
+### 完成的主要任务
+更新 CLAUDE.md 文档维护规则，添加重要提示说明视频解析与数据入库技术方案文档是项目最复杂最核心的内容，要求每次相关逻辑调整时必须第一时间复核并更新该文档。
+
+### 修改了哪些文件
+- `CLAUDE.md`：文档维护规则部分新增重要提示说明

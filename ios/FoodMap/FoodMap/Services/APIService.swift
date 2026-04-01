@@ -71,6 +71,15 @@ class APIService {
         )
     }
 
+    // 查询博主后台解析任务进度
+    func getParseStatus(authorId: String) async throws -> ParseStatusResponse {
+        return try await get(
+            path: "/api/parse-status/\(authorId)",
+            params: [:],
+            responseType: ParseStatusResponse.self
+        )
+    }
+
     // ─────────────────────────────────────────
     // 地图数据
     // ─────────────────────────────────────────

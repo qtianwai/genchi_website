@@ -106,6 +106,61 @@ create table if not exists parse_records (
 
 
 -- ─────────────────────────────────────────
+-- 7. 视频地址缓存表（解决重复解析同一视频的问题）
+-- 记录每个视频链接对应的解析结果（店铺+坐标）
+-- 一个视频地址对应一条记录，URL 完全一致才命中缓存
+-- ─────────────────────────────────────────
+create table if not exists video_parse_cache (
+  id              uuid primary key default uuid_generate_v4(),
+  video_url       text not null,        -- 用户提交的原始抖音分享链接（精确匹配）
+  video_id        text,                 -- 抖音视频 ID
+  author_id       uuid references authors(id) on delete cascade,
+  restaurant_id   uuid references restaurants(id) on delete set null,
+  status          text not null default 'pending',  -- pending/parsing/completed/failed
+  -- 解析结果快照（直接从 video_parse_cache 返回，避免联表查询）
+  restaurant_name    text,
+  restaurant_address text,
+  restaurant_city    text,
+  restaurant_lat     double precision,
+  restaurant_lng     double precision,
+  restaurant_amap_id text,
+  restaurant_category text,
+  error_message   text,                 -- 解析失败时的错误信息
+  created_at      timestamptz default now(),
+  updated_at      timestamptz default now()
+);
+
+-- 索引：按视频 URL 精确查询（唯一索引保证每个 URL 只有一条记录）
+create unique index if not exists idx_video_cache_url on video_parse_cache(video_url);
+-- 索引：按视频 ID 查询（用于去重判断）
+create index if not exists idx_video_cache_videoid on video_parse_cache(video_id);
+
+
+-- ─────────────────────────────────────────
+-- 8. 博主后台解析任务表
+-- 记录博主历史探店视频的后台异步解析任务
+-- 用户新提交链接时，立即解析当前视频；其他历史视频在后台逐步解析
+-- ─────────────────────────────────────────
+create table if not exists author_background_tasks (
+  id              uuid primary key default uuid_generate_v4(),
+  author_id       uuid not null references authors(id) on delete cascade,
+  task_type       text not null,        -- 'full_scan': 首次入库的全量扫描; 'incremental': 增量更新
+  total_videos    int default 0,        -- 该任务需要处理的总视频数
+  processed_videos int default 0,        -- 已处理完成的视频数
+  status          text not null default 'pending',  -- pending/running/completed/failed
+  new_restaurants_found int default 0,  -- 本次任务发现的新店铺数
+  error_message   text,
+  started_at      timestamptz,
+  completed_at   timestamptz,
+  created_at      timestamptz default now()
+);
+
+-- 索引：按博主 ID 查最新任务状态
+create index if not exists idx_bg_tasks_author on author_background_tasks(author_id);
+create index if not exists idx_bg_tasks_status on author_background_tasks(status);
+
+
+-- ─────────────────────────────────────────
 -- Row Level Security (RLS) 策略
 -- 保护数据安全：用户只能读写自己的数据
 -- ─────────────────────────────────────────

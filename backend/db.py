@@ -171,6 +171,15 @@ def remove_favorite(user_id: str, restaurant_id: str) -> bool:
     return True
 
 
+def get_videos_by_restaurant(restaurant_id: str) -> list[dict]:
+    """
+    获取某个店铺关联的所有视频信息
+    返回：[{video_id, author_id, author_name, author_avatar_url, created_at}]
+    """
+    result = supabase.rpc("get_videos_by_restaurant", {"p_restaurant_id": restaurant_id}).execute()
+    return result.data or []
+
+
 # ─────────────────────────────────────────
 # 解析记录相关操作（避免重复解析同一博主）
 # ─────────────────────────────────────────
@@ -189,3 +198,129 @@ def save_parse_record(author_id: str, video_count: int) -> dict:
         on_conflict="author_id"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+# ─────────────────────────────────────────
+# 视频地址缓存相关操作
+# （解决重复解析同一视频的问题）
+# ─────────────────────────────────────────
+
+def get_video_cache_by_url(video_url: str) -> dict | None:
+    """根据用户提交的原始链接查找视频缓存（精确匹配）"""
+    result = supabase.table("video_parse_cache").select("*").eq("video_url", video_url).execute()
+    rows = result.data
+    return rows[0] if rows else None
+
+
+def get_video_cache_by_id(video_id: str) -> dict | None:
+    """根据视频 ID 查找缓存（用于判断视频是否解析过）"""
+    result = supabase.table("video_parse_cache").select("*").eq("video_id", video_id).execute()
+    rows = result.data
+    return rows[0] if rows else None
+
+
+def upsert_video_cache(cache_data: dict) -> dict:
+    """
+    插入或更新视频缓存记录
+    cache_data 字段：video_url, video_id, author_id, status, restaurant_*, error_message
+    """
+    result = supabase.table("video_parse_cache").upsert(
+        cache_data,
+        on_conflict="video_url"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_video_cache_restaurant(video_url: str, restaurant_id: str, restaurant_data: dict) -> dict:
+    """视频解析成功后，更新缓存中的店铺快照字段"""
+    result = supabase.table("video_parse_cache").update({
+        "status": "completed",
+        "restaurant_id": restaurant_id,
+        "restaurant_name": restaurant_data.get("name"),
+        "restaurant_address": restaurant_data.get("address"),
+        "restaurant_city": restaurant_data.get("city"),
+        "restaurant_lat": restaurant_data.get("latitude"),
+        "restaurant_lng": restaurant_data.get("longitude"),
+        "restaurant_amap_id": restaurant_data.get("amap_id"),
+        "restaurant_category": restaurant_data.get("category"),
+        "updated_at": "now()",
+    }).eq("video_url", video_url).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_video_cache_failed(video_url: str, error_message: str) -> dict:
+    """视频解析失败时，更新缓存状态"""
+    result = supabase.table("video_parse_cache").update({
+        "status": "failed",
+        "error_message": error_message,
+        "updated_at": "now()",
+    }).eq("video_url", video_url).execute()
+    return result.data[0] if result.data else {}
+
+
+# ─────────────────────────────────────────
+# 博主后台解析任务相关操作
+# （管理博主历史视频的异步解析任务）
+# ─────────────────────────────────────────
+
+def create_bg_task(author_id: str, task_type: str = "full_scan") -> dict:
+    """创建博主后台解析任务"""
+    result = supabase.table("author_background_tasks").insert({
+        "author_id": author_id,
+        "task_type": task_type,
+        "status": "pending",
+    }).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_bg_task_started(task_id: str) -> dict:
+    """任务开始执行"""
+    result = supabase.table("author_background_tasks").update({
+        "status": "running",
+        "started_at": "now()",
+    }).eq("id", task_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_bg_task_progress(task_id: str, processed: int, new_found: int = 0) -> dict:
+    """更新任务进度"""
+    result = supabase.table("author_background_tasks").update({
+        "processed_videos": processed,
+        "new_restaurants_found": new_found,
+    }).eq("id", task_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def complete_bg_task(task_id: str, new_restaurants_count: int = 0) -> dict:
+    """任务完成"""
+    result = supabase.table("author_background_tasks").update({
+        "status": "completed",
+        "processed_videos": 0,  # completed 时 processed_videos 意义不大
+        "new_restaurants_found": new_restaurants_count,
+        "completed_at": "now()",
+    }).eq("id", task_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def fail_bg_task(task_id: str, error_message: str) -> dict:
+    """任务失败"""
+    result = supabase.table("author_background_tasks").update({
+        "status": "failed",
+        "error_message": error_message,
+        "completed_at": "now()",
+    }).eq("id", task_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_latest_bg_task(author_id: str) -> dict | None:
+    """获取博主最新的后台任务（用于查询进度）"""
+    result = (
+        supabase.table("author_background_tasks")
+        .select("*")
+        .eq("author_id", author_id)
+        .order("created_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    rows = result.data
+    return rows[0] if rows else None

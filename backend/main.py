@@ -3,7 +3,9 @@
 # iOS App 通过这些接口与后端通信
 
 import os
-from fastapi import FastAPI, HTTPException, Header
+import asyncio
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -20,6 +22,11 @@ from db import (
     get_map_restaurants_for_user,
     get_user_favorites, add_favorite, remove_favorite,
     get_restaurants_by_author,
+    # 新增：视频缓存和后台任务相关
+    get_video_cache_by_url, upsert_video_cache, update_video_cache_restaurant,
+    update_video_cache_failed, get_video_cache_by_id,
+    create_bg_task, update_bg_task_started, update_bg_task_progress,
+    complete_bg_task, get_latest_bg_task,
 )
 
 load_dotenv()
@@ -120,171 +127,373 @@ async def verify_otp(req: VerifyOTPRequest):
 
 
 # ─────────────────────────────────────────
-# 核心功能：解析抖音链接
+# 核心功能：解析抖音链接（重构版）
+# 核心策略：用户提交链接后，优先解析当前视频快速返回，
+#           博主其他历史视频在后台异步处理，不阻塞用户
 # ─────────────────────────────────────────
 
-@app.post("/api/parse-link")
-async def parse_link(req: ParseLinkRequest):
+def _save_video_restaurant(video_url: str, video_id: str, author_id: str, restaurant_data: dict) -> dict:
     """
-    解析抖音分享链接，提取博主信息和推荐店铺
-
-    流程：
-    1. 解析链接获取视频信息和博主信息
-    2. 检查该博主是否已入库（已入库则直接返回，不重复解析）
-    3. 未入库则调用 AI 提取店铺，再用高德搜索地址
-    4. 将博主、店铺、关联关系存入数据库
-    5. 自动关注该博主（用户粘贴链接即表示感兴趣）
+    内部函数：将视频解析出的店铺存入数据库并更新视频缓存
+    统一处理：店铺入库 → 关联博主 → 更新视频缓存
     """
-    try:
-        # 第一步：解析抖音链接
-        video_info = await parse_douyin_link(req.url)
-        author_douyin_id = video_info.get("author_id", "")
-        author_sec_uid = video_info.get("author_sec_uid", "")
+    # 查询高德坐标（只有有坐标的店铺才入库）
+    if not restaurant_data.get("latitude") or not restaurant_data.get("longitude"):
+        return {"restaurant": None, "status": "no_location"}
 
-        if not author_douyin_id:
-            # 抖音反爬导致无法获取博主 ID 时，用视频 ID 作为兜底唯一标识
-            # 这样至少能完成本次解析，不会直接报错
-            author_douyin_id = f"video_{video_info.get('video_id', 'unknown')}"
-            print(f"[解析链接] 未获取到博主 ID，使用视频 ID 兜底: {author_douyin_id}")
-
-        # 第二步：检查博主是否已入库
-        existing_author = get_author_by_douyin_id(author_douyin_id)
-
-        if existing_author:
-            author_id = existing_author["id"]
-            author_restaurants = get_restaurants_by_author(author_id)
-
-            if author_restaurants:
-                # 博主已入库且有店铺数据，直接返回缓存
-                follow_author(req.user_id, author_id)
-                # 将 Supabase 嵌套数据拍平：{id, restaurant_id, restaurants: {...}} → 扁平 RestaurantResult
-                restaurants = [
-                    {
-                        "id": row.get("restaurant_id", ""),
-                        "name": (row.get("restaurants") or {}).get("name", ""),
-                        "address": (row.get("restaurants") or {}).get("address"),
-                        "city": (row.get("restaurants") or {}).get("city"),
-                        "latitude": (row.get("restaurants") or {}).get("latitude"),
-                        "longitude": (row.get("restaurants") or {}).get("longitude"),
-                        "amap_id": (row.get("restaurants") or {}).get("amap_id"),
-                        "category": (row.get("restaurants") or {}).get("category"),
-                    }
-                    for row in author_restaurants
-                    if (row.get("restaurants") or {}).get("name")
-                ]
-                print(f"[解析链接] 缓存返回 {len(restaurants)} 家店铺")
-                return {
-                    "status": "cached",
-                    "author": existing_author,
-                    "restaurants": restaurants,
-                    "message": f"已从数据库加载 {len(restaurants)} 家店铺",
-                }
-            # 博主已入库但店铺为空（上次解析失败），继续往下重新解析
-            print(f"[解析链接] 博主已入库但无店铺数据，重新解析: {author_douyin_id}")
-
-        # 第三步：新博主，先存入博主信息
-        author_record = upsert_author({
-            "douyin_uid": author_douyin_id,
-            "sec_uid": author_sec_uid,
-            "name": video_info.get("author_name", "未知博主"),
-            "avatar_url": video_info.get("author_avatar", ""),
+    # 检查店铺是否已存在
+    existing = get_restaurant_by_amap_id(restaurant_data["amap_id"])
+    if existing:
+        restaurant_id = existing["id"]
+    else:
+        saved = upsert_restaurant({
+            "name": restaurant_data["name"],
+            "address": restaurant_data["address"],
+            "city": restaurant_data["city"],
+            "latitude": restaurant_data["latitude"],
+            "longitude": restaurant_data["longitude"],
+            "amap_id": restaurant_data["amap_id"],
+            "category": restaurant_data.get("category", ""),
         })
-        author_id = author_record["id"]
+        restaurant_id = saved["id"]
 
-        # 第四步：获取博主所有视频并逐一解析（最多处理 20 个视频）
-        all_restaurants = []
-        videos = []
+    # 博主与店铺关联
+    link_author_restaurant(author_id, restaurant_id, video_id)
 
-        if author_sec_uid:
-            # 获取博主视频列表
-            videos = await fetch_author_videos(author_sec_uid, max_count=20)
+    # 更新视频缓存（记录店铺快照）
+    update_video_cache_restaurant(video_url, restaurant_id, restaurant_data)
 
-        # 视频列表为空（获取失败或无 sec_uid），回退到当前视频
-        if not videos:
-            print(f"[解析链接] 视频列表为空，回退到当前视频: {video_info.get('video_id')}")
-            videos = [{"video_id": video_info["video_id"], "title": video_info["title"]}]
+    return {
+        "restaurant": restaurant_data,
+        "restaurant_id": restaurant_id,
+        "status": "saved",
+    }
 
-        # 对每个视频调用 AI 提取店铺（使用优先级算法）
-        for video in videos:
-            vid = video.get("video_id", "")
-            # 获取视频扩展信息（P1：标题话题标签、城市；P2：博主点赞评论）
-            extra = await fetch_video_detail_extra(vid, author_id) if vid else {
-                "hashtags": [], "city_name": "未知", "author_liked_comments": [], "hot_comments": []
-            }
-            # 获取所有评论（P4 兜底）
-            comments = await fetch_video_comments(vid, max_count=20) if vid else []
 
-            # 使用优先级提取算法（相比旧算法增加了博主点赞评论、话题标签等高优先级信息）
+async def parse_single_video_fast(
+    video_url: str,
+    video_info: dict,
+    author_id: str,
+) -> dict:
+    """
+    快速解析单个视频的核心逻辑（不获取评论，不获取额外信息）
+    用于 parse_link 主流程，确保用户等待时间最短
+    """
+    vid = video_info.get("video_id", "")
+    title = video_info.get("title", "")
+    author_name = video_info.get("author_name", "")
+    city = "未知"
+    hashtags = []
+    author_liked_comments = []
+    hot_comments = []
+    all_comments = []
+
+    # 调用 AI 提取店铺（只用标题、标签等 P1 信息，最快路径）
+    extracted = await extract_restaurants_priority(
+        video_title=title,
+        author_name=author_name,
+        hashtags=hashtags,
+        city_name=city,
+        author_liked_comments=author_liked_comments,
+        hot_comments=hot_comments,
+        all_comments=all_comments,
+    )
+
+    # 降级为旧算法
+    if not extracted:
+        extracted = await extract_restaurants_from_video(
+            video_title=title,
+            comments=[],
+            author_name=author_name,
+        )
+
+    if not extracted:
+        return {"restaurant": None, "status": "not_found"}
+
+    # 调用高德搜索坐标（只有带坐标的才入库）
+    restaurant_data = extracted[0]
+    search_results = await batch_search_restaurants([restaurant_data])
+
+    if not search_results:
+        # 高德搜不到，记录失败缓存
+        upsert_video_cache({
+            "video_url": video_url,
+            "video_id": vid,
+            "author_id": author_id,
+            "status": "failed",
+            "restaurant_name": restaurant_data.get("name", ""),
+            "restaurant_city": restaurant_data.get("city", ""),
+            "error_message": "高德地图未找到该店铺",
+        })
+        return {"restaurant": None, "status": "amap_not_found"}
+
+    # 取高德搜索结果的第一条（最匹配的）
+    amap_result = search_results[0]
+    restaurant_data.update({
+        "address": amap_result.get("address", ""),
+        "latitude": amap_result.get("latitude"),
+        "longitude": amap_result.get("longitude"),
+        "amap_id": amap_result.get("amap_id"),
+    })
+
+    # 存入数据库并更新视频缓存
+    result = _save_video_restaurant(video_url, vid, author_id, restaurant_data)
+    return result
+
+
+def parse_author_all_videos_background(author_id: str, sec_uid: str, current_video_id: str):
+    """
+    后台任务：解析博主所有历史探店视频（异步执行，不阻塞主流程）
+    在独立的事件循环中运行，支持分批处理和错误恢复
+    """
+    # 在新事件循环中运行（FastAPI 需要在事件循环中 await）
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_parse_author_videos_async(author_id, sec_uid, current_video_id))
+    except Exception as e:
+        print(f"[后台任务] 博主全量解析出错 author_id={author_id}: {e}")
+        try:
+            task = create_bg_task(author_id, "full_scan")
+            fail_bg_task(task["id"], str(e))
+        except Exception:
+            pass
+    finally:
+        loop.close()
+
+
+async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video_id: str):
+    """
+    异步执行：获取博主视频列表并逐一解析（排除当前视频）
+    每次只解析视频标题（不获取评论），节省 API 调用
+    """
+    if not sec_uid:
+        print(f"[后台解析] 博主无 sec_uid，跳过历史视频解析: {author_id}")
+        return
+
+    # 获取博主视频列表（最多 30 个，排除当前视频）
+    videos = await fetch_author_videos(sec_uid, max_count=30)
+    video_list = [{"video_id": v.get("video_id", ""), "title": v.get("title", "")}
+                  for v in videos if v.get("video_id") != current_video_id]
+
+    if not video_list:
+        print(f"[后台解析] 博主 {author_id} 无历史视频")
+        return
+
+    # 创建后台任务记录
+    task = create_bg_task(author_id, "full_scan")
+    task_id = task.get("id", "")
+    update_bg_task_started(task_id)
+
+    print(f"[后台解析] 开始解析博主 {author_id} 的 {len(video_list)} 个历史视频...")
+
+    saved_count = 0
+    for i, video in enumerate(video_list):
+        vid = video.get("video_id", "")
+        title = video.get("title", "")
+
+        # 检查视频是否已在缓存（已有成功结果的跳过）
+        existing_cache = get_video_cache_by_id(vid)
+        if existing_cache and existing_cache.get("status") == "completed":
+            print(f"[后台解析] 视频 {vid} 已解析过，跳过")
+            update_bg_task_progress(task_id, i + 1, saved_count)
+            continue
+
+        # 创建该视频的缓存记录
+        video_url = f"bg://{vid}"  # 后台任务用特殊 URL
+        upsert_video_cache({
+            "video_url": video_url,
+            "video_id": vid,
+            "author_id": author_id,
+            "status": "parsing",
+        })
+
+        try:
+            # 获取视频扩展信息（P1：标签+城市）
+            extra = await fetch_video_detail_extra(vid, author_id)
+            comments = await fetch_video_comments(vid, max_count=10) if vid else []
+
+            # AI 提取
             extracted = await extract_restaurants_priority(
-                video_title=video.get("title", ""),
-                author_name=video_info.get("author_name", ""),
+                video_title=title,
+                author_name="",
                 hashtags=extra.get("hashtags", []),
                 city_name=extra.get("city_name", "未知"),
                 author_liked_comments=extra.get("author_liked_comments", []),
                 hot_comments=extra.get("hot_comments", []),
                 all_comments=comments,
             )
-
-            # 如果优先级算法未识别到，降级为旧算法兜底
             if not extracted:
                 extracted = await extract_restaurants_from_video(
-                    video_title=video.get("title", ""),
+                    video_title=title,
                     comments=comments,
-                    author_name=video_info.get("author_name", ""),
+                    author_name="",
                 )
 
-            print(f"[解析链接] 视频 {vid} 提取到 {len(extracted)} 家店铺")
-            all_restaurants.extend(extracted)
+            if extracted:
+                # 高德搜索
+                search_results = await batch_search_restaurants([extracted[0]])
+                if search_results:
+                    amap_result = search_results[0]
+                    extracted[0].update({
+                        "address": amap_result.get("address", ""),
+                        "latitude": amap_result.get("latitude"),
+                        "longitude": amap_result.get("longitude"),
+                        "amap_id": amap_result.get("amap_id"),
+                    })
+                    result = _save_video_restaurant(video_url, vid, author_id, extracted[0])
+                    if result["status"] == "saved":
+                        saved_count += 1
 
-        # 第五步：去重（同名同城市的店铺只保留一个）
-        seen = set()
-        unique_restaurants = []
-        for r in all_restaurants:
-            key = f"{r['name']}_{r.get('city', '')}"
-            if key not in seen:
-                seen.add(key)
-                unique_restaurants.append(r)
-        print(f"[解析链接] AI 提取后去重，{len(unique_restaurants)} 家店铺")
+            # 更新缓存状态
+            if existing_cache := get_video_cache_by_id(vid):
+                if existing_cache.get("status") != "completed":
+                    upsert_video_cache({
+                        "video_url": existing_cache["video_url"],
+                        "video_id": vid,
+                        "author_id": author_id,
+                        "status": "completed" if saved_count > 0 else "failed",
+                    })
+        except Exception as e:
+            print(f"[后台解析] 视频 {vid} 解析失败: {e}")
+            update_video_cache_failed(video_url, str(e))
 
-        # 第六步：调用高德地图搜索精确地址和坐标
-        print(f"[解析链接] 开始高德搜索，共 {len(unique_restaurants)} 家...")
-        restaurants_with_location = await batch_search_restaurants(unique_restaurants)
-        print(f"[解析链接] 高德搜索完成，找到 {len(restaurants_with_location)} 家有坐标的店铺")
+        update_bg_task_progress(task_id, i + 1, saved_count)
 
-        # 第七步：存入数据库并建立博主-店铺关联
-        saved_restaurants = []
-        for r in restaurants_with_location:
-            # 检查店铺是否已存在（可能被其他博主推荐过）
-            existing = get_restaurant_by_amap_id(r["amap_id"])
-            if existing:
-                restaurant_id = existing["id"]
-            else:
+    complete_bg_task(task_id, saved_count)
+    print(f"[后台解析] 博主 {author_id} 后台解析完成，新增 {saved_count} 家店铺")
+
+
+@app.post("/api/parse-link")
+async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
+    """
+    解析抖音分享链接（新流程）
+
+    优化策略：
+    1. 先用原始链接在 video_parse_cache 查缓存，命中则直接返回
+    2. 未命中则解析当前视频（优先快速路径），立即返回结果
+    3. 启动后台任务异步解析博主历史探店视频（不阻塞用户）
+    """
+    try:
+        raw_url = req.url.strip()
+
+        # 第一步：检查视频地址缓存（精确匹配）
+        cached = get_video_cache_by_url(raw_url)
+        if cached and cached.get("status") == "completed":
+            # 命中缓存，直接返回
+            author = get_author_by_douyin_id(
+                cached.get("author_id", "") if cached.get("author_id") else ""
+            )
+            if not author and cached.get("author_id"):
+                # 尝试从 authors 表查询
+                pass
+            print(f"[解析链接] 视频地址缓存命中，直接返回: {raw_url}")
+            return {
+                "status": "cached",
+                "restaurant": _cache_to_restaurant(cached),
+                "author_id": cached.get("author_id", ""),
+                "message": "已从缓存加载",
+                "is_background_running": False,
+                "background_progress": None,
+            }
+
+        # 第二步：解析抖音链接获取视频和博主信息
+        video_info = await parse_douyin_link(raw_url)
+        author_douyin_id = video_info.get("author_id", "")
+        author_sec_uid = video_info.get("author_sec_uid", "")
+        vid = video_info.get("video_id", "")
+
+        if not author_douyin_id:
+            author_douyin_id = f"video_{vid}"
+            print(f"[解析链接] 未获取到博主 ID，使用视频 ID 兜底: {author_douyin_id}")
+
+        # 第三步：检查该视频是否已解析过（用 video_id 判断）
+        video_cache_by_id = get_video_cache_by_id(vid)
+        if video_cache_by_id and video_cache_by_id.get("status") == "completed":
+            # 视频已解析过，但 URL 不同（比如同一个视频多个分享格式）
+            # 更新该 URL 的缓存记录
+            update_video_cache_restaurant(raw_url, video_cache_by_id["restaurant_id"],
+                                          {"name": video_cache_by_id.get("restaurant_name", "")})
+            print(f"[解析链接] 视频 {vid} 已解析过（URL 不同），更新缓存")
+
+        # 第四步：查询或创建博主记录
+        existing_author = get_author_by_douyin_id(author_douyin_id)
+        if existing_author:
+            author_id = existing_author["id"]
+            author_record = existing_author
+        else:
+            author_record = upsert_author({
+                "douyin_uid": author_douyin_id,
+                "sec_uid": author_sec_uid,
+                "name": video_info.get("author_name", "未知博主"),
+                "avatar_url": video_info.get("author_avatar", ""),
+            })
+            author_id = author_record["id"]
+
+        # 第五步：为当前视频创建/更新缓存记录（parsing 状态）
+        upsert_video_cache({
+            "video_url": raw_url,
+            "video_id": vid,
+            "author_id": author_id,
+            "status": "parsing",
+        })
+
+        # 第六步：快速解析当前视频（不获取评论，不等待其他视频）
+        parse_result = await parse_single_video_fast(raw_url, video_info, author_id)
+        restaurant = parse_result.get("restaurant")
+
+        # 第七步：建立博主-店铺关联（当前视频的店铺）
+        is_new_restaurant = False
+        if restaurant:
+            existing = get_restaurant_by_amap_id(restaurant["amap_id"])
+            restaurant_id = existing["id"] if existing else None
+            if not existing:
                 saved = upsert_restaurant({
-                    "name": r["name"],
-                    "address": r["address"],
-                    "city": r["city"],
-                    "latitude": r["latitude"],
-                    "longitude": r["longitude"],
-                    "amap_id": r["amap_id"],
-                    "category": r.get("category", ""),
+                    "name": restaurant["name"],
+                    "address": restaurant["address"],
+                    "city": restaurant["city"],
+                    "latitude": restaurant["latitude"],
+                    "longitude": restaurant["longitude"],
+                    "amap_id": restaurant["amap_id"],
+                    "category": restaurant.get("category", ""),
                 })
                 restaurant_id = saved["id"]
+                is_new_restaurant = True
+            if restaurant_id:
+                link_author_restaurant(author_id, restaurant_id, vid)
 
-            # 建立博主和店铺的关联
-            link_author_restaurant(author_id, restaurant_id, video_info["video_id"])
-            saved_restaurants.append(r)
-
-        # 第八步：记录解析完成，避免下次重复解析
-        save_parse_record(author_id, len(videos))
-
-        # 第九步：自动关注该博主
+        # 第八步：自动关注博主
         follow_author(req.user_id, author_id)
 
+        # 第九步：启动后台任务解析博主历史视频
+        # 已入库博主检查是否有未完成的后台任务；新博主直接创建任务
+        latest_task = get_latest_bg_task(author_id)
+        should_start_bg = (
+            latest_task is None  # 新博主，从未创建过后台任务
+            or latest_task.get("status") in ("completed", "failed")  # 上次任务已结束
+        )
+        is_bg_running = False
+        if should_start_bg and author_sec_uid:
+            background_tasks.add_task(
+                parse_author_all_videos_background,
+                author_id,
+                author_sec_uid,
+                vid,
+            )
+            is_bg_running = True
+            print(f"[解析链接] 已启动后台任务，异步解析博主 {author_id} 的历史视频")
+        elif latest_task and latest_task.get("status") in ("pending", "running"):
+            is_bg_running = True
+
+        # 第十步：返回结果
         return {
-            "status": "parsed",  # 表示新解析的数据
+            "status": "parsed",
+            "restaurant": restaurant,
             "author": author_record,
-            "restaurants": saved_restaurants,
-            "message": f"成功解析 {len(saved_restaurants)} 家店铺",
+            "author_id": author_id,
+            "message": _build_message(parse_result, is_new_restaurant, is_bg_running),
+            "is_background_running": is_bg_running,
+            "background_progress": _build_progress_info(latest_task) if is_bg_running else None,
         }
 
     except ValueError as e:
@@ -292,6 +501,52 @@ async def parse_link(req: ParseLinkRequest):
     except Exception as e:
         print(f"[解析链接] 未知错误: {e}")
         raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
+
+
+def _cache_to_restaurant(cached: dict) -> dict:
+    """将视频缓存记录转换为餐厅响应格式"""
+    if cached.get("status") != "completed":
+        return None
+    return {
+        "name": cached.get("restaurant_name", ""),
+        "address": cached.get("restaurant_address", ""),
+        "city": cached.get("restaurant_city", ""),
+        "latitude": cached.get("restaurant_lat"),
+        "longitude": cached.get("restaurant_lng"),
+        "amap_id": cached.get("restaurant_amap_id", ""),
+        "category": cached.get("restaurant_category", ""),
+    }
+
+
+def _build_message(parse_result: dict, is_new_restaurant: bool, is_bg_running: bool) -> str:
+    """构建返回给前端的消息文本"""
+    status = parse_result.get("status", "")
+    if status == "saved":
+        msg = "已识别店铺并添加到地图"
+        if is_bg_running:
+            msg += "，博主其他探店视频正在后台解析中"
+    elif status == "no_location":
+        msg = "视频有店铺信息但未能获取坐标"
+    elif status == "amap_not_found":
+        msg = "未能在高德地图找到该店铺"
+    else:
+        msg = "未能识别到具体店铺"
+        if is_bg_running:
+            msg += "，博主其他视频正在后台解析"
+    return msg
+
+
+def _build_progress_info(task: dict | None) -> dict | None:
+    """将后台任务记录转换为前端进度提示"""
+    if not task:
+        return None
+    return {
+        "status": task.get("status", ""),
+        "total_videos": task.get("total_videos", 0),
+        "processed_videos": task.get("processed_videos", 0),
+        "new_restaurants_found": task.get("new_restaurants_found", 0),
+        "task_type": task.get("task_type", ""),
+    }
 
 
 # ─────────────────────────────────────────
@@ -343,6 +598,58 @@ async def unfollow(req: FollowRequest):
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/parse-status/{author_id}")
+async def get_parse_status(author_id: str):
+    """
+    查询博主的后台解析任务进度
+    前端在用户提交链接后，定时轮询此接口更新进度提示
+    """
+    try:
+        task = get_latest_bg_task(author_id)
+        if not task:
+            return {
+                "has_task": False,
+                "status": "none",
+                "message": "暂无后台任务",
+            }
+
+        return {
+            "has_task": True,
+            "status": task.get("status", ""),
+            "task_type": task.get("task_type", ""),
+            "total_videos": task.get("total_videos", 0),
+            "processed_videos": task.get("processed_videos", 0),
+            "new_restaurants_found": task.get("new_restaurants_found", 0),
+            "started_at": task.get("started_at"),
+            "completed_at": task.get("completed_at"),
+            "message": _build_task_message(task),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _build_task_message(task: dict) -> str:
+    """根据任务状态构建友好的提示文本"""
+    status = task.get("status", "")
+    processed = task.get("processed_videos", 0)
+    total = task.get("total_videos", 0)
+    new_count = task.get("new_restaurants_found", 0)
+
+    if status == "pending":
+        return "正在准备解析博主其他视频，请稍候..."
+    elif status == "running":
+        if total > 0:
+            return f"正在解析博主其他探店视频（{processed}/{total}）..."
+        return f"正在解析博主历史视频（已处理 {processed} 个）..."
+    elif status == "completed":
+        if new_count > 0:
+            return f"已完成博主历史视频解析，发现 {new_count} 家新店铺"
+        return "已完成博主历史视频解析"
+    elif status == "failed":
+        return f"后台解析遇到问题：{task.get('error_message', '未知错误')}"
+    return ""
 
 
 @app.get("/api/authors/{author_id}/restaurants")
