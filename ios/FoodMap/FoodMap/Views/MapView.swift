@@ -100,8 +100,8 @@ struct MapView: View {
             withAnimation { selectedRestaurant = nil }
         }
         // 监听用户位置变化，自动调整地图中心
-        .onChange(of: locationManager.userLocation) { oldValue, newValue in
-            if let location = newValue, viewModel.isFirstLocationUpdate {
+        .onChange(of: locationManager.locationUpdateCount) { oldValue, newValue in
+            if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
                 viewModel.centerMapOnUserLocation(location)
             }
         }

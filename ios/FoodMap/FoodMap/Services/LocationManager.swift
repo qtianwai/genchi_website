@@ -13,6 +13,8 @@ class LocationManager: NSObject, ObservableObject {
     @Published var authorizationStatus: CLAuthorizationStatus = .notDetermined
     // 定位错误信息
     @Published var errorMessage: String?
+    // 位置更新计数器（用于触发 onChange）
+    @Published var locationUpdateCount: Int = 0
 
     private let locationManager = CLLocationManager()
 
@@ -45,6 +47,7 @@ extension LocationManager: CLLocationManagerDelegate {
         guard let location = locations.last else { return }
         Task { @MainActor in
             self.userLocation = location.coordinate
+            self.locationUpdateCount += 1
         }
     }
 
