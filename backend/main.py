@@ -32,6 +32,10 @@ from db import (
 
 load_dotenv()
 
+# 读取调试模式配置
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
+DEBUG_MAX_VIDEOS = int(os.getenv("DEBUG_MAX_VIDEOS", "5"))
+
 app = FastAPI(title="跟吃 API", version="1.0.0")
 
 # 允许跨域（iOS App 调用需要）
@@ -278,14 +282,16 @@ def parse_author_all_videos_background(author_id: str, sec_uid: str, current_vid
 
 async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video_id: str):
     """
-    异步执行：获取博主视频列表并逐一解析（排除当前视频）
-    每次只解析视频标题（不获取评论），节省 API 调用
+    异步执行:获取博主视频列表并逐一解析(排除当前视频)
+    每次只解析视频标题(不获取评论),节省 API 调用
+
+    调试模式:当 DEBUG_MODE=true 时,最多解析 DEBUG_MAX_VIDEOS 条视频
     """
     if not sec_uid:
-        print(f"[后台解析] 博主无 sec_uid，跳过历史视频解析: {author_id}")
+        print(f"[后台解析] 博主无 sec_uid,跳过历史视频解析: {author_id}")
         return
 
-    # 获取博主视频列表（最多 30 个，排除当前视频）
+    # 获取博主视频列表(最多 30 个,排除当前视频)
     videos = await fetch_author_videos(sec_uid, max_count=30)
     video_list = [
         {
@@ -300,6 +306,11 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         print(f"[后台解析] 博主 {author_id} 无历史视频")
         return
 
+    # 调试模式:限制解析数量
+    if DEBUG_MODE and len(video_list) > DEBUG_MAX_VIDEOS:
+        print(f"[后台解析] 调试模式已启用,限制解析数量: {len(video_list)} -> {DEBUG_MAX_VIDEOS}")
+        video_list = video_list[:DEBUG_MAX_VIDEOS]
+
     # 创建后台任务记录
     task = create_bg_task(author_id, "full_scan")
     task_id = task.get("id", "")
@@ -312,15 +323,15 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         vid = video.get("video_id", "")
         title = video.get("title", "")
 
-        # 检查视频是否已在缓存（已有成功结果的跳过）
+        # 检查视频是否已在缓存(已有成功结果的跳过)
         existing_cache = get_video_cache_by_id(vid)
         if existing_cache and existing_cache.get("status") == "completed":
-            print(f"[后台解析] 视频 {vid} 已解析过，跳过")
+            print(f"[后台解析] 视频 {vid} 已解析过,跳过")
             update_bg_task_progress(task_id, i + 1, saved_count)
             continue
 
         # 创建该视频的缓存记录
-        # 优先使用真实的 share_url（可在抖音中打开），没有则构造基础链接
+        # 优先使用真实的 share_url(可在抖音中打开),没有则构造基础链接
         share_url = video.get("share_url", "")
         video_url = share_url if share_url else f"https://www.iesdouyin.com/share/video/{vid}/"
         upsert_video_cache({
@@ -331,7 +342,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         })
 
         try:
-            # 获取视频扩展信息（P1：标签+城市）
+            # 获取视频扩展信息(P1:标签+城市)
             extra = await fetch_video_detail_extra(vid, author_id)
             comments = await fetch_video_comments(vid, max_count=10) if vid else []
 
@@ -383,7 +394,8 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         update_bg_task_progress(task_id, i + 1, saved_count)
 
     complete_bg_task(task_id, saved_count)
-    print(f"[后台解析] 博主 {author_id} 后台解析完成，新增 {saved_count} 家店铺")
+    debug_info = f" (调试模式: 限制 {DEBUG_MAX_VIDEOS} 条)" if DEBUG_MODE else ""
+    print(f"[后台解析] 博主 {author_id} 后台解析完成,新增 {saved_count} 家店铺{debug_info}")
 
 
 @app.post("/api/parse-link")

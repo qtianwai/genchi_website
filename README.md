@@ -464,3 +464,24 @@ python main.py
 ### 修改的文件
 - `backend/get_videos_function.sql`（SQL 函数改为子查询，需在 Supabase 控制台重新执行）
 - `ios/FoodMap/FoodMap/Models/Models.swift`（`RestaurantVideo.id` 改为 `video_id + created_at`）
+
+---
+
+## 会话记录 2026-04-01：新增调试模式配置，限制后台解析数量
+
+### 主要目的
+调试期间解析视频消耗大量 API 和 token，需要一个开关限制每次后台任务最多解析的视频数量。
+
+### 完成的主要任务
+- `backend/.env` 新增 `DEBUG_MODE=true` 和 `DEBUG_MAX_VIDEOS=5` 配置项
+- `backend/main.py` 读取上述环境变量，在 `_parse_author_videos_async` 函数中，当调试模式开启时将视频列表截断为最多 5 条
+- `需求文档&技术方案/视频解析与数据入库技术方案.md` 新增第九节"调试模式配置"说明
+
+### 关键决策
+- 调试模式只限制**后台任务**（历史视频批量解析），不影响当前视频的快速解析路径
+- 正式上线前将 `.env` 中 `DEBUG_MODE` 改为 `false` 即可恢复全量解析
+
+### 修改的文件
+- `backend/.env`
+- `backend/main.py`
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`
