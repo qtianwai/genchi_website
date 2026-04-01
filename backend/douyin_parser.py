@@ -30,9 +30,9 @@ def extract_video_id(url: str) -> Optional[str]:
     从抖音链接中提取视频 ID
     支持格式：
     - https://www.douyin.com/video/7123456789
+    - https://www.iesdouyin.com/share/video/7123456789/
     - https://v.douyin.com/xxxxx/
     """
-    # 匹配 /video/数字ID 格式
     match = re.search(r"/video/(\d+)", url)
     if match:
         return match.group(1)
@@ -49,14 +49,41 @@ def extract_user_id(url: str) -> Optional[str]:
     return None
 
 
+def extract_json_object(text: str, start: int) -> Optional[str]:
+    """
+    从 start 位置开始，用括号匹配方式提取完整 JSON 对象。
+    比正则更可靠，不会因为嵌套括号而截断。
+    """
+    depth = 0
+    i = start
+    in_string = False
+    escape = False
+    while i < len(text):
+        c = text[i]
+        if escape:
+            escape = False
+        elif c == '\\' and in_string:
+            escape = True
+        elif c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        i += 1
+    return None
+
+
 def extract_info_from_url(full_url: str) -> dict:
     """
-    直接从重定向后的 URL 参数中提取博主 ID 和视频标题相关信息。
-    抖音分享链接重定向到 iesdouyin.com，URL 参数中已包含 social_author_id 等信息，
-    无需再请求页面 HTML，避免反爬问题。
+    直接从重定向后的 URL 参数中提取博主 ID。
+    抖音分享链接重定向到 iesdouyin.com，URL 参数中已包含 social_author_id 等信息。
     """
-    # 从 activity_info JSON 参数中提取 social_author_id
     author_id = ""
+    # 从 activity_info JSON 参数中提取 social_author_id
     activity_match = re.search(r'activity_info=([^&]+)', full_url)
     if activity_match:
         try:
@@ -76,69 +103,87 @@ def extract_info_from_url(full_url: str) -> dict:
 
 async def fetch_video_info_from_page(video_id: str, full_url: str) -> dict:
     """
-    提取视频信息：
-    1. 优先从 URL 参数直接提取博主 ID（iesdouyin.com 分享页 URL 含 social_author_id）
-    2. 再请求 iesdouyin.com 分享页 HTML，提取视频标题和博主昵称
-    """
-    # 第一步：从 URL 参数提取博主 ID
-    url_info = extract_info_from_url(full_url)
-    author_id = url_info.get("author_id", "")
+    从 iesdouyin.com 分享页提取视频完整信息。
 
-    # 第二步：请求分享页 HTML，提取标题和博主名
+    策略：
+    1. 请求分享页 HTML
+    2. 提取页面内嵌的 window._ROUTER_DATA JSON（含完整视频信息）
+    3. 从中读取视频标题（desc）、博主昵称、sec_uid、头像等
+    4. 若 _ROUTER_DATA 解析失败，降级为从 URL 参数提取博主 ID
+    """
+    # 先从 URL 参数提取博主 ID（作为兜底）
+    url_info = extract_info_from_url(full_url)
+    author_id_fallback = url_info.get("author_id", "")
+
     title = ""
     author_name = ""
+    author_id = author_id_fallback
+    author_sec_uid = ""
+    author_avatar = ""
+
     try:
         async with httpx.AsyncClient(headers=HEADERS, timeout=20, follow_redirects=True) as client:
             resp = await client.get(full_url)
             html = resp.text
 
-        # iesdouyin.com 分享页的 og:title 通常是视频标题
+        # 用括号匹配方式提取完整 _ROUTER_DATA JSON，避免正则截断
+        router_match = re.search(r"window\._ROUTER_DATA\s*=\s*\{", html)
+        if router_match:
+            start = router_match.start() + html[router_match.start():].index('{')
+            raw_json = extract_json_object(html, start)
+            if raw_json:
+                try:
+                    page_data = json.loads(raw_json)
+                    item_list = (
+                        page_data.get("loaderData", {})
+                        .get("video_(id)/page", {})
+                        .get("videoInfoRes", {})
+                        .get("item_list", [])
+                    )
+                    if item_list:
+                        item = item_list[0]
+                        author = item.get("author", {})
+                        # desc 是完整视频标题（含话题标签），信息量最大
+                        title = item.get("desc", "")
+                        author_name = author.get("nickname", "")
+                        author_id = author.get("uid", "") or author_id_fallback
+                        author_sec_uid = author.get("sec_uid", "")
+                        author_avatar = (
+                            author.get("avatar_thumb", {})
+                            .get("url_list", [""])[0]
+                        )
+                        print(f"[抖音解析] _ROUTER_DATA 解析成功: title={title[:40]}, author={author_name}")
+                        return {
+                            "video_id": video_id,
+                            "title": title,
+                            "author_id": author_id,
+                            "author_name": author_name,
+                            "author_avatar": author_avatar,
+                            "author_sec_uid": author_sec_uid,
+                        }
+                except Exception as e:
+                    print(f"[抖音解析] _ROUTER_DATA JSON 解析失败: {e}")
+
+        # 降级：从 og:title / og:description 提取（JS 渲染页面可能没有）
         title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html)
         if title_match:
             title = title_match.group(1)
 
-        # og:description 通常格式为 "博主名发布了一个抖音视频" 或直接是博主名
         desc_match = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', html)
         if desc_match:
             author_name = desc_match.group(1).split('发布')[0].split('：')[0].strip()
 
-        # 尝试从页面内嵌 JSON 提取更完整信息
-        json_match = re.search(r'window\._ROUTER_DATA\s*=\s*(\{.*?\});?\s*</script>', html, re.DOTALL)
-        if not json_match:
-            json_match = re.search(r'<script[^>]*>\s*window\.__INIT_PROPS__\s*=\s*(\{.*?\})\s*</script>', html, re.DOTALL)
-        if json_match:
-            try:
-                page_data = json.loads(json_match.group(1))
-                # 尝试找 aweme/item_list 结构
-                item_list = (page_data.get("loaderData", {})
-                             .get("video_(id)/page", {})
-                             .get("videoInfoRes", {})
-                             .get("item_list", []))
-                if item_list:
-                    item = item_list[0]
-                    author = item.get("author", {})
-                    return {
-                        "video_id": video_id,
-                        "title": item.get("desc", title),
-                        "author_id": author.get("uid", author_id),
-                        "author_name": author.get("nickname", author_name),
-                        "author_avatar": author.get("avatar_thumb", {}).get("url_list", [""])[0],
-                        "author_sec_uid": author.get("sec_uid", ""),
-                    }
-            except Exception:
-                pass
-
     except Exception as e:
         print(f"[抖音解析] 请求分享页失败: {e}")
 
-    print(f"[抖音解析] 提取结果: video_id={video_id}, author_id={author_id}, title={title[:30] if title else ''}, author={author_name}")
+    print(f"[抖音解析] 降级提取结果: video_id={video_id}, author_id={author_id}, title={title[:30] if title else ''}, author={author_name}")
     return {
         "video_id": video_id,
         "title": title,
         "author_id": author_id,
         "author_name": author_name,
-        "author_avatar": "",
-        "author_sec_uid": "",
+        "author_avatar": author_avatar,
+        "author_sec_uid": author_sec_uid,
     }
 
 
@@ -173,13 +218,12 @@ def extract_url_from_text(text: str) -> str:
     "5.82 复制打开抖音，看看【xxx】... https://v.douyin.com/xxx/ 04/09 ..."
     需要从中提取出 https:// 开头的链接
     """
-    # 匹配 http:// 或 https:// 开头的 URL（到空格或换行为止）
     match = re.search(r'https?://\S+', text)
     if match:
         # 去掉末尾可能粘连的标点符号
         url = match.group(0).rstrip('.,;:!?，。；：！？')
         return url
-    return text.strip()  # 没找到则原样返回（可能本身就是纯链接）
+    return text.strip()
 
 
 async def parse_douyin_link(url: str) -> dict:
@@ -208,9 +252,9 @@ async def parse_douyin_link(url: str) -> dict:
     if not video_id:
         raise ValueError(f"无法从链接中提取视频 ID: {full_url}")
 
-    # 第四步：从页面 HTML 提取视频标题和博主信息（不调用内部 API，避免反爬）
+    # 第四步：从分享页 HTML 的 _ROUTER_DATA 提取完整视频信息
     video_info = await fetch_video_info_from_page(video_id, full_url)
 
-    # 评论 API 同样有反爬限制，暂不获取，AI 仅根据视频标题提取店铺
+    # 评论 API 有反爬限制，暂不获取
     video_info["comments"] = []
     return video_info
