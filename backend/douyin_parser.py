@@ -5,6 +5,7 @@
 import httpx
 import re
 import json
+import urllib.parse
 from typing import Optional
 
 # 请求头，模拟浏览器访问，避免被抖音拦截
@@ -48,86 +49,97 @@ def extract_user_id(url: str) -> Optional[str]:
     return None
 
 
+def extract_info_from_url(full_url: str) -> dict:
+    """
+    直接从重定向后的 URL 参数中提取博主 ID 和视频标题相关信息。
+    抖音分享链接重定向到 iesdouyin.com，URL 参数中已包含 social_author_id 等信息，
+    无需再请求页面 HTML，避免反爬问题。
+    """
+    # 从 activity_info JSON 参数中提取 social_author_id
+    author_id = ""
+    activity_match = re.search(r'activity_info=([^&]+)', full_url)
+    if activity_match:
+        try:
+            activity_info = json.loads(urllib.parse.unquote(activity_match.group(1)))
+            author_id = activity_info.get("social_author_id", "")
+        except Exception:
+            pass
+
+    # 备用：直接从 URL 参数 share_author_id 提取
+    if not author_id:
+        m = re.search(r'share_author_id=([^&]+)', full_url)
+        if m:
+            author_id = m.group(1)
+
+    return {"author_id": author_id}
+
+
 async def fetch_video_info_from_page(video_id: str, full_url: str) -> dict:
     """
-    从抖音视频页面 HTML 提取视频标题和博主信息
-    抖音内部 API 有反爬限制，改为直接解析页面 meta 标签
+    提取视频信息：
+    1. 优先从 URL 参数直接提取博主 ID（iesdouyin.com 分享页 URL 含 social_author_id）
+    2. 再请求 iesdouyin.com 分享页 HTML，提取视频标题和博主昵称
     """
-    # 先尝试从 URL 参数中提取博主 ID（重定向后的 URL 通常含有 share_author_id）
-    author_id_from_url = ""
-    sec_uid_from_url = ""
-    match_author = re.search(r'share_author_id=([^&]+)', full_url)
-    if match_author:
-        author_id_from_url = match_author.group(1)
-    match_sec = re.search(r'sec_uid=([^&]+)', full_url)
-    if match_sec:
-        sec_uid_from_url = match_sec.group(1)
+    # 第一步：从 URL 参数提取博主 ID
+    url_info = extract_info_from_url(full_url)
+    author_id = url_info.get("author_id", "")
 
-    # 请求视频页面，从 HTML meta 标签提取标题和博主名
+    # 第二步：请求分享页 HTML，提取标题和博主名
+    title = ""
+    author_name = ""
     try:
         async with httpx.AsyncClient(headers=HEADERS, timeout=20, follow_redirects=True) as client:
-            resp = await client.get(f"https://www.douyin.com/video/{video_id}")
+            resp = await client.get(full_url)
             html = resp.text
 
-        # 从 og:title 提取视频标题
-        title = ""
+        # iesdouyin.com 分享页的 og:title 通常是视频标题
         title_match = re.search(r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']', html)
         if title_match:
             title = title_match.group(1)
-        else:
-            # 备用：从 <title> 标签提取
-            title_match2 = re.search(r'<title>([^<]+)</title>', html)
-            if title_match2:
-                title = title_match2.group(1).split('-')[0].strip()
 
-        # 从 og:description 或页面内容提取博主名
-        author_name = ""
-        desc_match = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']+)["\']', html)
+        # og:description 通常格式为 "博主名发布了一个抖音视频" 或直接是博主名
+        desc_match = re.search(r'<meta[^>]+property=["\']og:description["\'][^>]+content=["\']([^"\']+)["\']', html)
         if desc_match:
-            # description 通常格式为 "博主名 - 视频标题"
-            author_name = desc_match.group(1).split('-')[0].strip()
+            author_name = desc_match.group(1).split('发布')[0].split('：')[0].strip()
 
-        # 从页面 JSON 数据中提取更完整的博主信息（抖音会在页面内嵌入 __NEXT_DATA__）
-        json_match = re.search(r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+        # 尝试从页面内嵌 JSON 提取更完整信息
+        json_match = re.search(r'window\._ROUTER_DATA\s*=\s*(\{.*?\});?\s*</script>', html, re.DOTALL)
+        if not json_match:
+            json_match = re.search(r'<script[^>]*>\s*window\.__INIT_PROPS__\s*=\s*(\{.*?\})\s*</script>', html, re.DOTALL)
         if json_match:
             try:
-                next_data = json.loads(json_match.group(1))
-                # 尝试从嵌入数据中找博主信息
-                video_detail = next_data.get("props", {}).get("pageProps", {}).get("videoInfoRes", {})
-                item_list = video_detail.get("item_list", [])
+                page_data = json.loads(json_match.group(1))
+                # 尝试找 aweme/item_list 结构
+                item_list = (page_data.get("loaderData", {})
+                             .get("video_(id)/page", {})
+                             .get("videoInfoRes", {})
+                             .get("item_list", []))
                 if item_list:
                     item = item_list[0]
                     author = item.get("author", {})
                     return {
                         "video_id": video_id,
                         "title": item.get("desc", title),
-                        "author_id": author.get("uid", author_id_from_url),
+                        "author_id": author.get("uid", author_id),
                         "author_name": author.get("nickname", author_name),
                         "author_avatar": author.get("avatar_thumb", {}).get("url_list", [""])[0],
-                        "author_sec_uid": author.get("sec_uid", sec_uid_from_url),
+                        "author_sec_uid": author.get("sec_uid", ""),
                     }
             except Exception:
-                pass  # JSON 解析失败则继续用 meta 标签数据
+                pass
 
-        print(f"[抖音解析] 从页面提取: title={title}, author={author_name}, author_id={author_id_from_url}")
-        return {
-            "video_id": video_id,
-            "title": title,
-            "author_id": author_id_from_url,
-            "author_name": author_name,
-            "author_avatar": "",
-            "author_sec_uid": sec_uid_from_url,
-        }
     except Exception as e:
-        print(f"[抖音解析] 获取视频信息失败: {e}")
-        return {
-            "video_id": video_id,
-            "title": "",
-            "author_id": author_id_from_url,
-            "author_name": "",
-            "author_avatar": "",
-            "author_sec_uid": sec_uid_from_url,
-        }
+        print(f"[抖音解析] 请求分享页失败: {e}")
+
+    print(f"[抖音解析] 提取结果: video_id={video_id}, author_id={author_id}, title={title[:30] if title else ''}, author={author_name}")
+    return {
+        "video_id": video_id,
+        "title": title,
+        "author_id": author_id,
+        "author_name": author_name,
+        "author_avatar": "",
+        "author_sec_uid": "",
+    }
 
 
 async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
