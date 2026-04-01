@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text
 from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority
 from amap_service import batch_search_restaurants
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
@@ -377,9 +377,11 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
     """
     try:
         raw_url = req.url.strip()
+        # 先提取纯 URL（去掉分享文字前缀），确保缓存命中不受分享格式影响
+        clean_url = extract_url_from_text(raw_url)
 
-        # 第一步：检查视频地址缓存（精确匹配）
-        cached = get_video_cache_by_url(raw_url)
+        # 第一步：检查视频地址缓存（用提取后的纯 URL 精确匹配）
+        cached = get_video_cache_by_url(clean_url)
         if cached and cached.get("status") == "completed":
             # 命中缓存，直接返回
             author = get_author_by_douyin_id(
@@ -388,7 +390,7 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             if not author and cached.get("author_id"):
                 # 尝试从 authors 表查询
                 pass
-            print(f"[解析链接] 视频地址缓存命中，直接返回: {raw_url}")
+            print(f"[解析链接] 视频地址缓存命中，直接返回: {clean_url}")
             return {
                 "status": "cached",
                 "restaurant": _cache_to_restaurant(cached),
@@ -413,7 +415,7 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         if video_cache_by_id and video_cache_by_id.get("status") == "completed":
             # 视频已解析过，但 URL 不同（比如同一个视频多个分享格式）
             # 更新该 URL 的缓存记录
-            update_video_cache_restaurant(raw_url, video_cache_by_id["restaurant_id"],
+            update_video_cache_restaurant(clean_url, video_cache_by_id["restaurant_id"],
                                           {"name": video_cache_by_id.get("restaurant_name", "")})
             print(f"[解析链接] 视频 {vid} 已解析过（URL 不同），更新缓存")
 
@@ -433,14 +435,14 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
 
         # 第五步：为当前视频创建/更新缓存记录（parsing 状态）
         upsert_video_cache({
-            "video_url": raw_url,
+            "video_url": clean_url,
             "video_id": vid,
             "author_id": author_id,
             "status": "parsing",
         })
 
         # 第六步：快速解析当前视频（不获取评论，不等待其他视频）
-        parse_result = await parse_single_video_fast(raw_url, video_info, author_id)
+        parse_result = await parse_single_video_fast(clean_url, video_info, author_id)
         restaurant = parse_result.get("restaurant")
 
         # 第七步：建立博主-店铺关联（当前视频的店铺）

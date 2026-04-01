@@ -44,12 +44,10 @@ class MapViewModel: ObservableObject {
 
     // 将地图中心移动到用户位置
     func centerMapOnUserLocation(_ location: CLLocationCoordinate2D) {
-        withAnimation {
-            region = MKCoordinateRegion(
-                center: location,
-                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
-            )
-        }
+        region = MKCoordinateRegion(
+            center: location,
+            span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+        )
         isFirstLocationUpdate = false
     }
 }
