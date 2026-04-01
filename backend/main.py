@@ -26,7 +26,7 @@ from db import (
     get_video_cache_by_url, upsert_video_cache, update_video_cache_restaurant,
     update_video_cache_failed, get_video_cache_by_id,
     create_bg_task, update_bg_task_started, update_bg_task_progress,
-    complete_bg_task, get_latest_bg_task,
+    complete_bg_task, fail_bg_task, get_latest_bg_task,
     get_videos_by_restaurant,
 )
 
