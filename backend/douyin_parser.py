@@ -166,12 +166,13 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
     return videos
 
 
-async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[str]:
+async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[dict]:
     """
     获取视频评论列表，用于辅助 AI 识别店铺名称。
     评论中往往包含用户提到的具体店名，是识别店铺的关键信息来源。
+    返回带点赞数的结构，供 AI 按热度权重判断最可能的店铺。
 
-    返回格式：["评论文本1", "评论文本2", ...]
+    返回格式：[{"text": "评论内容", "digg_count": 158}, ...]
     """
     result = await _aget(
         "/api/douyin/get-video-comment/v1",
@@ -183,8 +184,13 @@ async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[str]:
         return []
 
     comments_data = (result.get("data") or {}).get("comments", []) or []
-    comments = [c.get("text", "") for c in comments_data if c.get("text")]
-    comments = comments[:max_count]  # 最多取前 max_count 条
+    # 保留文本和点赞数，按点赞数降序排列，让高热度评论排在前面
+    comments = [
+        {"text": c.get("text", ""), "digg_count": c.get("digg_count", 0)}
+        for c in comments_data if c.get("text")
+    ]
+    comments.sort(key=lambda x: x["digg_count"], reverse=True)
+    comments = comments[:max_count]
 
-    print(f"[抖音解析] 获取到评论 {len(comments)} 条")
+    print(f"[抖音解析] 获取到评论 {len(comments)} 条，最高点赞: {comments[0]['digg_count'] if comments else 0}")
     return comments
