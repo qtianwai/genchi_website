@@ -21,6 +21,8 @@ struct ParseLinkSheet: View {
     @State private var bgCompletedMessage: String? = nil
     // 是否显示手动添加店铺弹窗
     @State private var showManualAddSheet = false
+    // 解析是否已完成
+    @State private var parseCompleted = false
 
     var body: some View {
         NavigationView {
@@ -124,12 +126,12 @@ struct ParseLinkSheet: View {
                                     .progressViewStyle(CircularProgressViewStyle(tint: .white))
                                     .scaleEffect(0.8)
                             }
-                            Text(isLoading ? "正在解析..." : "开始解析")
+                            Text(buttonText)
                                 .fontWeight(.semibold)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(linkText.isEmpty || isLoading ? Color.gray.opacity(0.4) : Color.orange)
+                        .background(buttonBackground)
                         .foregroundColor(.white)
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
@@ -166,6 +168,28 @@ struct ParseLinkSheet: View {
         }
     }
 
+    // 按钮文本
+    var buttonText: String {
+        if isLoading {
+            return "正在解析..."
+        } else if parseCompleted {
+            return "重新解析"
+        } else {
+            return "开始解析"
+        }
+    }
+
+    // 按钮背景色
+    var buttonBackground: Color {
+        if linkText.isEmpty || isLoading {
+            return Color.gray.opacity(0.4)
+        } else if parseCompleted {
+            return Color.blue
+        } else {
+            return Color.orange
+        }
+    }
+
     // 从剪贴板读取链接
     func pasteFromClipboard() {
         if let text = UIPasteboard.general.string {
@@ -177,6 +201,7 @@ struct ParseLinkSheet: View {
     func parseLink() {
         guard !linkText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isLoading = true
+        parseCompleted = false  // 重置状态
         errorMessage = nil
         result = nil
         bgCompletedMessage = nil
@@ -190,6 +215,7 @@ struct ParseLinkSheet: View {
                     userId: authState.userId
                 )
                 result = response
+                parseCompleted = true  // 标记完成
                 onSuccess()
 
                 // 如果有后台任务正在运行，启动轮询
@@ -208,10 +234,14 @@ struct ParseLinkSheet: View {
     // 轮询后台任务进度（每 5 秒查询一次）
     func startBgProgressPolling(authorId: String) {
         bgProgressTimer?.invalidate()
+        var failureCount = 0  // 记录连续失败次数
+
         bgProgressTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
             Task {
                 do {
                     let status = try await APIService.shared.getParseStatus(authorId: authorId)
+                    failureCount = 0  // 成功后重置失败计数
+
                     await MainActor.run {
                         if status.status == "completed" {
                             bgProgressTimer?.invalidate()
@@ -231,11 +261,21 @@ struct ParseLinkSheet: View {
                         } else if status.status == "failed" {
                             bgProgressTimer?.invalidate()
                             showBgProgress = false
-                            bgStatusMessage = "后台解析遇到问题，请稍后刷新地图查看"
+                            errorMessage = "后台解析遇到问题：\(status.message)"
                         }
                     }
                 } catch {
-                    // 查询失败时静默忽略，下次继续轮询
+                    failureCount += 1
+                    print("[轮询错误] 查询后台任务状态失败: \(error)")
+
+                    // 连续失败 3 次后停止轮询并提示用户
+                    if failureCount >= 3 {
+                        await MainActor.run {
+                            bgProgressTimer?.invalidate()
+                            showBgProgress = false
+                            errorMessage = "无法获取后台解析进度，请稍后刷新地图查看"
+                        }
+                    }
                 }
             }
         }

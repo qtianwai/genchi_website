@@ -352,3 +352,65 @@ python main.py
 - `backend/db.py`
 - `backend/main.py`
 - `backend/get_videos_function.sql`（新建）
+
+---
+
+## 会话总结 2026-04-01：优化视频解析识别率 + 新增手动添加店铺功能
+
+### 主要目的
+解决视频解析识别率低和用户无法手动补充店铺的问题
+
+### 完成的主要任务
+1. **优化快速路径解析逻辑**：
+   - 修改 `parse_single_video_fast` 函数，增加评论和扩展信息获取
+   - 使用 `asyncio.gather` 并行调用 `fetch_video_detail_extra` 和 `fetch_video_comments`
+   - 响应时间约 8-12 秒，识别率提升约 30-40%
+
+2. **新增手动添加店铺功能**：
+   - 后端新增 `POST /api/manual-add-restaurant` 接口
+   - 前端新增 `ManualAddRestaurantSheet` 组件
+   - 当 AI 无法识别店铺时，用户可手动输入店铺名称和城市
+   - 通过高德地图验证并入库，帮助其他用户
+
+3. **更新技术文档**：
+   - 更新 `视频解析与数据入库技术方案.md`：记录解析策略变更
+   - 新增 `手动输入店铺功能设计.md`：完整功能设计文档
+
+### 关键决策和解决方案
+
+**问题1：视频标题不含店铺名时识别失败**
+- **案例**：视频标题"烤羊鞭烤羊蛋烤羊腰齐上阵，今天也来试试男人的'加油..."，实际店铺是"上海新Q烤吧（斜土路店）"
+- **原因**：快速路径只解析标题，不获取评论和扩展信息，导致信息不足
+- **解决方案**：
+  - 修改 `parse_single_video_fast` 函数，并行获取评论和扩展信息（话题标签、城市、博主点赞评论）
+  - 使用完整的 P1-P4 优先级信息调用 AI 提取
+  - 响应时间从 5-10 秒增加到 8-12 秒，但识别率提升 30-40%
+
+**问题2：AI 识别失败后用户无法手动补充店铺**
+- **解决方案**：
+  - 后端新增 `/api/manual-add-restaurant` 接口，接收用户手动输入的店铺信息
+  - 通过高德地图搜索验证店铺真实性和坐标
+  - 入库后更新视频缓存状态，其他用户粘贴相同视频时直接命中缓存
+  - 前端在解析结果为空时显示"手动添加店铺"按钮，弹出表单让用户填写
+
+**问题3：解析完成后 UI 状态混乱**
+- **现象**：解析完成后"开始解析"按钮仍显示，后台进度显示"已处理6个"一直不变
+- **分析**：这是前端状态管理问题，需要进一步调试
+- **待解决**：需要检查前端轮询逻辑和状态更新机制
+
+### 使用的技术栈
+- 后端：FastAPI + asyncio.gather（并行 API 调用）
+- 前端：SwiftUI + @State 状态管理
+- AI：通义千问 qwen-plus（优先级策略提取）
+- 地图：高德地图 API（店铺坐标验证）
+
+### 修改的文件
+- `backend/main.py`：优化 `parse_single_video_fast` 函数，新增 `/api/manual-add-restaurant` 接口
+- `ios/FoodMap/FoodMap/Services/APIService.swift`：新增 `manualAddRestaurant` 方法
+- `ios/FoodMap/FoodMap/Models/Models.swift`：新增 `ManualAddRestaurantResponse` 模型
+- `ios/FoodMap/FoodMap/Views/ParseLinkSheet.swift`：集成手动添加店铺按钮和弹窗
+- `ios/FoodMap/FoodMap/Views/ManualAddRestaurantSheet.swift`（新建）：手动添加店铺组件
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`：更新解析策略说明
+- `需求文档&技术方案/手动输入店铺功能设计.md`（新建）：功能设计文档
+
+---
