@@ -440,3 +440,27 @@ python main.py
 - `backend/get_videos_function.sql`（已在 Supabase 执行）
 - `backend/verify_video_url.py`（新增，验证脚本）
 - `backend/check_failed_migrations.py`（新增，排查脚本）
+
+---
+
+## 会话记录 2026-04-01（修复相关视频跳转同一视频 bug）
+
+### 会话目的
+修复地图页点击不同店铺的「相关视频」，最终在抖音跳转的都是同一个视频的 bug。
+
+### 完成的主要任务
+1. 排查根本原因：后端 SQL 用 `left join video_parse_cache vpc on vpc.video_id = ar.video_id`，而 `video_parse_cache` 对 `video_url` 有唯一约束但对 `video_id` 没有，导致同一 `video_id` 可能匹配多条记录，join 结果不确定，不同视频拿到了相同的 `video_url`
+2. 修复 SQL：将 `left join` 改为相关子查询，每个 `video_id` 只取最新一条有效 `video_url`（过滤 `bg://` 占位符，按 `created_at desc limit 1`）
+3. 修复 iOS 模型：`RestaurantVideo.id` 从单纯 `video_id` 改为 `video_id + created_at` 组合，防止 SwiftUI 在切换店铺时复用旧卡片
+
+### 关键决策
+- 前端状态管理（`.task(id: restaurant.id)` + 切换时清空 `videos`）本身是正确的，问题完全在后端 SQL
+- 用子查询替代 join 是最小改动，不影响其他逻辑
+
+### 技术栈
+- PostgreSQL / Supabase SQL 函数
+- SwiftUI / iOS
+
+### 修改的文件
+- `backend/get_videos_function.sql`（SQL 函数改为子查询，需在 Supabase 控制台重新执行）
+- `ios/FoodMap/FoodMap/Models/Models.swift`（`RestaurantVideo.id` 改为 `video_id + created_at`）

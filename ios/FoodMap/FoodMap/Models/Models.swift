@@ -127,7 +127,8 @@ struct RestaurantVideo: Identifiable, Codable {
     let video_url: String?    // 后端返回的真实抖音分享链接（可能为 nil）
     let created_at: String
 
-    var id: String { video_id }
+    // 用 video_id + created_at 组合作为唯一 id，避免同 video_id 时 SwiftUI 复用错卡片
+    var id: String { "\(video_id)_\(created_at)" }
 
     // 抖音视频链接：优先用后端返回的真实 share_url，否则用 URL Scheme 构造
     var douyinURL: URL? {

@@ -19,16 +19,19 @@ begin
     a.name as author_name,
     a.avatar_url as author_avatar_url,
     -- 从 video_parse_cache 获取真实链接，过滤掉 bg:// 占位符
-    case
-      when vpc.video_url is not null and vpc.video_url not like 'bg://%'
-        then vpc.video_url
-      else null
-    end as video_url,
+    -- 用子查询确保每个 video_id 只取一条最新的有效 video_url，避免 join 多行导致结果混乱
+    (
+      select vpc.video_url
+      from video_parse_cache vpc
+      where vpc.video_id = ar.video_id
+        and vpc.video_url is not null
+        and vpc.video_url not like 'bg://%'
+      order by vpc.created_at desc
+      limit 1
+    ) as video_url,
     ar.created_at
   from author_restaurants ar
   join authors a on ar.author_id = a.id
-  -- 关联 video_parse_cache 获取视频链接（left join 避免无缓存记录时丢失数据）
-  left join video_parse_cache vpc on vpc.video_id = ar.video_id
   where ar.restaurant_id = p_restaurant_id
     and ar.video_id is not null
     and ar.video_id != ''
