@@ -6,6 +6,7 @@ import MapKit
 
 struct MapView: View {
     @StateObject private var viewModel = MapViewModel()
+    @StateObject private var locationManager = LocationManager()
     @EnvironmentObject var authState: AuthState
 
     // 当前选中的店铺（用于显示底部详情卡片）
@@ -16,7 +17,9 @@ struct MapView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             // ── 地图主体 ──
-            Map(coordinateRegion: $viewModel.region, annotationItems: viewModel.filteredRestaurants) { item in
+            Map(coordinateRegion: $viewModel.region,
+                showsUserLocation: true,
+                annotationItems: viewModel.filteredRestaurants) { item in
                 MapAnnotation(coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
                     // 自定义地图标注：博主头像 + 店铺名
                     MapPinView(
@@ -75,7 +78,8 @@ struct MapView: View {
                         .shadow(radius: 4)
                     }
                     .padding(.trailing, 20)
-                    .padding(.bottom, 100)
+                    // 根据是否有选中店铺调整按钮位置，避免与详情卡片重合
+                    .padding(.bottom, selectedRestaurant != nil ? 320 : 100)
                 }
             }
         }
@@ -88,10 +92,18 @@ struct MapView: View {
         }
         .task {
             await viewModel.loadMapData(userId: authState.userId)
+            // 请求定位权限并开始定位
+            locationManager.requestPermission()
         }
         // 点击地图空白处关闭详情卡片
         .onTapGesture {
             withAnimation { selectedRestaurant = nil }
+        }
+        // 监听用户位置变化，自动调整地图中心
+        .onChange(of: locationManager.userLocation) { newLocation in
+            if let location = newLocation, viewModel.isFirstLocationUpdate {
+                viewModel.centerMapOnUserLocation(location)
+            }
         }
     }
 }
@@ -226,6 +238,8 @@ struct RestaurantCard: View {
     let userId: String
 
     @State private var isFavorited = false
+    @State private var videos: [RestaurantVideo] = []
+    @State private var isLoadingVideos = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -281,6 +295,23 @@ struct RestaurantCard: View {
                 }
             }
 
+            // 关联视频列表
+            if !videos.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("相关视频")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(videos) { video in
+                                VideoThumbnail(video: video)
+                            }
+                        }
+                    }
+                }
+            }
+
             // 导航按钮组
             if let coordinate = restaurant.coordinate {
                 NavigationButtons(
@@ -293,6 +324,9 @@ struct RestaurantCard: View {
         .background(Color(.systemBackground))
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+        .task {
+            await loadVideos()
+        }
     }
 
     func toggleFavorite() {
@@ -308,6 +342,63 @@ struct RestaurantCard: View {
                 // 失败时回滚状态
                 isFavorited.toggle()
             }
+        }
+    }
+
+    func loadVideos() async {
+        isLoadingVideos = true
+        do {
+            videos = try await APIService.shared.getRestaurantVideos(restaurantId: restaurant.id)
+        } catch {
+            print("加载视频失败：\(error)")
+        }
+        isLoadingVideos = false
+    }
+}
+
+// ─────────────────────────────────────────
+// 视频缩略图卡片
+// ─────────────────────────────────────────
+struct VideoThumbnail: View {
+    let video: RestaurantVideo
+
+    var body: some View {
+        Button(action: openVideo) {
+            HStack(spacing: 8) {
+                // 博主头像
+                AsyncImage(url: URL(string: video.author_avatar_url ?? "")) { img in
+                    img.resizable().scaledToFill()
+                } placeholder: {
+                    Color.gray.opacity(0.3)
+                }
+                .frame(width: 32, height: 32)
+                .clipShape(Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(video.author_name)
+                        .font(.caption)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.circle.fill")
+                            .font(.caption2)
+                        Text("查看视频")
+                            .font(.caption2)
+                    }
+                    .foregroundColor(.orange)
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(Color(.systemGray6))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        }
+    }
+
+    func openVideo() {
+        if let url = video.douyinURL {
+            UIApplication.shared.open(url)
         }
     }
 }
@@ -334,32 +425,38 @@ struct NavigationButtons: View {
     }
 
     func openAppleMaps() {
-        let url = URL(string: "maps://?daddr=\(coordinate.latitude),\(coordinate.longitude)&dirflg=d")!
-        if UIApplication.shared.canOpenURL(url) {
+        // 使用 UTF-8 编码店铺名称
+        let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
+        let urlString = "maps://?daddr=\(coordinate.latitude),\(coordinate.longitude)&q=\(encodedName)&dirflg=d"
+        if let url = URL(string: urlString), UIApplication.shared.canOpenURL(url) {
             UIApplication.shared.open(url)
         }
     }
 
     func openAmap() {
-        // 高德地图 URL Scheme
+        // 高德地图 URL Scheme - 使用 UTF-8 编码
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        let url = URL(string: "iosamap://navi?sourceApplication=FoodMap&backScheme=foodmap&lat=\(coordinate.latitude)&lon=\(coordinate.longitude)&dev=0&style=2&poiname=\(encodedName)")!
-        if UIApplication.shared.canOpenURL(url) {
+        let urlString = "iosamap://navi?sourceApplication=FoodMap&backScheme=foodmap&lat=\(coordinate.latitude)&lon=\(coordinate.longitude)&dev=0&style=2&poiname=\(encodedName)"
+        if let url = URL(string: urlString), UIApplication.shared.canOpenURL(url) {
             UIApplication.shared.open(url)
         } else {
             // 未安装高德，跳转 App Store
-            UIApplication.shared.open(URL(string: "https://apps.apple.com/cn/app/id461703208")!)
+            if let appStoreURL = URL(string: "https://apps.apple.com/cn/app/id461703208") {
+                UIApplication.shared.open(appStoreURL)
+            }
         }
     }
 
     func openBaiduMap() {
-        // 百度地图 URL Scheme
+        // 百度地图 URL Scheme - 使用 UTF-8 编码
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? name
-        let url = URL(string: "baidumap://map/direction?destination=latlng:\(coordinate.latitude),\(coordinate.longitude)|name:\(encodedName)&mode=driving&coord_type=gcj02")!
-        if UIApplication.shared.canOpenURL(url) {
+        let urlString = "baidumap://map/direction?destination=latlng:\(coordinate.latitude),\(coordinate.longitude)|name:\(encodedName)&mode=driving&coord_type=gcj02"
+        if let url = URL(string: urlString), UIApplication.shared.canOpenURL(url) {
             UIApplication.shared.open(url)
         } else {
-            UIApplication.shared.open(URL(string: "https://apps.apple.com/cn/app/id452186370")!)
+            if let appStoreURL = URL(string: "https://apps.apple.com/cn/app/id452186370") {
+                UIApplication.shared.open(appStoreURL)
+            }
         }
     }
 }

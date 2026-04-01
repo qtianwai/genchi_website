@@ -115,3 +115,21 @@ struct Favorite: Identifiable, Codable {
     let restaurant_id: String
     let restaurants: Restaurant?    // join 查询的店铺详情
 }
+
+// ─────────────────────────────────────────
+// 店铺关联视频模型
+// ─────────────────────────────────────────
+struct RestaurantVideo: Identifiable, Codable {
+    let video_id: String
+    let author_id: String
+    let author_name: String
+    let author_avatar_url: String?
+    let created_at: String
+
+    var id: String { video_id }
+
+    // 抖音视频链接
+    var douyinURL: URL? {
+        URL(string: "snssdk1128://aweme/detail/\(video_id)")
+    }
+}

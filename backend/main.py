@@ -27,6 +27,7 @@ from db import (
     update_video_cache_failed, get_video_cache_by_id,
     create_bg_task, update_bg_task_started, update_bg_task_progress,
     complete_bg_task, get_latest_bg_task,
+    get_videos_by_restaurant,
 )
 
 load_dotenv()
@@ -562,6 +563,19 @@ async def get_map_restaurants(user_id: str):
     try:
         data = get_map_restaurants_for_user(user_id)
         return {"restaurants": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/restaurants/{restaurant_id}/videos")
+async def get_restaurant_videos(restaurant_id: str):
+    """
+    获取某个店铺关联的所有视频信息
+    返回：[{video_id, author_id, author_name, author_avatar_url, created_at}]
+    """
+    try:
+        videos = get_videos_by_restaurant(restaurant_id)
+        return {"videos": videos}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

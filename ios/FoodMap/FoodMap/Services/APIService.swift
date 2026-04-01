@@ -162,6 +162,20 @@ class APIService {
             responseType: Response.self
         )
     }
+
+    // ─────────────────────────────────────────
+    // 店铺关联视频
+    // ─────────────────────────────────────────
+
+    func getRestaurantVideos(restaurantId: String) async throws -> [RestaurantVideo] {
+        struct Response: Codable { let videos: [RestaurantVideo] }
+        let resp = try await get(
+            path: "/api/restaurants/\(restaurantId)/videos",
+            params: [:],
+            responseType: Response.self
+        )
+        return resp.videos
+    }
 }
 
 // 自定义错误类型

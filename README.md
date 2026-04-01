@@ -296,3 +296,59 @@ python main.py
 
 ### 修改了哪些文件
 - `CLAUDE.md`：文档维护规则部分新增重要提示说明
+
+---
+
+## 会话记录 2026-04-01：地图功能优化三项
+
+### 主要目的
+解决地图页面三个用户体验问题：
+1. 无法看到用户当前定位
+2. 店铺详情弹框与粘贴链接按钮重合
+3. 导航软件目的地显示乱码
+
+### 完成的主要任务
+- **用户定位功能**：
+  - 新建 `LocationManager.swift`：封装 CoreLocation 定位逻辑，自动请求权限并持续更新位置
+  - `MapViewModel` 新增 `isFirstLocationUpdate` 标志和 `centerMapOnUserLocation()` 方法
+  - `MapView` 集成定位管理器，首次定位时自动将地图中心移至用户位置
+  - `Info.plist` 新增 `NSLocationWhenInUseUsageDescription` 权限说明
+  - 地图开启 `showsUserLocation: true` 显示用户位置蓝点
+
+- **修复弹框重合问题**：
+  - 粘贴链接按钮的 `padding(.bottom)` 改为动态计算：有选中店铺时 320pt，无选中时 100pt
+  - 确保按钮始终在详情卡片上方，不会被遮挡
+
+- **店铺关联视频列表**：
+  - 数据库新增函数 `get_videos_by_restaurant()`：查询店铺关联的所有视频（含博主信息）
+  - 后端新增接口 `GET /api/restaurants/{restaurant_id}/videos`
+  - 前端新增 `RestaurantVideo` 模型，支持点击跳转抖音 App
+  - `RestaurantCard` 新增视频列表横向滚动区域，显示博主头像、名称和"查看视频"按钮
+  - `VideoThumbnail` 组件：点击后通过 URL Scheme 跳转抖音 App 查看原视频
+
+- **修复导航乱码问题**：
+  - 三个导航函数（苹果地图、高德、百度）统一使用 `addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed)` 对店铺名称进行 UTF-8 编码
+  - 苹果地图新增 `q=` 参数传递店铺名称，确保目的地正确显示
+  - 增强错误处理：URL 构建失败时不会崩溃，改为静默失败
+
+### 关键决策
+- 定位权限采用"使用期间"而非"始终"，降低用户隐私顾虑
+- 首次定位后自动移动地图，后续不再自动移动（避免干扰用户操作）
+- 视频列表采用横向滚动，节省垂直空间
+- 抖音跳转使用 `snssdk1128://aweme/detail/{video_id}` URL Scheme
+
+### 技术栈
+- SwiftUI + CoreLocation
+- PostgreSQL 存储过程（RPC）
+- FastAPI RESTful API
+
+### 修改文件
+- `ios/FoodMap/FoodMap/Services/LocationManager.swift`（新建）
+- `ios/FoodMap/FoodMap/ViewModels/MapViewModel.swift`
+- `ios/FoodMap/FoodMap/Views/MapView.swift`
+- `ios/FoodMap/genchi/genchi/Info.plist`
+- `ios/FoodMap/FoodMap/Models/Models.swift`
+- `ios/FoodMap/FoodMap/Services/APIService.swift`
+- `backend/db.py`
+- `backend/main.py`
+- `backend/get_videos_function.sql`（新建）

@@ -19,6 +19,8 @@ class MapViewModel: ObservableObject {
         center: CLLocationCoordinate2D(latitude: 30.5, longitude: 114.3),
         span: MKCoordinateSpan(latitudeDelta: 10, longitudeDelta: 10)
     )
+    // 是否是首次定位（首次定位时自动移动地图到用户位置）
+    var isFirstLocationUpdate = true
 
     // 根据过滤器筛选后的店铺列表
     var filteredRestaurants: [MapRestaurant] {
@@ -38,5 +40,16 @@ class MapViewModel: ObservableObject {
             errorMessage = "加载失败：\(error.localizedDescription)"
         }
         isLoading = false
+    }
+
+    // 将地图中心移动到用户位置
+    func centerMapOnUserLocation(_ location: CLLocationCoordinate2D) {
+        withAnimation {
+            region = MKCoordinateRegion(
+                center: location,
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            )
+        }
+        isFirstLocationUpdate = false
     }
 }
