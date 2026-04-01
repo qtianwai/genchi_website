@@ -117,6 +117,35 @@ async def health_check():
 
 
 # ─────────────────────────────────────────
+# Apple App Site Association（微信 Universal Link 验证）
+# 微信 SDK 会请求此文件验证域名所有权
+# ─────────────────────────────────────────
+
+from fastapi.responses import JSONResponse
+
+@app.get("/.well-known/apple-app-site-association")
+async def apple_app_site_association():
+    """
+    Apple Universal Link 验证文件
+    微信 SDK 和 iOS 系统会请求此接口验证域名与 App 的关联关系
+    Team ID 可在 Apple Developer 后台 → Membership 页面查看
+    """
+    return JSONResponse(content={
+        "applinks": {
+            "apps": [],
+            "details": [
+                {
+                    # 格式：TeamID.BundleID
+                    # TODO: 将 YOUR_TEAM_ID 替换为你的 Apple Developer Team ID
+                    "appID": "YOUR_TEAM_ID.com.qtianwai.genchi",
+                    "paths": ["/wechat/*"]
+                }
+            ]
+        }
+    })
+
+
+# ─────────────────────────────────────────
 # 认证接口：发送和验证短信验证码
 # ─────────────────────────────────────────
 
@@ -316,7 +345,9 @@ async def parse_single_video_fast(
     all_comments = extra.get("all_comments", [])
     hot_comments_raw = extra.get("hot_comments_raw", [])
 
-    # 第一次 AI 提取（使用完整信息，提升识别率）
+    # AI 提取（使用完整信息，优先级算法）
+    # v2.3：废弃降级算法，优先级算法返回空时直接返回空，不再降级到旧算法
+    # 原因：旧算法没有非美食过滤/强化 null 返回/店铺名区分规则，降级反而引入错误识别
     extracted = await extract_restaurants_priority(
         video_title=title,
         author_name=author_name,
@@ -326,14 +357,6 @@ async def parse_single_video_fast(
         hot_comments=hot_comments,
         all_comments=all_comments,
     )
-
-    # 降级为旧算法
-    if not extracted:
-        extracted = await extract_restaurants_from_video(
-            video_title=title,
-            comments=all_comments,
-            author_name=author_name,
-        )
 
     # 置信度判断：medium 时调用评论回复接口补充信息
     if extracted and extracted[0].get("confidence") == "medium":
@@ -486,7 +509,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
             # 获取视频扩展信息(P1:标签+城市+评论)
             extra = await fetch_video_detail_extra(vid, author_id)
 
-            # AI 提取
+            # AI 提取（v2.3：废弃降级算法，优先级算法返回空时直接返回空）
             extracted = await extract_restaurants_priority(
                 video_title=title,
                 author_name="",
@@ -496,12 +519,6 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                 hot_comments=extra.get("hot_comments", []),
                 all_comments=extra.get("all_comments", []),
             )
-            if not extracted:
-                extracted = await extract_restaurants_from_video(
-                    video_title=title,
-                    comments=extra.get("all_comments", []),
-                    author_name="",
-                )
 
             # 置信度 medium 时，调用评论回复接口补充信息（成本控制）
             if extracted and extracted[0].get("confidence") == "medium":

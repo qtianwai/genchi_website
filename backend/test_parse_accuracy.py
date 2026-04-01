@@ -176,6 +176,7 @@ async def test_single_video(case: dict) -> dict:
         print(f"  总评论: {len(all_comments)} 条")
 
         # 第三步：AI 提取店铺信息（优先级算法）
+        # v2.3：废弃降级算法，优先级算法返回空时直接返回空
         restaurants = await extract_restaurants_priority(
             video_title=title,
             author_name=author_name,
@@ -185,15 +186,6 @@ async def test_single_video(case: dict) -> dict:
             hot_comments=hot_comments,
             all_comments=all_comments,
         )
-
-        # 降级：如果优先级算法未识别到，尝试旧算法
-        if not restaurants:
-            print(f"\n[AI 提取] 优先级算法未识别到店铺，尝试降级算法...")
-            restaurants = await extract_restaurants_from_video(
-                video_title=title,
-                comments=all_comments,
-                author_name=author_name,
-            )
 
         if not restaurants:
             print(f"\n[AI 提取] 未识别到店铺")
