@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>跟吃 - 跟着博主发现身边好店</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+      background: #0f0f0f;
+      color: #fff;
+      min-height: 100vh;
+    }
+
+    /* 导航 */
+    nav {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 20px 40px;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: rgba(15,15,15,0.85);
+      backdrop-filter: blur(12px);
+      z-index: 100;
+    }
+    .logo { font-size: 22px; font-weight: 700; color: #FF6B35; letter-spacing: 1px; }
+    .nav-link {
+      color: #ccc;
+      text-decoration: none;
+      font-size: 15px;
+      padding: 8px 20px;
+      border: 1px solid #444;
+      border-radius: 20px;
+      transition: all 0.2s;
+    }
+    .nav-link:hover { border-color: #FF6B35; color: #FF6B35; }
+
+    /* Hero */
+    .hero {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 100px 24px 60px;
+      background: radial-gradient(ellipse at 50% 30%, rgba(255,107,53,0.15) 0%, transparent 70%);
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(255,107,53,0.15);
+      border: 1px solid rgba(255,107,53,0.4);
+      color: #FF6B35;
+      font-size: 13px;
+      padding: 6px 16px;
+      border-radius: 20px;
+      margin-bottom: 28px;
+      letter-spacing: 0.5px;
+    }
+    .hero h1 {
+      font-size: clamp(36px, 7vw, 72px);
+      font-weight: 800;
+      line-height: 1.15;
+      margin-bottom: 20px;
+      background: linear-gradient(135deg, #fff 40%, #FF6B35);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+    .hero p {
+      font-size: clamp(16px, 2.5vw, 20px);
+      color: #aaa;
+      max-width: 520px;
+      line-height: 1.7;
+      margin-bottom: 44px;
+    }
+    .btn-group { display: flex; gap: 16px; flex-wrap: wrap; justify-content: center; }
+    .btn-primary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: #FF6B35;
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 32px;
+      border-radius: 50px;
+      font-size: 16px;
+      font-weight: 600;
+      transition: all 0.2s;
+      box-shadow: 0 4px 24px rgba(255,107,53,0.4);
+    }
+    .btn-primary:hover { background: #e85a25; transform: translateY(-2px); box-shadow: 0 8px 32px rgba(255,107,53,0.5); }
+    .btn-secondary {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: rgba(255,255,255,0.08);
+      color: #fff;
+      text-decoration: none;
+      padding: 14px 32px;
+      border-radius: 50px;
+      font-size: 16px;
+      font-weight: 600;
+      border: 1px solid rgba(255,255,255,0.15);
+      transition: all 0.2s;
+    }
+    .btn-secondary:hover { background: rgba(255,255,255,0.14); transform: translateY(-2px); }
+
+    /* 手机截图占位 */
+    .phone-mockup {
+      margin-top: 64px;
+      width: 220px;
+      height: 440px;
+      background: linear-gradient(160deg, #1a1a1a, #2a2a2a);
+      border-radius: 36px;
+      border: 2px solid #333;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      box-shadow: 0 32px 80px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.05);
+    }
+    .phone-mockup .icon { font-size: 56px; }
+    .phone-mockup .label { font-size: 14px; color: #666; }
+
+    /* 功能特性 */
+    .features {
+      padding: 100px 24px;
+      max-width: 1000px;
+      margin: 0 auto;
+    }
+    .section-title {
+      text-align: center;
+      font-size: clamp(28px, 4vw, 42px);
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .section-sub {
+      text-align: center;
+      color: #777;
+      font-size: 16px;
+      margin-bottom: 60px;
+    }
+    .feature-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 24px;
+    }
+    .feature-card {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 20px;
+      padding: 32px 28px;
+      transition: all 0.2s;
+    }
+    .feature-card:hover { background: rgba(255,255,255,0.07); border-color: rgba(255,107,53,0.3); transform: translateY(-4px); }
+    .feature-icon { font-size: 36px; margin-bottom: 16px; }
+    .feature-card h3 { font-size: 18px; font-weight: 600; margin-bottom: 10px; }
+    .feature-card p { font-size: 14px; color: #888; line-height: 1.7; }
+
+    /* 下载区 */
+    .download {
+      padding: 100px 24px;
+      text-align: center;
+      background: radial-gradient(ellipse at 50% 50%, rgba(255,107,53,0.1) 0%, transparent 70%);
+    }
+    .download h2 { font-size: clamp(28px, 4vw, 42px); font-weight: 700; margin-bottom: 16px; }
+    .download p { color: #888; font-size: 16px; margin-bottom: 40px; }
+    .store-badges { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .store-badge {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 14px;
+      padding: 14px 28px;
+      text-decoration: none;
+      color: #fff;
+      transition: all 0.2s;
+      min-width: 180px;
+    }
+    .store-badge:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,107,53,0.4); }
+    .store-badge .store-icon { font-size: 28px; }
+    .store-badge .store-text { text-align: left; }
+    .store-badge .store-text small { display: block; font-size: 11px; color: #888; }
+    .store-badge .store-text span { font-size: 16px; font-weight: 600; }
+
+    /* 页脚 */
+    footer {
+      padding: 40px 24px;
+      text-align: center;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      color: #555;
+      font-size: 13px;
+    }
+    footer a { color: #777; text-decoration: none; margin: 0 12px; }
+    footer a:hover { color: #FF6B35; }
+
+    @media (max-width: 600px) {
+      nav { padding: 16px 20px; }
+      .btn-group { flex-direction: column; align-items: center; }
+      .btn-primary, .btn-secondary { width: 100%; max-width: 280px; justify-content: center; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 导航 -->
+  <nav>
+    <div class="logo">跟吃</div>
+    <a href="#download" class="nav-link">下载 App</a>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero">
+    <div class="badge">🍜 美食发现新方式</div>
+    <h1>跟着博主<br/>发现身边好店</h1>
+    <p>收藏抖音美食博主推荐的餐厅，自动生成你的专属美食地图，再也不用翻遍收藏夹找不到在哪。</p>
+    <div class="btn-group">
+      <a href="#download" class="btn-primary">
+        <span>🍎</span> App Store 下载
+      </a>
+      <a href="#features" class="btn-secondary">
+        <span>✨</span> 了解功能
+      </a>
+    </div>
+    <div class="phone-mockup">
+      <div class="icon">🗺️</div>
+      <div class="label">美食地图</div>
+    </div>
+  </section>
+
+  <!-- 功能特性 -->
+  <section class="features" id="features">
+    <h2 class="section-title">为美食爱好者而生</h2>
+    <p class="section-sub">从发现到打卡，一个 App 搞定</p>
+    <div class="feature-grid">
+      <div class="feature-card">
+        <div class="feature-icon">🔗</div>
+        <h3>一键解析视频</h3>
+        <p>粘贴抖音分享链接，AI 自动识别视频中提到的餐厅名称、地址，无需手动输入。</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">📍</div>
+        <h3>专属美食地图</h3>
+        <p>所有收藏的餐厅自动标注在地图上，出门前一眼看清附近有哪些博主推荐的好店。</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">👨‍🍳</div>
+        <h3>博主视频聚合</h3>
+        <p>关注喜爱的美食博主，自动同步他们的最新推荐视频，不错过任何一家好店。</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">⭐</div>
+        <h3>收藏与管理</h3>
+        <p>按博主、按区域、按菜系分类管理收藏，找到想去的餐厅从未如此简单。</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔍</div>
+        <h3>智能地址匹配</h3>
+        <p>结合高德地图精准定位餐厅，支持导航直达，告别"找不到在哪"的烦恼。</p>
+      </div>
+      <div class="feature-card">
+        <div class="feature-icon">🔒</div>
+        <h3>数据安全私密</h3>
+        <p>你的收藏数据仅属于你，安全存储在云端，换手机也不丢失。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 下载 -->
+  <section class="download" id="download">
+    <h2>立即下载跟吃</h2>
+    <p>iOS 版本现已上线，Android 版本即将推出</p>
+    <div class="store-badges">
+      <a href="#" class="store-badge" style="opacity:0.5;cursor:default;">
+        <span class="store-icon">🍎</span>
+        <div class="store-text">
+          <small>即将上线</small>
+          <span>App Store</span>
+        </div>
+      </a>
+      <a href="#" class="store-badge" style="opacity:0.5;cursor:default;">
+        <span class="store-icon">🤖</span>
+        <div class="store-text">
+          <small>即将上线</small>
+          <span>Google Play</span>
+        </div>
+      </a>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer>
+    <p style="margin-bottom:12px;">
+      <a href="#">隐私政策</a>
+      <a href="#">用户协议</a>
+      <a href="#">联系我们</a>
+    </p>
+    <p>© 2025 跟吃 App. All rights reserved.</p>
+  </footer>
+
+</body>
+</html>
