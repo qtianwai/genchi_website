@@ -62,3 +62,36 @@
 - 修改索引、约束、触发器
 - 修改 RLS（Row Level Security）策略
 - 修改函数或存储过程
+
+## 数据库操作规则
+
+Claude 可以直接使用 Supabase REST API 查询或操作数据库，无需用户手动执行 SQL 脚本。
+
+**Supabase 连接信息：**
+- URL: `https://ygsxhvsmivcckmjmjmhr.supabase.co`
+- Service Role Key: `sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN`（完整权限，绕过 RLS）
+
+**使用场景：**
+- 执行数据库迁移脚本（ALTER TABLE、CREATE INDEX 等）
+- 查询数据验证功能是否正常
+- 批量更新数据
+- 检查表结构或数据状态
+
+**调用方式：**
+使用 `curl` 通过 Supabase REST API 或 PostgREST API 执行操作。
+
+**示例：**
+```bash
+# 查询表数据
+curl "https://ygsxhvsmivcckmjmjmhr.supabase.co/rest/v1/video_parse_cache?select=*&limit=5" \
+  -H "apikey: sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN" \
+  -H "Authorization: Bearer sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN"
+
+# 执行 SQL（通过 RPC 或直接 SQL endpoint）
+# 注意：Supabase REST API 不直接支持任意 SQL，需要通过 pg_admin 或创建 RPC 函数
+```
+
+**重要提醒：**
+- 使用 Service Role Key 时会绕过 RLS，拥有完整权限，操作需谨慎
+- 对于复杂的 DDL 操作（如 ALTER TABLE），建议通过 Supabase Dashboard 的 SQL Editor 执行
+- 简单的查询和 DML 操作可以直接通过 REST API 完成
