@@ -234,7 +234,7 @@ def upsert_video_cache(cache_data: dict) -> dict:
 
 def update_video_cache_restaurant(video_url: str, restaurant_id: str, restaurant_data: dict) -> dict:
     """视频解析成功后，更新缓存中的店铺快照字段"""
-    result = supabase.table("video_parse_cache").update({
+    update_data = {
         "status": "completed",
         "restaurant_id": restaurant_id,
         "restaurant_name": restaurant_data.get("name"),
@@ -245,7 +245,18 @@ def update_video_cache_restaurant(video_url: str, restaurant_id: str, restaurant
         "restaurant_amap_id": restaurant_data.get("amap_id"),
         "restaurant_category": restaurant_data.get("category"),
         "updated_at": "now()",
-    }).eq("video_url", video_url).execute()
+    }
+    # 可选字段：解析说明、数据来源、API 成本
+    if restaurant_data.get("parse_reason") is not None:
+        update_data["parse_reason"] = restaurant_data["parse_reason"]
+    if restaurant_data.get("data_source") is not None:
+        update_data["data_source"] = restaurant_data["data_source"]
+    if restaurant_data.get("api_cost") is not None:
+        update_data["api_cost"] = restaurant_data["api_cost"]
+    if restaurant_data.get("api_cost_note") is not None:
+        update_data["api_cost_note"] = restaurant_data["api_cost_note"]
+
+    result = supabase.table("video_parse_cache").update(update_data).eq("video_url", video_url).execute()
     return result.data[0] if result.data else {}
 
 

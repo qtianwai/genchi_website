@@ -131,6 +131,11 @@ create table if not exists video_parse_cache (
   restaurant_amap_id text,
   restaurant_category text,
   error_message   text,                 -- 解析失败时的错误信息
+  -- v2.5 新增字段
+  parse_reason    text,                 -- 解析说明：AI 判断依据（包括未提取到店名的原因）
+  data_source     text not null default 'user_submit',  -- 数据来源：user_submit/background_scan/auto_check/manual_add
+  api_cost        numeric(10,6),        -- 本条数据消耗的 JustOneAPI 成本（单位：元）
+  api_cost_note   text,                 -- API 成本说明（如：调用了哪些接口、各自消耗多少）
   created_at      timestamptz default now(),
   updated_at      timestamptz default now()
 );
@@ -218,3 +223,13 @@ create policy "博主信息可更新" on authors for update using (true) with ch
 -- ALTER TABLE authors ADD COLUMN IF NOT EXISTS last_update_check timestamptz;
 -- ALTER TABLE authors ADD COLUMN IF NOT EXISTS no_new_food_video_days int DEFAULT 0;
 -- CREATE INDEX IF NOT EXISTS idx_authors_auto_update ON authors(auto_update_enabled) WHERE auto_update_enabled = true;
+
+
+-- ─────────────────────────────────────────
+-- v2.5 迁移脚本：新增解析说明、数据来源、API 成本字段
+-- 如果 video_parse_cache 表已存在，执行以下 ALTER 语句添加新字段
+-- ─────────────────────────────────────────
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS parse_reason text;
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS data_source text NOT NULL DEFAULT 'user_submit';
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS api_cost numeric(10,6);
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS api_cost_note text;

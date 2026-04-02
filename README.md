@@ -1122,3 +1122,139 @@ python main.py
 - `backend/main.py`：集成自动更新逻辑
 - `帮助文档/博主自动更新检测配置指南.md`：新建配置说明文档
 - `需求文档&技术方案/视频解析与数据入库技术方案.md`：新增 v2.5 和第十二章
+
+---
+
+## 2026-04-02 会话：v2.4 功能开发 & GitHub 部署
+
+### 会话目的
+完成 v2.4 博主自动更新检测功能的开发，并将代码提交至 GitHub 触发 Railway 自动部署。
+
+### 完成的主要任务
+1. **后端定时任务调度器**（`backend/scheduler.py`）：新增定时任务调度器，每 5 分钟检查需要执行自动更新检测的博主，支持分布式互斥（通过 Supabase 的 advisory lock）。
+2. **API 接口**（`backend/main.py`）：新增 `/api/author-update-check` 端点，返回当前待检测的博主列表和排队状态。
+3. **数据库层**（`backend/db.py`）：新增查询待检测博主、更新博主检测状态等方法。
+4. **AI 提取器**（`backend/ai_extractor.py`）：新增 `auto_check` 任务类型的提示词，专门用于增量更新场景（只识别新视频中的美食内容）。
+5. **抖音解析器**（`backend/douyin_parser.py`）：支持增量更新模式（只解析新视频）。
+6. **数据库 Schema**（`backend/supabase_schema.sql`）：authors 表新增三个字段（auto_update_enabled、last_update_check、no_new_food_video_days），新增 auto_check 任务类型和 RLS 策略。
+7. **配置文档**：将部署文档从 `需求文档&技术方案/` 迁移到 `配置文件/` 目录。
+8. **新增文档**：新增 API 成本优化方案、微信登录配置指南、博主自动更新检测配置指南。
+9. **代码提交与部署**：将所有变更提交到 GitHub，触发 Railway 自动部署。
+
+### 关键决策和解决方案
+- 采用 Supabase advisory lock 实现分布式环境下的定时任务互斥，避免多实例重复执行。
+- 自动更新检测任务（auto_check）复用现有的作者更新 API，但 AI 提示词针对增量场景做了优化。
+- 调度器内置软重启机制，无需重启服务即可加载更新后的检测间隔配置。
+
+### 使用的技术栈
+- **后端**：Python FastAPI、Supabase（PostgreSQL）
+- **部署**：Railway（通过 GitHub 自动部署）
+- **数据库**：Supabase PostgreSQL（含 RLS 策略）
+
+### 修改的文件
+- `backend/supabase_schema.sql`：`authors` 表新增 3 个字段、新增索引和 RLS 策略
+- `backend/main.py`：新增 `/api/author-update-check` 端点
+- `backend/scheduler.py`：新增定时任务调度器（新建）
+- `backend/db.py`：新增自动更新相关函数
+- `backend/ai_extractor.py`：新增 auto_check 任务类型提示词
+- `backend/douyin_parser.py`：支持增量更新模式
+- `README.md`：新增会话总结
+- `配置文件/Railway部署配置指南.md`：从需求文档迁移至此
+- `配置文件/Xcode项目创建步骤.md`：从需求文档迁移至此
+- `配置文件/微信登录配置指南.md`：新建
+- `配置文件/抖音接口申请流程.md`：新建
+- `配置文件/阿里云短信配置.md`：新建
+- `配置文件/半自动批量更新美食数据.md`：新建
+- `需求文档&技术方案/API成本优化方案.md`：新建
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`：更新（v2.5、第十二章）
+- `需求文档&技术方案/解析算法优化方案.md`：更新
+- `需求文档&技术方案/解析算法准确率测试报告.md`：更新
+- `需求文档&技术方案/测试验证数据`：更新
+
+---
+
+## 会话总结 - 2026-04-02
+
+### 会话目的
+临时注释微信登录相关代码，避免在微信开放平台审核期间阻塞其他功能测试。
+
+### 完成的主要任务
+- 修复 `WechatAuthManager.swift` 中 `UIApplication` 未导入 `UIKit` 的编译错误
+- 注释所有微信登录相关代码，包括：
+  - App 启动时的微信 SDK 注册
+  - 登录页面的微信登录按钮和分隔线
+  - `AuthState` 中的微信登录方法
+  - `WechatAuthManager` 中的 `UIKit` 依赖和检测逻辑
+
+### 关键决策和解决方案
+- 所有注释均添加 `TODO: 微信开放平台审核通过后取消注释` 标记，便于后续恢复
+- 保留 `WechatAuthManager.swift` 文件和 `AuthError.wechatLoginFailed` 枚举，避免大规模删除代码
+- 注释后 iOS App 可正常编译运行，不影响手机号登录等其他功能
+
+### 修改的文件
+- `ios/FoodMap/genchi/genchi/FoodMapApp.swift`：注释微信 SDK 注册
+- `ios/FoodMap/genchi/genchi/Views/LoginView.swift`：注释微信登录 UI 和处理逻辑
+- `ios/FoodMap/genchi/genchi/Services/AuthState.swift`：注释 `signInWithWechat` 方法
+- `ios/FoodMap/genchi/genchi/Services/WechatAuthManager.swift`：注释 `UIKit` 导入和 `UIApplication` 调用
+
+---
+
+## 会话总结 - 2026-04-02
+
+### 会话目的
+用当前的解析算法测试数据集，验证 v2.6 优化后的准确率，分析失败原因并提出新的优化方案。
+
+### 完成的主要任务
+1. 运行 `backend/test_parse_accuracy.py` 测试脚本，对 16 个测试用例进行解析测试
+2. 测试结果：准确率 **75.0%（12/16）**，与 v2.5 持平
+3. 4 个失败案例分析：
+   - 示例 2（南宁二十四味）：硬骨头视频，无博主确认 + 无评论信号
+   - 示例 3（陈记食集）：评论回复在深层回复链中，未被捕获
+   - 示例 5（最山城人民广场店）：AI 识别正确但脚本匹配失败（品牌全称 vs 简称）
+   - 示例 8（戴烤鸭）：品牌前缀匹配失败（前2字符"戴烤"vs"戴鸭"不同）
+4. 更新 `需求文档&技术方案/解析算法准确率测试报告.md`：新增第七轮测试结果
+5. 更新 `需求文档&技术方案/解析算法优化方案.md`：新增第十章（v2.7）、第十一章（新优化方案 H/J/L/O/P）、第十二章（准确率预测）、第十三章（实施顺序）
+
+### 关键决策和解决方案
+- v2.7 与 v2.6 预期对比：
+  - 方案 L 放宽名称匹配：未实施（需代码修改）
+  - 方案 O 品牌别名映射：未实施（需代码修改）
+  - 示例 6（周师饭店）：✅ 达成（评论高频识别规则生效）
+- 新增 5 个优化方案：
+  - 方案 H：高德 POI 兜底（解决硬骨头视频）
+  - 方案 J：递归获取评论回复链（成本较高，备选）
+  - 方案 L：放宽名称匹配规则（品牌全称 vs 简称）
+  - 方案 O：品牌别名映射表（戴烤鸭↔戴鸭子）
+  - 方案 P：置信度校准策略（解决 medium 波动）
+- 准确率预测：实施方案 H+L+O 可达到 **93.75%（15/16）**
+
+### 修改的文件
+- `需求文档&技术方案/解析算法准确率测试报告.md`：新增第七轮测试（v2.7）
+- `需求文档&技术方案/解析算法优化方案.md`：新增第十~十三章（v2.7 总结 + 新优化方案）
+
+---
+
+### 会话记录 2026-04-02
+
+#### 会话主要目的
+新增三个数据入库字段：解析说明、数据来源、API 成本。
+
+#### 完成的主要任务
+1. 数据库新增 4 个字段（`video_parse_cache` 表）：`parse_reason`、`data_source`、`api_cost`、`api_cost_note`
+2. AI 提取函数（`ai_extractor.py`）新增 `reason` 字段返回，三个提取函数均已更新
+3. 入库逻辑（`main.py`）：用户提交链接、后台批量解析、手动添加三条路径均写入新字段
+4. 数据库操作（`db.py`）：`update_video_cache_restaurant` 支持写入新字段
+5. 更新 `supabase_schema.sql` 和技术方案文档
+
+#### 关键决策和解决方案
+- `parse_reason`：AI 返回 JSON 新增 `reason` 字段，无论成功失败均记录；AI 返回 null 时改为 `{"result": null, "reason": "..."}` 格式
+- `data_source` 枚举值：`user_submit` / `background_scan` / `auto_check` / `manual_add`
+- `api_cost` 按每次 JustOneAPI 调用 ¥0.1 估算，手动添加成本为 0
+- 内部用 `_no_result: True` 标记 AI 未识别到店铺的情况，传递 reason 后过滤掉，不影响原有逻辑
+
+#### 修改的文件
+- `backend/supabase_schema.sql`：新增字段定义和 v2.5 迁移脚本
+- `backend/ai_extractor.py`：三个提取函数 Prompt 和返回处理均更新
+- `backend/main.py`：三条入库路径写入新字段，`parse_single_video_fast` 新增 `data_source` 参数
+- `backend/db.py`：`update_video_cache_restaurant` 支持可选新字段
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`：更新表结构说明和版本变更记录

@@ -161,11 +161,12 @@ async def extract_restaurants_from_video(
 - city: 所在城市（如"上海"，无法判断则填"未知"）
 - category: 美食分类（如：火锅、烤肉、咖啡等）
 - confidence: 置信度，high=非常确定，medium=比较确定，low=不确定
+- reason: 判断依据（简短说明你是从哪里得出这个店铺名的，如"标题直接包含店名"、"评论中多次提到该店名"；如果返回 null，说明为什么无法判断）
 
-只返回 JSON 对象，不要有其他文字。如果完全无法判断，返回 null。
+只返回 JSON 对象，不要有其他文字。如果完全无法判断，返回 {{"result": null, "reason": "无法判断的原因"}}。
 
 示例格式：
-{{"name": "最山城不改良重庆火锅", "city": "上海", "category": "火锅", "confidence": "high"}}"""
+{{"name": "最山城不改良重庆火锅", "city": "上海", "category": "火锅", "confidence": "high", "reason": "标题直接包含完整店名"}}"""
 
     try:
         response = await dashscope_client.chat.completions.create(
@@ -188,12 +189,19 @@ async def extract_restaurants_from_video(
             print(f"[AI解析] 未识别到店铺")
             return []
 
-        restaurant = json.loads(result_text)
+        parsed = json.loads(result_text)
+
+        # 兼容 {"result": null, "reason": "..."} 格式（无法判断时）
+        if parsed.get("result") is None and "reason" in parsed:
+            print(f"[AI解析] 未识别到店铺，原因: {parsed.get('reason')}")
+            return [{"_no_result": True, "reason": parsed.get("reason", "")}]
+
+        restaurant = parsed
 
         # 过滤低置信度结果
         if restaurant.get("confidence") == "low":
             print(f"[AI解析] 置信度过低，跳过: {restaurant.get('name')}")
-            return []
+            return [{"_no_result": True, "reason": f"置信度过低: {restaurant.get('reason', '')}"}]
 
         print(f"[AI解析] 识别到店铺: {restaurant.get('name')} ({restaurant.get('city')}) 置信度={restaurant.get('confidence')}")
         return [restaurant]
@@ -332,29 +340,30 @@ async def extract_restaurants_priority(
 - city: 所在城市（如"上海"，无法判断则填"未知"）
 - category: 美食分类（如：火锅、烤肉、咖啡等）
 - confidence: 置信度，high=非常确定，medium=比较确定，low=不确定
+- reason: 判断依据（简短说明你是从哪里得出这个店铺名的，如"标题直接包含完整店名"、"P2博主点赞评论明确提到店名"、"P3热门评论多次出现同一店名"；如果返回 null，说明为什么无法判断，如"标题只有食物描述无店名"、"评论中有多个候选店铺无法确认"）
 
-只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 null。
+只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 {{"result": null, "reason": "无法判断的原因"}}。
 
 === 反例示范（这些情况必须返回 null）===
 
 反例1 - 标题描述当店铺名（错误做法）：
   标题：婆罗门云集的老成都冒烤鸭，紧实的鸭肉裹着淡淡的卤水香
   错误输出：{{"name": "婆罗门云集的老成都冒烤鸭", ...}}  ← 这是标题描述，不是店铺名！
-  正确输出：null  ← 标题只描述了食物，没有具体店铺名
+  正确输出：{{"result": null, "reason": "标题只描述了食物风格，没有具体店铺名"}}
 
 反例2 - 话题标签人名当店铺名（错误做法）：
   标题：上海这家烧烤摊一般人根本吃不到！
   话题标签：#上海探店 #乔妹妹 #上海夜宵 #云南烧烤
   错误输出：{{"name": "乔妹妹云南烧烤", ...}}  ← "乔妹妹"是人名标签，不是店铺名！
-  正确输出：null  ← 话题标签中的人名不能拼接成店铺名
+  正确输出：{{"result": null, "reason": "话题标签中的乔妹妹是人名，不是店铺名"}}
 
 正例 - 话题标签中的真实店铺名：
   标题：新的普陀之光诞生了！#上海探店 #悦来芳 #上海话
-  正确输出：{{"name": "悦来芳", "city": "上海", "category": "餐厅", "confidence": "high"}}  ← "悦来芳"是真实店铺名（专有名词，非人名/食物名）
+  正确输出：{{"name": "悦来芳", "city": "上海", "category": "餐厅", "confidence": "high", "reason": "话题标签中悦来芳是专有名词店铺名"}}
 
 === 正式输出 ===
 示例格式：
-{{"name": "最山城不改良重庆火锅（人民广场店）", "city": "上海", "category": "火锅", "confidence": "high"}}"""
+{{"name": "最山城不改良重庆火锅（人民广场店）", "city": "上海", "category": "火锅", "confidence": "high", "reason": "标题直接包含完整店名和分店信息"}}"""
 
     try:
         response = await dashscope_client.chat.completions.create(
@@ -377,14 +386,23 @@ async def extract_restaurants_priority(
             print("[AI解析] 优先级算法：未识别到店铺")
             return []
 
-        restaurant = json.loads(result_text)
+        parsed = json.loads(result_text)
+
+        # 兼容 {"result": null, "reason": "..."} 格式（无法判断时）
+        if parsed.get("result") is None and "reason" in parsed:
+            reason = parsed.get("reason", "")
+            print(f"[AI解析] 优先级算法：未识别到店铺，原因: {reason}")
+            return [{"_no_result": True, "reason": reason}]
+
+        restaurant = parsed
         name = restaurant.get("name", "")
         confidence = restaurant.get("confidence", "low")
 
         # 过滤低置信度结果
         if confidence == "low":
+            reason = restaurant.get("reason", "")
             print(f"[AI解析] 优先级算法：置信度过低，跳过: {name}")
-            return []
+            return [{"_no_result": True, "reason": f"置信度过低: {reason}"}]
 
         print(f"[AI解析] 优先级算法：识别到店铺: {name} ({restaurant.get('city')}) 置信度={confidence}")
         return [restaurant]
@@ -527,29 +545,30 @@ async def extract_restaurants_with_replies(
 - city: 所在城市（如"上海"，无法判断则填"未知"）
 - category: 美食分类（如：火锅、烤肉、咖啡等）
 - confidence: 置信度，high=非常确定，medium=比较确定，low=不确定
+- reason: 判断依据（简短说明你是从哪里得出这个店铺名的，如"P0博主回复明确说出店名"、"P3热门评论回复中多人确认同一店名"；如果返回 null，说明为什么无法判断）
 
-只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 null。
+只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 {{"result": null, "reason": "无法判断的原因"}}。
 
 === 反例示范（这些情况必须返回 null）===
 
 反例1 - 标题描述当店铺名（错误做法）：
   标题：婆罗门云集的老成都冒烤鸭，紧实的鸭肉裹着淡淡的卤水香
   错误输出：{{"name": "婆罗门云集的老成都冒烤鸭", ...}}  ← 这是标题描述，不是店铺名！
-  正确输出：null  ← 标题只描述了食物，没有具体店铺名
+  正确输出：{{"result": null, "reason": "标题只描述了食物风格，没有具体店铺名"}}
 
 反例2 - 话题标签人名当店铺名（错误做法）：
   标题：上海这家烧烤摊一般人根本吃不到！
   话题标签：#上海探店 #乔妹妹 #上海夜宵 #云南烧烤
   错误输出：{{"name": "乔妹妹云南烧烤", ...}}  ← "乔妹妹"是人名标签，不是店铺名！
-  正确输出：null  ← 话题标签中的人名不能拼接成店铺名
+  正确输出：{{"result": null, "reason": "话题标签中的乔妹妹是人名，不是店铺名"}}
 
 正例 - 话题标签中的真实店铺名：
   标题：新的普陀之光诞生了！#上海探店 #悦来芳 #上海话
-  正确输出：{{"name": "悦来芳", "city": "上海", "category": "餐厅", "confidence": "high"}}  ← "悦来芳"是真实店铺名（专有名词，非人名/食物名）
+  正确输出：{{"name": "悦来芳", "city": "上海", "category": "餐厅", "confidence": "high", "reason": "话题标签中悦来芳是专有名词店铺名"}}
 
 === 正式输出 ===
 示例格式：
-{{"name": "最山城不改良重庆火锅（人民广场店）", "city": "上海", "category": "火锅", "confidence": "high"}}"""
+{{"name": "最山城不改良重庆火锅（人民广场店）", "city": "上海", "category": "火锅", "confidence": "high", "reason": "P0博主回复明确说出完整店名和分店信息"}}"""
 
     try:
         response = await dashscope_client.chat.completions.create(
@@ -571,13 +590,22 @@ async def extract_restaurants_with_replies(
             print("[AI解析] 带回复算法：未识别到店铺")
             return []
 
-        restaurant = json.loads(result_text)
+        parsed = json.loads(result_text)
+
+        # 兼容 {"result": null, "reason": "..."} 格式（无法判断时）
+        if parsed.get("result") is None and "reason" in parsed:
+            reason = parsed.get("reason", "")
+            print(f"[AI解析] 带回复算法：未识别到店铺，原因: {reason}")
+            return [{"_no_result": True, "reason": reason}]
+
+        restaurant = parsed
         name = restaurant.get("name", "")
         confidence = restaurant.get("confidence", "low")
 
         if confidence == "low":
+            reason = restaurant.get("reason", "")
             print(f"[AI解析] 带回复算法：置信度过低，跳过: {name}")
-            return []
+            return [{"_no_result": True, "reason": f"置信度过低: {reason}"}]
 
         print(f"[AI解析] 带回复算法：识别到店铺: {name} ({restaurant.get('city')}) 置信度={confidence}")
         return [restaurant]
