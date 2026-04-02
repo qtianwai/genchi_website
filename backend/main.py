@@ -5,7 +5,7 @@
 import os
 import asyncio
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, extract_video_id_from_url, poll_comment_replies_for_confidence
 from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies, filter_food_video_titles
 from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies
-from amap_service import batch_search_restaurants
+from amap_service import batch_search_restaurants, search_restaurant_for_review
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
     get_author_by_douyin_id, upsert_author,
@@ -32,6 +32,9 @@ from db import (
     get_videos_by_restaurant,
     # 新增：博主自动更新相关（v2.4）
     enable_author_auto_update,
+    # 新增：后台人工复核相关（v3.0）
+    is_admin_user, get_review_list, get_video_cache_by_cache_id,
+    admin_confirm_correct, admin_confirm_empty, admin_correct_restaurant, admin_skip,
 )
 
 load_dotenv()
@@ -1229,6 +1232,148 @@ async def manual_add_restaurant(req: ManualAddRestaurantRequest):
     except Exception as e:
         print(f"[手动添加] 未知错误: {e}")
         raise HTTPException(status_code=500, detail=f"添加失败: {str(e)}")
+
+
+# ─────────────────────────────────────────
+# 后台人工复核 API（v3.0 新增）
+# 所有接口需要管理员鉴权（X-User-ID Header）
+# ─────────────────────────────────────────
+
+# 复核相关请求模型
+class AdminConfirmCorrectRequest(BaseModel):
+    cache_id: str   # video_parse_cache 的 id
+
+class AdminConfirmEmptyRequest(BaseModel):
+    cache_id: str
+
+class AdminCorrectRequest(BaseModel):
+    cache_id: str
+    amap_id: str
+    restaurant_name: str
+    address: str
+    city: str
+    latitude: float
+    longitude: float
+    category: str   # 管理员最终确认的分类
+
+class AdminSkipRequest(BaseModel):
+    cache_id: str
+
+
+async def require_admin(x_user_id: str = Header(None, alias="X-User-ID")) -> str:
+    """
+    管理员鉴权依赖函数。
+    从请求头 X-User-ID 读取用户 ID，校验是否在 admin_users 表中。
+    """
+    if not x_user_id:
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    if not is_admin_user(x_user_id):
+        raise HTTPException(status_code=403, detail="无管理员权限")
+    return x_user_id
+
+
+@app.get("/api/admin/check")
+async def admin_check(x_user_id: str = Header(None, alias="X-User-ID")):
+    """
+    检查当前用户是否为管理员。
+    普通用户调用返回 {is_admin: false}，不报错。
+    """
+    if not x_user_id:
+        return {"is_admin": False}
+    is_admin = is_admin_user(x_user_id)
+    return {"is_admin": is_admin, "user_id": x_user_id if is_admin else None}
+
+
+@app.get("/api/admin/review/list")
+async def review_list(
+    page: int = 1,
+    page_size: int = 20,
+    admin_user_id: str = Depends(require_admin),
+):
+    """
+    获取待复核列表（review_status = 'pending'）。
+    P0（AI 未识别，restaurant_id IS NULL）排在前面，P1（AI 已识别未验证）在后。
+    """
+    result = get_review_list(page=page, page_size=page_size)
+    return result
+
+
+@app.get("/api/admin/review/search-restaurant")
+async def review_search_restaurant(
+    name: str,
+    city: str = "",
+    admin_user_id: str = Depends(require_admin),
+):
+    """
+    复核时搜索店铺候选列表（调用高德 POI 搜索）。
+    返回最多 10 条候选，每条含 category_raw 和 category_mapped。
+    """
+    candidates = await search_restaurant_for_review(name, city)
+    return {"candidates": candidates}
+
+
+@app.post("/api/admin/review/confirm-correct")
+async def review_confirm_correct(
+    req: AdminConfirmCorrectRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """
+    确认 AI 识别结果正确：
+    - 更新 restaurants.verified = true
+    - 同步 video_parse_cache 快照字段
+    - 设置 review_status = 'approved'
+    """
+    success = admin_confirm_correct(req.cache_id, admin_user_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="未找到该复核记录或记录无关联店铺")
+    return {"status": "ok", "message": "已确认正确"}
+
+
+@app.post("/api/admin/review/confirm-empty")
+async def review_confirm_empty(
+    req: AdminConfirmEmptyRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """确认该视频无店铺，更新 review_status = 'confirmed'"""
+    admin_confirm_empty(req.cache_id, admin_user_id)
+    return {"status": "ok", "message": "已确认无店铺"}
+
+
+@app.post("/api/admin/review/correct")
+async def review_correct(
+    req: AdminCorrectRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """
+    人工修正店铺：
+    - upsert restaurants（以 amap_id 为唯一键，设 verified=true）
+    - 更新 author_restaurants 关联
+    - 更新 video_parse_cache 所有快照字段，review_status = 'corrected'
+    """
+    success = admin_correct_restaurant(
+        cache_id=req.cache_id,
+        admin_user_id=admin_user_id,
+        amap_id=req.amap_id,
+        name=req.restaurant_name,
+        address=req.address,
+        city=req.city,
+        latitude=req.latitude,
+        longitude=req.longitude,
+        category=req.category,
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="未找到该复核记录")
+    return {"status": "ok", "message": "店铺已修正入库"}
+
+
+@app.post("/api/admin/review/skip")
+async def review_skip(
+    req: AdminSkipRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """跳过该条复核记录，更新 review_status = 'skipped'"""
+    admin_skip(req.cache_id, admin_user_id)
+    return {"status": "ok", "message": "已跳过"}
 
 
 # ─────────────────────────────────────────

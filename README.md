@@ -1295,3 +1295,86 @@ python main.py
 
 #### 修改的文件
 - `需求文档&技术方案/产品功能清单.md`：新增 5 项待开发功能，全部待开发功能重新排序
+
+---
+
+### 2026-04-03 后台人工复核功能实施计划文档更新
+
+#### 会话的主要目的
+根据用户反馈完善后台人工复核功能实施计划文档（v1.0 → v1.1）。
+
+#### 完成的主要任务
+1. 扩大复核数据范围：从仅"AI未识别"扩展至所有未经人工确认的店铺数据，按优先级区分（P0：AI未识别，P1：AI已识别但未验证）
+2. 新增店铺模糊搜索功能：修正店铺时支持防抖输入 + 高德 POI 候选列表，替代原来的完整输入店名方式
+3. 新增抖音跳转功能：复核详情页提供「在抖音中查看」按钮，优先跳转抖音 App，降级打开网页版
+
+#### 关键决策和解决方案
+- 模糊搜索改为前端防抖触发 + 后端新增 `/api/admin/review/search-restaurant` 接口，搜索结果由前端选定后再提交入库（而非后端自动取第一条）
+- 抖音跳转使用 URL Scheme `snssdk1128://aweme/detail?aweme_id=<video_id>`，需在 Info.plist 注册
+- 新增「确认正确」操作（针对 P1 类型：AI 已识别但未验证的记录）
+
+#### 修改的文件
+- `需求文档&技术方案/后台人工复核功能实施计划.md`（v1.0 → v1.1）
+
+---
+
+### 2026-04-03 后台人工复核功能实施计划文档更新（v1.2）
+
+#### 会话的主要目的
+进一步完善复核入库流程，明确分类字段处理方式和所有相关表字段的同步规则。
+
+#### 完成的主要任务
+1. 新增分类确认交互：搜索候选自动返回高德分类映射结果，管理员可在点选店铺后二次调整分类再提交
+2. 新增「入库时各字段的处理规则」章节，逐字段明确 `restaurants`、`video_parse_cache`、`author_restaurants` 三张表在复核时的更新/不变策略
+3. 新增 `review_status` 枚举值说明表（pending/approved/corrected/confirmed/skipped）
+4. 新增 `ConfirmRestaurantView` iOS 视图（分类可编辑确认步骤）
+5. 新增 `RestaurantCandidate` Swift 数据模型定义（含 `categoryRaw` 和 `categoryMapped` 字段）
+6. `/correct` 接口请求结构新增 `category` 字段
+
+#### 关键决策和解决方案
+- 高德 POI `type` 字段（如"餐饮服务;火锅店;火锅店"）在后端映射为简短系统分类标签，前端展示映射结果并允许覆盖
+- `video_parse_cache` 中所有 `restaurant_*` 快照字段在复核后必须与 `restaurants` 表保持一致（冗余字段同步原则）
+- `confirm-correct` 场景（AI已识别，人工确认）同样需要同步快照字段，`review_status` 设为 `approved`
+- 旧的错误 `author_restaurants` 记录当前版本暂不自动清理，留待后续处理
+
+#### 修改的文件
+- `需求文档&技术方案/后台人工复核功能实施计划.md`（v1.1 → v1.2）
+
+---
+
+### 2026-04-03 后台人工复核功能开发（v3.0）
+
+#### 会话的主要目的
+根据实施计划文档，完整开发后台人工复核功能，包括数据库迁移脚本、后端 API 和 iOS 端 UI。
+
+#### 完成的主要任务
+
+**数据库迁移（需用户手动执行）**
+- 新建迁移脚本 `backend/migration_v3_admin_review.sql`，包含完整 DDL 和验证查询
+- 新增 `admin_users` 表（管理员用户表，启用 RLS 禁止客户端访问）
+- `video_parse_cache` 表新增 `review_status`、`reviewed_by`、`reviewed_at` 字段及索引
+- `restaurants` 表新增 `verified`、`verified_at` 字段
+
+**后端（Python FastAPI）**
+- `backend/amap_service.py`：新增 `AMAP_CATEGORY_MAP` 字典（60+ 条映射规则）、`map_amap_category()` 函数、`search_restaurant_for_review()` 函数
+- `backend/db.py`：新增 7 个复核相关数据库操作函数
+- `backend/main.py`：新增 `require_admin` 鉴权依赖函数 + 7 个复核 API 路由
+- `backend/supabase_schema.sql`：追加 v3.0 迁移注释
+
+**iOS 端（SwiftUI）**
+- `Models/Models.swift`：新增复核相关模型；`Restaurant` 新增 `verified` 字段
+- `Services/AuthState.swift`：新增 `isAdmin` 属性和 `checkAdminStatus()` 方法
+- `Services/APIService.swift`：新增 6 个复核接口方法
+- `ViewModels/ReviewViewModel.swift`（新建）：复核列表状态管理
+- `Views/Admin/ReviewListView.swift`（新建）：复核列表页
+- `Views/Admin/ReviewDetailView.swift`（新建）：复核详情页，含抖音跳转
+- `Views/Admin/RestaurantSearchView.swift`（新建）：店铺模糊搜索，防抖 300ms
+- `Views/Admin/ConfirmRestaurantView.swift`（新建）：确认分类并提交入库
+- `Views/MainTabView.swift`：管理员登录后动态显示第 5 个「复核」Tab
+- `Views/MapView.swift`：店铺卡片新增「✓ 已验证」绿色角标
+
+#### 关键决策
+- 管理员鉴权通过 `X-User-ID` Header + `admin_users` 表校验，不暴露注册入口
+- 复核列表按 `restaurant_id IS NULL`（P0）优先排序
+- 高德分类映射在后端维护，前端允许管理员覆盖
+- 数据库迁移需用户在 Supabase Dashboard SQL Editor 手动执行 `migration_v3_admin_review.sql`

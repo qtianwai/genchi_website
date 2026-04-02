@@ -477,3 +477,192 @@ def enable_author_auto_update(author_id: str) -> dict:
         "no_new_food_video_days": 0,  # 重置天数
     }).eq("id", author_id).execute()
     return result.data[0] if result.data else {}
+
+
+# ─────────────────────────────────────────
+# 后台人工复核相关操作（v3.0 新增）
+# ─────────────────────────────────────────
+
+def get_review_list(page: int = 1, page_size: int = 20) -> dict:
+    """
+    获取待复核列表（review_status = 'pending'）。
+    优先级排序：P0（restaurant_id IS NULL）在前，P1（restaurant_id IS NOT NULL）在后。
+    同优先级内按 created_at 倒序。
+    返回 {items, total}
+    """
+    offset = (page - 1) * page_size
+
+    # 查询 pending 记录，联表 authors
+    result = (
+        supabase.table("video_parse_cache")
+        .select(
+            "id, video_id, video_url, author_id, restaurant_id, review_status, "
+            "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
+            "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
+            "created_at, authors(name, avatar_url)",
+            count="exact"
+        )
+        .eq("review_status", "pending")
+        .eq("status", "completed")  # 只复核已解析完成的记录
+        .order("restaurant_id", desc=False, nullsfirst=True)  # NULL 在前（P0）
+        .order("created_at", desc=True)
+        .range(offset, offset + page_size - 1)
+        .execute()
+    )
+
+    items = result.data or []
+    total = result.count or 0
+
+    # 为每条记录计算优先级标签
+    for item in items:
+        item["review_priority"] = "P0" if item.get("restaurant_id") is None else "P1"
+
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+def get_video_cache_by_cache_id(cache_id: str) -> dict | None:
+    """根据 cache id 查询视频缓存记录"""
+    result = supabase.table("video_parse_cache").select("*").eq("id", cache_id).execute()
+    rows = result.data
+    return rows[0] if rows else None
+
+
+def admin_confirm_correct(cache_id: str, admin_user_id: str) -> bool:
+    """
+    确认 AI 识别结果正确：
+    1. 更新 restaurants.verified = true
+    2. 同步更新 video_parse_cache 快照字段
+    3. 设置 review_status = 'approved'
+    """
+    # 获取缓存记录
+    cache = get_video_cache_by_cache_id(cache_id)
+    if not cache:
+        return False
+
+    restaurant_id = cache.get("restaurant_id")
+    if not restaurant_id:
+        return False
+
+    # 更新 restaurants 表
+    supabase.table("restaurants").update({
+        "verified": True,
+        "verified_at": "now()",
+    }).eq("id", restaurant_id).execute()
+
+    # 获取最新 restaurant 数据（用于同步快照）
+    r_result = supabase.table("restaurants").select("*").eq("id", restaurant_id).execute()
+    restaurant = r_result.data[0] if r_result.data else {}
+
+    # 更新 video_parse_cache
+    supabase.table("video_parse_cache").update({
+        "restaurant_name": restaurant.get("name", cache.get("restaurant_name")),
+        "restaurant_address": restaurant.get("address", cache.get("restaurant_address")),
+        "restaurant_city": restaurant.get("city", cache.get("restaurant_city")),
+        "restaurant_lat": restaurant.get("latitude", cache.get("restaurant_lat")),
+        "restaurant_lng": restaurant.get("longitude", cache.get("restaurant_lng")),
+        "restaurant_amap_id": restaurant.get("amap_id", cache.get("restaurant_amap_id")),
+        "restaurant_category": restaurant.get("category", cache.get("restaurant_category")),
+        "review_status": "approved",
+        "reviewed_by": admin_user_id,
+        "reviewed_at": "now()",
+        "updated_at": "now()",
+    }).eq("id", cache_id).execute()
+
+    return True
+
+
+def admin_confirm_empty(cache_id: str, admin_user_id: str) -> bool:
+    """确认该视频无店铺，更新 review_status = 'confirmed'"""
+    supabase.table("video_parse_cache").update({
+        "review_status": "confirmed",
+        "reviewed_by": admin_user_id,
+        "reviewed_at": "now()",
+        "updated_at": "now()",
+    }).eq("id", cache_id).execute()
+    return True
+
+
+def admin_correct_restaurant(
+    cache_id: str,
+    admin_user_id: str,
+    amap_id: str,
+    name: str,
+    address: str,
+    city: str,
+    latitude: float,
+    longitude: float,
+    category: str,
+) -> bool:
+    """
+    人工修正店铺：
+    1. upsert restaurants（以 amap_id 为唯一键，设 verified=true）
+    2. 更新 author_restaurants 关联（新建新关联）
+    3. 更新 video_parse_cache 所有快照字段，review_status = 'corrected'
+    """
+    # 获取缓存记录
+    cache = get_video_cache_by_cache_id(cache_id)
+    if not cache:
+        return False
+
+    # upsert restaurants
+    r_result = supabase.table("restaurants").upsert({
+        "name": name,
+        "address": address,
+        "city": city,
+        "latitude": latitude,
+        "longitude": longitude,
+        "amap_id": amap_id,
+        "category": category,
+        "verified": True,
+        "verified_at": "now()",
+    }, on_conflict="amap_id").execute()
+
+    if not r_result.data:
+        return False
+
+    restaurant_id = r_result.data[0]["id"]
+
+    # 更新 author_restaurants 关联
+    author_id = cache.get("author_id")
+    video_id = cache.get("video_id", "")
+    if author_id:
+        supabase.table("author_restaurants").upsert({
+            "author_id": author_id,
+            "restaurant_id": restaurant_id,
+            "video_id": video_id,
+        }, on_conflict="author_id,restaurant_id,video_id").execute()
+
+    # 更新 video_parse_cache
+    supabase.table("video_parse_cache").update({
+        "restaurant_id": restaurant_id,
+        "restaurant_name": name,
+        "restaurant_address": address,
+        "restaurant_city": city,
+        "restaurant_lat": latitude,
+        "restaurant_lng": longitude,
+        "restaurant_amap_id": amap_id,
+        "restaurant_category": category,
+        "review_status": "corrected",
+        "reviewed_by": admin_user_id,
+        "reviewed_at": "now()",
+        "updated_at": "now()",
+    }).eq("id", cache_id).execute()
+
+    return True
+
+
+def admin_skip(cache_id: str, admin_user_id: str) -> bool:
+    """跳过复核，更新 review_status = 'skipped'"""
+    supabase.table("video_parse_cache").update({
+        "review_status": "skipped",
+        "reviewed_by": admin_user_id,
+        "reviewed_at": "now()",
+        "updated_at": "now()",
+    }).eq("id", cache_id).execute()
+    return True
+
+
+def is_admin_user(user_id: str) -> bool:
+    """检查用户是否为管理员"""
+    result = supabase.table("admin_users").select("user_id").eq("user_id", user_id).execute()
+    return bool(result.data)

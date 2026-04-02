@@ -169,6 +169,132 @@ def _pick_best_poi(pois: list[dict], query: str, city: str, strict: bool = True)
     return None
 
 
+# ─────────────────────────────────────────
+# 高德分类 → 系统分类映射（复核功能使用）
+# ─────────────────────────────────────────
+
+# 高德 POI type 字段格式示例："餐饮服务;火锅店;火锅店"
+# 映射规则：按关键词匹配，优先匹配更具体的分类
+AMAP_CATEGORY_MAP = {
+    "火锅": "火锅",
+    "烤肉": "烤肉",
+    "烧烤": "烧烤",
+    "串串": "串串",
+    "麻辣烫": "麻辣烫",
+    "冒菜": "冒菜",
+    "烤鱼": "烤鱼",
+    "烤鸭": "烤鸭",
+    "烤鸡": "烤鸡",
+    "炸鸡": "炸鸡",
+    "汉堡": "汉堡",
+    "披萨": "披萨",
+    "意大利": "西餐",
+    "西餐": "西餐",
+    "牛排": "西餐",
+    "日本料理": "日料",
+    "日料": "日料",
+    "寿司": "日料",
+    "拉面": "日料",
+    "韩国料理": "韩餐",
+    "韩餐": "韩餐",
+    "泰国料理": "东南亚菜",
+    "东南亚": "东南亚菜",
+    "越南": "东南亚菜",
+    "粤菜": "粤菜",
+    "广东": "粤菜",
+    "川菜": "川菜",
+    "四川": "川菜",
+    "湘菜": "湘菜",
+    "湖南": "湘菜",
+    "江浙菜": "江浙菜",
+    "淮扬": "江浙菜",
+    "东北菜": "东北菜",
+    "云南": "云南菜",
+    "贵州": "贵州菜",
+    "新疆": "新疆菜",
+    "清真": "清真",
+    "面条": "面食",
+    "面馆": "面食",
+    "米粉": "米粉",
+    "粉": "米粉",
+    "饺子": "饺子",
+    "包子": "包子",
+    "粥": "粥",
+    "小吃": "小吃",
+    "快餐": "快餐",
+    "自助": "自助餐",
+    "海鲜": "海鲜",
+    "龙虾": "海鲜",
+    "螃蟹": "海鲜",
+    "咖啡": "咖啡",
+    "茶": "茶饮",
+    "奶茶": "茶饮",
+    "甜品": "甜品",
+    "蛋糕": "甜品",
+    "冰淇淋": "甜品",
+    "面包": "烘焙",
+    "烘焙": "烘焙",
+}
+
+
+def map_amap_category(amap_type: str) -> str:
+    """
+    将高德 POI type 字段映射为系统简短分类标签。
+    amap_type 示例："餐饮服务;火锅店;火锅店"
+    返回示例："火锅"，无匹配时返回二级分类或"餐饮"
+    """
+    if not amap_type:
+        return "餐饮"
+
+    # 按关键词匹配（优先匹配更具体的词）
+    for keyword, category in AMAP_CATEGORY_MAP.items():
+        if keyword in amap_type:
+            return category
+
+    # 无匹配时取二级分类（如"餐饮服务;火锅店;火锅店" → "火锅店"）
+    parts = amap_type.split(";")
+    if len(parts) >= 2:
+        return parts[1]
+
+    return "餐饮"
+
+
+async def search_restaurant_for_review(name: str, city: str) -> list[dict]:
+    """
+    复核功能专用：搜索店铺候选列表，返回最多 10 条结果。
+    每条结果附加 category_raw（高德原始分类）和 category_mapped（映射后分类）。
+
+    与 search_restaurant 的区别：
+    - 返回多条候选供管理员选择，而非自动挑选最佳结果
+    - 不做相似度过滤，让管理员自行判断
+    - 每条结果包含分类信息
+    """
+    pois = await _search_amap(name, city, offset=10)
+
+    candidates = []
+    for poi in pois:
+        location = poi.get("location", "")
+        if "," not in location:
+            continue
+        lng, lat = location.split(",", 1)
+        try:
+            amap_type = poi.get("type", "")
+            candidates.append({
+                "amap_id": poi.get("id", ""),
+                "name": poi.get("name", ""),
+                "address": poi.get("address", ""),
+                "city": poi.get("cityname", city) or city,
+                "latitude": float(lat),
+                "longitude": float(lng),
+                "category_raw": amap_type,
+                "category_mapped": map_amap_category(amap_type),
+            })
+        except ValueError:
+            continue
+
+    return candidates
+
+
 async def batch_search_restaurants(restaurants: list[dict]) -> list[dict]:
     """
     批量搜索店铺地址

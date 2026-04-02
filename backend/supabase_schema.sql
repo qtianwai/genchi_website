@@ -233,3 +233,28 @@ create policy "博主信息可更新" on authors for update using (true) with ch
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS data_source text NOT NULL DEFAULT 'user_submit';
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS api_cost numeric(10,6);
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS api_cost_note text;
+
+
+-- ─────────────────────────────────────────
+-- v3.0 迁移脚本：后台人工复核功能
+-- 执行方式：在 Supabase Dashboard → SQL Editor 中执行
+-- ─────────────────────────────────────────
+
+-- 1. 新增管理员用户表
+-- CREATE TABLE IF NOT EXISTS admin_users (
+--     user_id    uuid PRIMARY KEY,
+--     note       text,
+--     created_at timestamptz DEFAULT now()
+-- );
+-- ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
+-- CREATE POLICY admin_users_no_client_access ON admin_users FOR ALL USING (false);
+
+-- 2. video_parse_cache 新增复核字段
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'pending';
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS reviewed_by uuid;
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
+-- CREATE INDEX IF NOT EXISTS idx_vpc_review_status ON video_parse_cache(review_status);
+
+-- 3. restaurants 新增人工验证字段
+-- ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS verified boolean NOT NULL DEFAULT false;
+-- ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS verified_at timestamptz;
