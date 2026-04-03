@@ -1288,13 +1288,15 @@ async def admin_check(x_user_id: str = Header(None, alias="X-User-ID")):
 async def review_list(
     page: int = 1,
     page_size: int = 20,
+    tab: str = "pending",
     admin_user_id: str = Depends(require_admin),
 ):
     """
-    获取待复核列表（review_status = 'pending'）。
-    P0（AI 未识别，restaurant_id IS NULL）排在前面，P1（AI 已识别未验证）在后。
+    获取复核列表。
+    tab=pending（默认）：待复核，P0 优先。
+    tab=reviewed：已复核，按 reviewed_at 倒序。
     """
-    result = get_review_list(page=page, page_size=page_size)
+    result = get_review_list(page=page, page_size=page_size, tab=tab)
     return result
 
 

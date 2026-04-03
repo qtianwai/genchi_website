@@ -41,6 +41,9 @@ create table if not exists restaurants (
   longitude     double precision,       -- 经度
   amap_id       text unique,            -- 高德 POI ID（唯一标识，避免重复）
   category      text,                   -- 美食分类（火锅、烤肉等）
+  -- v3.0 新增：人工验证字段
+  verified      boolean not null default false,  -- 是否经过人工复核验证
+  verified_at   timestamptz,            -- 人工验证时间
   created_at    timestamptz default now()
 );
 
@@ -137,13 +140,34 @@ create table if not exists video_parse_cache (
   api_cost        numeric(10,6),        -- 本条数据消耗的 JustOneAPI 成本（单位：元）
   api_cost_note   text,                 -- API 成本说明（如：调用了哪些接口、各自消耗多少）
   created_at      timestamptz default now(),
-  updated_at      timestamptz default now()
+  updated_at      timestamptz default now(),
+  -- v3.0 新增：人工复核字段
+  review_status   text not null default 'pending',  -- pending/approved/corrected/confirmed/skipped
+  reviewed_by     uuid,                -- 复核操作人（管理员 user_id）
+  reviewed_at     timestamptz          -- 复核时间
 );
 
 -- 索引：按视频 URL 精确查询（唯一索引保证每个 URL 只有一条记录）
 create unique index if not exists idx_video_cache_url on video_parse_cache(video_url);
 -- 索引：按视频 ID 查询（用于去重判断）
 create index if not exists idx_video_cache_videoid on video_parse_cache(video_id);
+-- 索引：按复核状态查询（v3.0 新增，用于复核列表查询）
+create index if not exists idx_vpc_review_status on video_parse_cache(review_status);
+
+
+-- ─────────────────────────────────────────
+-- 9. 管理员用户表（v3.0 新增）
+-- 记录平台管理员账号，用于后台人工复核功能鉴权
+-- ─────────────────────────────────────────
+create table if not exists admin_users (
+  user_id    uuid primary key,          -- 对应 auth 的 user_id
+  note       text,                      -- 备注（如：谁的账号）
+  created_at timestamptz default now()
+);
+
+-- admin_users 不开放客户端访问，仅后端 Service Role Key 可操作
+alter table admin_users enable row level security;
+create policy "admin_users_no_client_access" on admin_users for all using (false);
 
 
 -- ─────────────────────────────────────────
@@ -236,11 +260,11 @@ create policy "博主信息可更新" on authors for update using (true) with ch
 
 
 -- ─────────────────────────────────────────
--- v3.0 迁移脚本：后台人工复核功能
--- 执行方式：在 Supabase Dashboard → SQL Editor 中执行
+-- v3.0 迁移脚本：后台人工复核功能（已实施，字段已合并至上方表定义）
+-- 若在已有数据库上增量执行，运行以下 ALTER 语句：
 -- ─────────────────────────────────────────
 
--- 1. 新增管理员用户表
+-- 1. 新增管理员用户表（已合并至第 9 节）
 -- CREATE TABLE IF NOT EXISTS admin_users (
 --     user_id    uuid PRIMARY KEY,
 --     note       text,
@@ -249,12 +273,12 @@ create policy "博主信息可更新" on authors for update using (true) with ch
 -- ALTER TABLE admin_users ENABLE ROW LEVEL SECURITY;
 -- CREATE POLICY admin_users_no_client_access ON admin_users FOR ALL USING (false);
 
--- 2. video_parse_cache 新增复核字段
+-- 2. video_parse_cache 新增复核字段（已合并至第 7 节）
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS review_status text NOT NULL DEFAULT 'pending';
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS reviewed_by uuid;
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 -- CREATE INDEX IF NOT EXISTS idx_vpc_review_status ON video_parse_cache(review_status);
 
--- 3. restaurants 新增人工验证字段
+-- 3. restaurants 新增人工验证字段（已合并至第 2 节）
 -- ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS verified boolean NOT NULL DEFAULT false;
 -- ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS verified_at timestamptz;

@@ -483,37 +483,50 @@ def enable_author_auto_update(author_id: str) -> dict:
 # 后台人工复核相关操作（v3.0 新增）
 # ─────────────────────────────────────────
 
-def get_review_list(page: int = 1, page_size: int = 20) -> dict:
+def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") -> dict:
     """
-    获取待复核列表（review_status = 'pending'）。
-    优先级排序：P0（restaurant_id IS NULL）在前，P1（restaurant_id IS NOT NULL）在后。
-    同优先级内按 created_at 倒序。
-    返回 {items, total}
+    获取复核列表。
+    tab='pending'：待复核（review_status IN pending/skipped），P0 优先，同级按 created_at 倒序。
+    tab='reviewed'：已复核（review_status IN approved/corrected/confirmed），按 reviewed_at 倒序。
+    返回 {items, total, page, page_size}
     """
     offset = (page - 1) * page_size
 
-    # 查询 pending 记录，联表 authors
-    result = (
-        supabase.table("video_parse_cache")
-        .select(
-            "id, video_id, video_url, author_id, restaurant_id, review_status, "
-            "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
-            "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
-            "created_at, authors(name, avatar_url)",
-            count="exact"
-        )
-        .eq("review_status", "pending")
-        .eq("status", "completed")  # 只复核已解析完成的记录
-        .order("restaurant_id", desc=False, nullsfirst=True)  # NULL 在前（P0）
-        .order("created_at", desc=True)
-        .range(offset, offset + page_size - 1)
-        .execute()
+    select_fields = (
+        "id, video_id, video_url, author_id, restaurant_id, review_status, "
+        "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
+        "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
+        "reviewed_at, created_at, authors(name, avatar_url)"
     )
+
+    if tab == "reviewed":
+        # 已复核：approved / corrected / confirmed，按 reviewed_at 倒序
+        result = (
+            supabase.table("video_parse_cache")
+            .select(select_fields, count="exact")
+            .in_("review_status", ["approved", "corrected", "confirmed"])
+            .eq("status", "completed")
+            .order("reviewed_at", desc=True)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
+    else:
+        # 待复核：pending / skipped，P0（restaurant_id IS NULL）在前
+        result = (
+            supabase.table("video_parse_cache")
+            .select(select_fields, count="exact")
+            .in_("review_status", ["pending", "skipped"])
+            .eq("status", "completed")
+            .order("restaurant_id", desc=False, nullsfirst=True)  # NULL 在前（P0）
+            .order("created_at", desc=True)
+            .range(offset, offset + page_size - 1)
+            .execute()
+        )
 
     items = result.data or []
     total = result.count or 0
 
-    # 为每条记录计算优先级标签
+    # 为每条记录计算优先级标签（已复核记录也保留，方便前端展示）
     for item in items:
         item["review_priority"] = "P0" if item.get("restaurant_id") is None else "P1"
 
@@ -572,9 +585,35 @@ def admin_confirm_correct(cache_id: str, admin_user_id: str) -> bool:
 
 
 def admin_confirm_empty(cache_id: str, admin_user_id: str) -> bool:
-    """确认该视频无店铺，更新 review_status = 'confirmed'"""
+    """
+    确认该视频无店铺，更新 review_status = 'confirmed'。
+    若该记录之前关联了店铺，检查该店铺是否还有其他已验证视频关联；
+    若没有，则将 restaurants.verified 回滚为 false。
+    """
+    # 获取缓存记录，检查是否有旧的关联店铺
+    cache = get_video_cache_by_cache_id(cache_id)
+    if cache:
+        old_restaurant_id = cache.get("restaurant_id")
+        if old_restaurant_id:
+            # 检查该店铺是否还有其他已复核（approved/corrected）的视频关联
+            other_verified = (
+                supabase.table("video_parse_cache")
+                .select("id", count="exact")
+                .eq("restaurant_id", old_restaurant_id)
+                .in_("review_status", ["approved", "corrected"])
+                .neq("id", cache_id)  # 排除当前记录
+                .execute()
+            )
+            if (other_verified.count or 0) == 0:
+                # 没有其他已验证关联，回滚 verified 状态
+                supabase.table("restaurants").update({
+                    "verified": False,
+                    "verified_at": None,
+                }).eq("id", old_restaurant_id).execute()
+
     supabase.table("video_parse_cache").update({
         "review_status": "confirmed",
+        "restaurant_id": None,   # 清空关联店铺
         "reviewed_by": admin_user_id,
         "reviewed_at": "now()",
         "updated_at": "now()",

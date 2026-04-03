@@ -1414,3 +1414,42 @@ python main.py
 
 #### 修改的文件
 - `backend/db.py`（`admin_correct_restaurant` 函数，第 625-633 行）
+
+---
+
+## 会话记录 - 2026-04-03（已复核清单与二次调整功能）
+
+### 会话主要目的
+在后台人工复核模块中新增「已复核清单」功能，并支持对已复核记录进行二次调整。
+
+### 完成的主要任务
+1. 更新需求文档 `需求文档&技术方案/后台人工复核功能实施计划.md`（v1.3），新增 2.3 节详细说明已复核清单与二次调整的产品设计、数据处理规则、API 变更
+2. 后端 `db.py`：`get_review_list` 新增 `tab` 参数，支持 `pending`（待复核）和 `reviewed`（已复核）两种查询模式；`admin_confirm_empty` 增加 `verified` 回滚逻辑（当已复核 → 确认无店铺时，若该店铺无其他已验证关联则回滚 `verified=false`）
+3. 后端 `main.py`：`/api/admin/review/list` 接口新增 `tab` 查询参数
+4. iOS `ReviewViewModel.swift`：重构为双列表状态管理，支持 `pending`/`reviewed` Tab 切换、独立分页、`refreshReviewed` 方法
+5. iOS `ReviewListView.swift`：顶部增加 Segmented Picker Tab 切换，已复核列表使用 `ReviewedRowView` 展示复核结果标签和复核时间
+6. iOS `ReviewDetailView.swift`：支持已复核记录的二次调整，顶部显示当前状态横幅，操作完成后根据来源 Tab 决定刷新策略
+7. iOS `ConfirmRestaurantView.swift`：支持二次调整场景，提交后刷新已复核列表
+8. iOS `Models.swift`：`ReviewItem` 新增 `reviewed_at` 字段
+9. iOS `APIService.swift`：`getReviewList` 新增 `tab` 参数
+10. `backend/supabase_schema.sql`：补充 `restaurants.verified/verified_at`、`video_parse_cache.review_status/reviewed_by/reviewed_at`、`admin_users` 表的完整定义
+
+### 关键决策和解决方案
+- 二次调整不新增接口，复用现有 confirm-correct/confirm-empty/correct 接口，后端对已复核记录同样生效
+- 「已修正 → 确认无店铺」时，检查该店铺是否还有其他已验证视频关联，若无则回滚 `verified=false`，避免数据不一致
+- iOS 端 `ReviewViewModel` 维护两套独立列表状态，Tab 切换时懒加载，避免重复请求
+
+### 使用的技术栈
+Python FastAPI、SwiftUI、Supabase PostgreSQL
+
+### 修改的文件
+- `backend/db.py`
+- `backend/main.py`
+- `backend/supabase_schema.sql`
+- `ios/FoodMap/genchi/genchi/ViewModels/ReviewViewModel.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/ReviewListView.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/ReviewDetailView.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/ConfirmRestaurantView.swift`
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`
+- `ios/FoodMap/genchi/genchi/Services/APIService.swift`
+- `需求文档&技术方案/后台人工复核功能实施计划.md`
