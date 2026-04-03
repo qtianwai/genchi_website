@@ -25,16 +25,23 @@ struct ParseLinkSheet: View {
     @State private var parseCompleted = false
     // 轮询连续失败次数（用 @State 替代局部变量，避免 Swift 6 并发警告）
     @State private var bgPollingFailureCount = 0
+    // 入库范围选择：关注博主全部推荐 or 仅添加本店铺
+    @State private var selectedScope: ParseScope = .followAll
+
+    enum ParseScope {
+        case followAll   // 关注博主全部推荐（默认）
+        case singleOnly  // 仅添加本店铺
+    }
 
     var body: some View {
         NavigationView {
             ScrollView {
-                VStack(spacing: 20) {
+                VStack(spacing: DS.Spacing.xl) {
                     // ── 说明文字 ──
-                    VStack(spacing: 6) {
+                    VStack(spacing: DS.Spacing.sm) {
                         Image(systemName: "link.badge.plus")
                             .font(.system(size: 40))
-                            .foregroundColor(.orange)
+                            .foregroundColor(DS.Color.brand)
                         Text("粘贴抖音链接")
                             .font(.title2).fontWeight(.bold)
                         Text("从抖音复制博主视频链接，粘贴到下方\nAI 将自动识别推荐的店铺")
@@ -42,7 +49,7 @@ struct ParseLinkSheet: View {
                             .foregroundColor(.secondary)
                             .multilineTextAlignment(.center)
                     }
-                    .padding(.top, 20)
+                    .padding(.top, DS.Spacing.xl)
 
                     // ── 链接输入框 ──
                     VStack(alignment: .leading, spacing: 8) {
@@ -59,16 +66,37 @@ struct ParseLinkSheet: View {
                             }
                         }
                         .background(Color(.systemGray6))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
 
                         // 快速粘贴按钮（从剪贴板读取）
                         Button(action: pasteFromClipboard) {
                             Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
                                 .font(.caption)
-                                .foregroundColor(.orange)
+                                .foregroundColor(DS.Color.brand)
                         }
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, DS.Spacing.xl)
+
+                    // ── 入库范围选择 ──
+                    VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                        Text("添加方式")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ScopeOptionRow(
+                            icon: "person.crop.circle.badge.plus",
+                            title: "关注博主全部推荐",
+                            subtitle: "解析博主所有探店视频，自动关注博主",
+                            isSelected: selectedScope == .followAll
+                        ) { selectedScope = .followAll }
+
+                        ScopeOptionRow(
+                            icon: "fork.knife.circle",
+                            title: "仅添加本店铺",
+                            subtitle: "只添加这条视频的店铺，不关注博主",
+                            isSelected: selectedScope == .singleOnly
+                        ) { selectedScope = .singleOnly }
+                    }
+                    .padding(.horizontal, DS.Spacing.xl)
 
                     // ── 错误提示 ──
                     if let error = errorMessage {
@@ -79,35 +107,35 @@ struct ParseLinkSheet: View {
                                 .font(.caption)
                                 .foregroundColor(.red)
                         }
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, DS.Spacing.xl)
                     }
 
                     // ── 后台解析完成通知 ──
                     if let completedMsg = bgCompletedMessage {
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
+                                .foregroundColor(DS.Color.success)
                             Text(completedMsg)
                                 .font(.caption)
-                                .foregroundColor(.green)
+                                .foregroundColor(DS.Color.success)
                             Spacer()
                             Button(action: { bgCompletedMessage = nil; onSuccess() }) {
                                 Text("刷新地图")
                                     .font(.caption)
                                     .fontWeight(.semibold)
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(DS.Color.brand)
                             }
                         }
-                        .padding(12)
-                        .background(Color.green.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                        .padding(.horizontal, 20)
+                        .padding(DS.Spacing.md)
+                        .background(DS.Color.success.opacity(0.1))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
+                        .padding(.horizontal, DS.Spacing.xl)
                     }
 
                     // ── 后台解析进度指示器 ──
                     if showBgProgress {
                         BgProgressView(statusMessage: bgStatusMessage)
-                            .padding(.horizontal, 20)
+                            .padding(.horizontal, DS.Spacing.xl)
                     }
 
                     // ── 解析结果 ──
@@ -115,7 +143,7 @@ struct ParseLinkSheet: View {
                         ParseResultView(result: result, onManualAdd: {
                             showManualAddSheet = true
                         })
-                        .padding(.horizontal, 20)
+                        .padding(.horizontal, DS.Spacing.xl)
                     }
 
                     Spacer(minLength: 30)
@@ -135,10 +163,10 @@ struct ParseLinkSheet: View {
                         .padding(.vertical, 14)
                         .background(buttonBackground)
                         .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg))
                     }
                     .disabled(linkText.isEmpty || isLoading)
-                    .padding(.horizontal, 20)
+                    .padding(.horizontal, DS.Spacing.xl)
                     .padding(.bottom, 30)
                 }
             }
@@ -186,9 +214,9 @@ struct ParseLinkSheet: View {
         if linkText.isEmpty || isLoading {
             return Color.gray.opacity(0.4)
         } else if parseCompleted {
-            return Color.blue
+            return DS.Color.info
         } else {
-            return Color.orange
+            return DS.Color.brand
         }
     }
 
@@ -214,7 +242,8 @@ struct ParseLinkSheet: View {
             do {
                 let response = try await APIService.shared.parseDouyinLink(
                     url: linkText.trimmingCharacters(in: .whitespaces),
-                    userId: authState.userId
+                    userId: authState.userId,
+                    scope: selectedScope == .singleOnly ? "single_only" : "follow_all"
                 )
                 result = response
                 parseCompleted = true  // 标记完成
@@ -288,24 +317,24 @@ struct BgProgressView: View {
     let statusMessage: String
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Spacing.md) {
             ProgressView()
-                .progressViewStyle(CircularProgressViewStyle(tint: .orange))
+                .progressViewStyle(CircularProgressViewStyle(tint: DS.Color.brand))
                 .scaleEffect(0.8)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 Text("后台解析中")
                     .font(.caption)
                     .fontWeight(.semibold)
-                    .foregroundColor(.orange)
+                    .foregroundColor(DS.Color.brand)
                 Text(statusMessage)
                     .font(.caption2)
                     .foregroundColor(.secondary)
             }
             Spacer()
         }
-        .padding(12)
-        .background(Color.orange.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .padding(DS.Spacing.md)
+        .background(DS.Color.brand.opacity(0.08))
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 }
@@ -337,9 +366,9 @@ struct ParseResultView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
             // 博主信息
-            HStack(spacing: 10) {
+            HStack(spacing: DS.Spacing.md) {
                 AsyncImage(url: URL(string: authorAvatar ?? "")) { img in
                     img.resizable().scaledToFill()
                 } placeholder: {
@@ -348,44 +377,44 @@ struct ParseResultView: View {
                 .frame(width: 40, height: 40)
                 .clipShape(Circle())
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                     Text(authorName)
                         .font(.subheadline).fontWeight(.semibold)
-                    HStack(spacing: 4) {
+                    HStack(spacing: DS.Spacing.xs) {
                         Image(systemName: result.status == "cached" ? "arrow.clockwise" : "sparkles")
                             .font(.caption2)
                         Text(_statusText)
                             .font(.caption)
                     }
-                    .foregroundColor(result.status == "cached" ? .blue : .green)
+                    .foregroundColor(result.status == "cached" ? DS.Color.info : DS.Color.success)
                 }
                 Spacer()
                 // 店铺数量徽章
                 Text("\(restaurants.count) 家店铺")
                     .font(.caption).fontWeight(.medium)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 4)
-                    .background(Color.orange.opacity(0.15))
-                    .foregroundColor(.orange)
+                    .padding(.horizontal, DS.Spacing.md)
+                    .padding(.vertical, DS.Spacing.xs)
+                    .background(DS.Color.brand.opacity(0.15))
+                    .foregroundColor(DS.Color.brand)
                     .clipShape(Capsule())
             }
-            .padding(12)
-            .background(Color(.systemGray6))
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .padding(DS.Spacing.md)
+            .background(DS.Color.surfaceAlt)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
 
             // 后台解析进度提示（当 is_background_running = true 时显示）
             if result.is_background_running {
-                HStack(spacing: 6) {
+                HStack(spacing: DS.Spacing.sm) {
                     Image(systemName: "arrow.triangle.2.circlepath")
                         .font(.caption)
-                        .foregroundColor(.blue)
+                        .foregroundColor(DS.Color.info)
                     Text("博主其他探店视频正在后台解析中，完成后将自动更新地图")
                         .font(.caption)
-                        .foregroundColor(.blue)
+                        .foregroundColor(DS.Color.info)
                 }
-                .padding(8)
-                .background(Color.blue.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .padding(DS.Spacing.sm)
+                .background(DS.Color.info.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
             }
 
             // 店铺列表（最多显示 5 条）
@@ -395,9 +424,9 @@ struct ParseResultView: View {
                     .foregroundColor(.secondary)
 
                 ForEach(restaurants.prefix(5)) { restaurant in
-                    HStack(spacing: 8) {
+                    HStack(spacing: DS.Spacing.sm) {
                         Image(systemName: "fork.knife.circle.fill")
-                            .foregroundColor(.orange)
+                            .foregroundColor(DS.Color.brand)
                             .font(.caption)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(restaurant.name)
@@ -434,18 +463,18 @@ struct ParseResultView: View {
             // 手动添加店铺按钮（当未识别到店铺时显示）
             if restaurants.isEmpty {
                 Button(action: onManualAdd) {
-                    HStack(spacing: 6) {
+                    HStack(spacing: DS.Spacing.sm) {
                         Image(systemName: "hand.point.up.left.fill")
                             .font(.caption)
                         Text("手动添加店铺")
                             .font(.caption)
                             .fontWeight(.medium)
                     }
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(Color.orange.opacity(0.1))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .foregroundColor(DS.Color.brand)
+                    .padding(.horizontal, DS.Spacing.md)
+                    .padding(.vertical, DS.Spacing.sm)
+                    .background(DS.Color.brand.opacity(0.1))
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
                 }
                 .padding(.top, 8)
             }
@@ -458,5 +487,54 @@ struct ParseResultView: View {
         case "parsed": return "新解析完成"
         default: return result.status
         }
+    }
+}
+
+// ─────────────────────────────────────────
+// 入库范围选择行（RadioButton 风格）
+// ─────────────────────────────────────────
+struct ScopeOptionRow: View {
+    let icon: String       // SF Symbol 图标名
+    let title: String      // 主标题
+    let subtitle: String   // 副标题说明
+    let isSelected: Bool   // 是否选中
+    let onTap: () -> Void  // 点击回调
+
+    var body: some View {
+        Button(action: onTap) {
+            HStack(spacing: DS.Spacing.md) {
+                // 左侧图标
+                Image(systemName: icon)
+                    .font(.title3)
+                    .foregroundColor(isSelected ? DS.Color.brand : .secondary)
+                    .frame(width: 28)
+
+                // 文字区域
+                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                    Text(title)
+                        .font(.subheadline)
+                        .fontWeight(isSelected ? .semibold : .regular)
+                        .foregroundColor(isSelected ? DS.Color.brand : .primary)
+                    Text(subtitle)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                // 右侧选中指示圆圈
+                Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(isSelected ? DS.Color.brand : Color(.systemGray4))
+                    .font(.title3)
+            }
+            .padding(DS.Spacing.md)
+            .background(isSelected ? DS.Color.brand.opacity(0.06) : Color(.systemGray6))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
+            .overlay(
+                RoundedRectangle(cornerRadius: DS.Radius.md)
+                    .stroke(isSelected ? DS.Color.brand.opacity(0.4) : Color.clear, lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
     }
 }

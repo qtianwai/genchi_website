@@ -62,11 +62,13 @@ class APIService {
     // 解析抖音链接
     // ─────────────────────────────────────────
 
-    func parseDouyinLink(url: String, userId: String) async throws -> ParseLinkResponse {
-        struct Body: Codable { let url: String; let user_id: String }
+    func parseDouyinLink(url: String, userId: String, scope: String = "follow_all") async throws -> ParseLinkResponse {
+        // scope: "follow_all" → 关注博主 + 触发后台全量解析（默认）
+        //        "single_only" → 仅添加本店铺，不关注博主，不触发后台任务
+        struct Body: Codable { let url: String; let user_id: String; let scope: String }
         return try await post(
             path: "/api/parse-link",
-            body: Body(url: url, user_id: userId),
+            body: Body(url: url, user_id: userId, scope: scope),
             responseType: ParseLinkResponse.self
         )
     }
@@ -84,14 +86,12 @@ class APIService {
     // 地图数据
     // ─────────────────────────────────────────
 
-    func getMapRestaurants(userId: String) async throws -> [MapRestaurant] {
-        struct Response: Codable { let restaurants: [MapRestaurant] }
-        let resp = try await get(
+    func getMapRestaurants(userId: String) async throws -> MapRestaurantsResponse {
+        return try await get(
             path: "/api/map/restaurants",
             params: ["user_id": userId],
-            responseType: Response.self
+            responseType: MapRestaurantsResponse.self
         )
-        return resp.restaurants
     }
 
     // ─────────────────────────────────────────
@@ -351,6 +351,82 @@ class APIService {
             userId: userId,
             responseType: Resp.self
         )
+    }
+
+    // ─────────────────────────────────────────
+    // 用户自建推荐店铺（v4.0 新增）
+    // ─────────────────────────────────────────
+
+    // 搜索高德候选店铺（用于用户自建推荐时选择）
+    func searchUserRestaurant(name: String, city: String) async throws -> [RestaurantCandidate] {
+        let resp = try await get(
+            path: "/api/user-restaurants/search",
+            params: ["name": name, "city": city],
+            responseType: UserRestaurantSearchResponse.self
+        )
+        return resp.results
+    }
+
+    // 创建用户自建推荐店铺
+    func createUserRestaurant(
+        userId: String,
+        candidate: RestaurantCandidate,
+        note: String = ""
+    ) async throws -> CreateUserRestaurantResponse {
+        struct Body: Codable {
+            let user_id: String
+            let amap_id: String
+            let restaurant_name: String
+            let address: String
+            let city: String
+            let latitude: Double
+            let longitude: Double
+            let category: String
+            let note: String
+        }
+        return try await post(
+            path: "/api/user-restaurants",
+            body: Body(
+                user_id: userId,
+                amap_id: candidate.amap_id,
+                restaurant_name: candidate.name,
+                address: candidate.address,
+                city: candidate.city,
+                latitude: candidate.latitude,
+                longitude: candidate.longitude,
+                category: candidate.category_mapped,
+                note: note
+            ),
+            responseType: CreateUserRestaurantResponse.self
+        )
+    }
+
+    // 获取用户自建推荐列表
+    func getUserRestaurants(userId: String) async throws -> [UserCreatedRestaurant] {
+        let resp = try await get(
+            path: "/api/user-restaurants",
+            params: ["user_id": userId],
+            responseType: UserRestaurantsResponse.self
+        )
+        return resp.restaurants
+    }
+
+    // 删除用户自建推荐店铺
+    func deleteUserRestaurant(userId: String, restaurantId: String) async throws {
+        var components = URLComponents(string: "\(BASE_URL)/api/user-restaurants/\(restaurantId)")!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("删除失败，状态码: \(httpResponse.statusCode)")
+        }
     }
 }
 

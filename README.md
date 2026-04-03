@@ -144,7 +144,13 @@ python main.py
 
 ---
 
-## 会话记录
+### 2026-04-03 移动端 UI 视觉重构
+- 主要目的：在不改动核心功能的前提下，优化 iOS 移动端界面的视觉层次、排版布局、留白、卡片样式和筛选区体验
+- 完成的主要任务：新增 `DesignSystem.swift` 统一管理间距/圆角/阴影/颜色 token；重构地图页筛选栏、详情卡、视频缩略卡、导航按钮；统一收藏页、博主页、解析弹窗的卡片与留白风格；统一 Tab 品牌色
+- 关键决策和解决方案：仅修改 SwiftUI 视图层样式修饰符，不触碰 ViewModel、Service 和 API 逻辑；以轻量设计 token 替代散落硬编码，降低后续 UI 调整成本
+- 使用的技术栈：SwiftUI、MapKit、iOS 原生 Design Token
+- 修改了哪些文件：`ios/FoodMap/genchi/genchi/DesignSystem.swift`、`ios/FoodMap/genchi/genchi/Views/MapView.swift`、`ios/FoodMap/genchi/genchi/Views/FavoritesView.swift`、`ios/FoodMap/genchi/genchi/Views/AuthorsView.swift`、`ios/FoodMap/genchi/genchi/Views/ParseLinkSheet.swift`、`ios/FoodMap/genchi/genchi/Views/MainTabView.swift`、`帮助文档/会话记录.md`
+
 
 ### 2026-03-31 第一次会话：产品分析与方案规划
 - 主要目的：分析产品需求，制定技术方案
@@ -1452,4 +1458,99 @@ Python FastAPI、SwiftUI、Supabase PostgreSQL
 - `ios/FoodMap/genchi/genchi/Views/Admin/ConfirmRestaurantView.swift`
 - `ios/FoodMap/genchi/genchi/Models/Models.swift`
 - `ios/FoodMap/genchi/genchi/Services/APIService.swift`
-- `需求文档&技术方案/后台人工复核功能实施计划.md`
+
+---
+
+## 会话总结 - 2026-04-03
+
+### 会话目的
+清理 `backend/` 目录中不影响项目运行的中间文件，减少无意义体积和干扰。
+
+### 完成的主要任务
+- 删除 `backend/venv/` 本地 Python 虚拟环境目录及其中缓存/依赖文件
+
+### 关键决策和解决方案
+- 本次仅删除本地运行产生的中间环境文件，不删除业务代码、部署配置和依赖声明文件
+- 保留 `backend/requirements.txt`，后续如需重新运行后端可按依赖文件重新创建虚拟环境
+
+### 使用的技术栈
+- Python 虚拟环境（venv）
+- 本地文件清理
+
+### 修改的文件
+- 删除 `backend/venv/`
+
+---
+
+## 会话总结 - 2026-04-03（提交链接时选择入库范围）
+
+### 会话目的
+实施 P0 功能「提交链接时选择入库范围」，允许用户在提交抖音链接时选择「关注博主全部推荐」或「仅添加本店铺」两种模式。
+
+### 完成的主要任务
+1. 后端 `main.py`：`ParseLinkRequest` 新增 `scope` 字段（默认 `follow_all`），`parse_link` 接口在 `single_only` 模式下跳过自动关注博主、跳过后台历史视频解析任务、跳过自动更新检测激活
+2. iOS `APIService.swift`：`parseDouyinLink` 方法新增 `scope` 参数（默认 `"follow_all"`）
+3. iOS `ParseLinkSheet.swift`：新增 `ParseScope` 枚举和 `selectedScope` 状态变量；新增 RadioButton 风格的范围选择 UI（`ScopeOptionRow` 组件）；`parseLink()` 函数传递 `scope` 参数给 API
+4. 技术方案文档 `视频解析与数据入库技术方案.md`：更新 6.2 节补充 scope 请求参数说明，新增 v2.6 版本变更记录
+5. 产品功能清单 `产品功能清单.md`：将该功能从待开发移至已完成
+
+### 关键决策和解决方案
+- `scope` 默认值为 `follow_all`，完全向后兼容，现有行为不变
+- `single_only` 模式下博主记录仍会 upsert，只是不建立 follow 关系、不触发后台任务
+- `ScopeOptionRow` 设计为独立可复用组件，使用 DesignSystem 样式，选中状态有边框高亮
+
+### 使用的技术栈
+Python FastAPI、SwiftUI、Supabase PostgreSQL
+
+### 修改的文件
+- `backend/main.py`
+- `ios/FoodMap/genchi/genchi/Services/APIService.swift`
+- `ios/FoodMap/genchi/genchi/Views/ParseLinkSheet.swift`
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`
+- `需求文档&技术方案/产品功能清单.md`
+
+---
+
+## 会话总结 - 2026-04-03（用户自建推荐店铺）
+
+### 会话目的
+实施 P1 功能「用户自建推荐店铺」，让用户脱离博主依赖，直接添加自己知道的好店并在地图上区分展示。
+
+### 完成的主要任务
+1. 需求分析与规划：创建 `需求文档&技术方案/用户自建推荐店铺实施计划.md`，从产品和技术两个视角完整设计方案
+2. 数据库：新建 `user_created_restaurants` 表（含 RLS 策略），执行迁移脚本 `migrate_v4_user_restaurants.py`，更新 `supabase_schema.sql`
+3. 后端 `db.py`：新增 `get_user_created_restaurants`、`add_user_restaurant`、`remove_user_restaurant` 函数；重构 `get_map_restaurants_for_user` 返回 `{restaurants, user_restaurants}` 双字段
+4. 后端 `main.py`：新增 4 个接口（`/api/user-restaurants/search`、`POST /api/user-restaurants`、`GET /api/user-restaurants`、`DELETE /api/user-restaurants/{id}`）；修改 `/api/map/restaurants` 响应格式向后兼容
+5. iOS `Models.swift`：新增 `UserCreatedRestaurant`、`UserRestaurantSearchResponse`、`UserRestaurantsResponse`、`CreateUserRestaurantResponse`、`MapRestaurantsResponse` 模型
+6. iOS `APIService.swift`：新增 4 个 API 方法；更新 `getMapRestaurants` 返回 `MapRestaurantsResponse`
+7. iOS `MapViewModel.swift`：新增 `userRestaurants` 状态；新增 `filteredUserRestaurants` 计算属性；更新 `loadMapData` 和 `silentRefreshMapData`
+8. iOS `MainTabView.swift`：底部居中新增「+」按钮（仿抖音风格），点击弹出选择面板（解析抖音链接 / 手动添加店铺）
+9. iOS `MapView.swift`：新增 `UserPinView`（紫色标注）；新增用户自建推荐标注渲染；更新 `AuthorFilterBar` 新增「我的推荐」筛选 chip；修复 `FilterChip` 支持 `accentColor`；修复 `RestaurantCard` 支持 `isUserCreated` 标识
+10. iOS `UserAddRestaurantSheet.swift`：新建两步表单（搜索候选 → 确认入库），含 `CandidateRow` 组件
+11. iOS `FavoritesView.swift`：重构为分段控制器（我的收藏 / 我的推荐），`FavoriteRow` 支持 `accentColor` 参数
+12. 产品功能清单：将「用户自建推荐店铺」从待开发移至已完成
+
+### 关键决策和解决方案
+- 新建独立 `user_created_restaurants` 表，不复用 `author_restaurants`（语义不兼容）
+- 新建独立 API 路由，不扩展 `manual-add-restaurant`（职责不同）
+- 地图「+」按钮统一入口（仿抖音），替代原右下角「粘贴链接」按钮
+- 用户自建推荐用紫色标注区分博主推荐（橙色）
+- 收藏页复用现有 Tab，分段控制器区分两类内容
+
+### 使用的技术栈
+Python FastAPI、Supabase PostgreSQL、SwiftUI + MapKit
+
+### 修改的文件
+- `backend/db.py`
+- `backend/main.py`
+- `backend/supabase_schema.sql`
+- `backend/migrate_v4_user_restaurants.py`（新增）
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`
+- `ios/FoodMap/genchi/genchi/Services/APIService.swift`
+- `ios/FoodMap/genchi/genchi/ViewModels/MapViewModel.swift`
+- `ios/FoodMap/genchi/genchi/Views/MainTabView.swift`
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`
+- `ios/FoodMap/genchi/genchi/Views/UserAddRestaurantSheet.swift`（新增）
+- `ios/FoodMap/genchi/genchi/Views/FavoritesView.swift`
+- `需求文档&技术方案/用户自建推荐店铺实施计划.md`（新增）
+- `需求文档&技术方案/产品功能清单.md`

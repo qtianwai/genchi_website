@@ -35,6 +35,8 @@ from db import (
     # 新增：后台人工复核相关（v3.0）
     is_admin_user, get_review_list, get_video_cache_by_cache_id,
     admin_confirm_correct, admin_confirm_empty, admin_correct_restaurant, admin_skip,
+    # 新增：用户自建推荐店铺相关（v4.0）
+    get_user_created_restaurants, add_user_restaurant, remove_user_restaurant,
 )
 
 load_dotenv()
@@ -86,6 +88,9 @@ app.add_middleware(
 class ParseLinkRequest(BaseModel):
     url: str        # 抖音分享链接
     user_id: str    # 当前用户 ID
+    scope: str = "follow_all"  # 入库范围：
+                               # "follow_all"  → 关注博主 + 触发后台全量解析（默认）
+                               # "single_only" → 仅添加本店铺，不关注博主，不触发后台任务
 
 class FollowRequest(BaseModel):
     user_id: str
@@ -852,55 +857,61 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             if restaurant_id:
                 link_author_restaurant(author_id, restaurant_id, vid)
 
-        # 第十步：自动关注博主
-        follow_author(req.user_id, author_id)
+        # 第十步：自动关注博主（single_only 模式下跳过）
+        if req.scope != "single_only":
+            follow_author(req.user_id, author_id)
 
-        # 第十一步：启用/重新激活博主的自动更新检测（v2.4 新增）
+        # 第十一步：启用/重新激活博主的自动更新检测（single_only 模式下跳过）
         # 逻辑：
         # - 新博主：首次解析时自动启用
         # - 已有博主但自动更新被关闭：如果当前视频识别出了美食店铺，重新激活
-        try:
-            from db import get_author_by_id
-            existing_author_record = get_author_by_id(author_id)
-            if existing_author_record:
-                auto_update_enabled = existing_author_record.get("auto_update_enabled", True)
-                if not auto_update_enabled and restaurant:
-                    # 自动更新被关闭，但当前视频识别出了店铺，说明博主仍在更新，重新激活
-                    enable_author_auto_update(author_id)
-                    print(f"[解析链接] 博主 {author_id} 自动更新已重新激活（发现新美食视频）")
-                elif auto_update_enabled is None:
-                    # 新博主（auto_update_enabled 为 NULL），首次解析时自动启用
-                    enable_author_auto_update(author_id)
-                    print(f"[解析链接] 新博主 {author_id} 自动更新已启用")
-        except Exception as e:
-            # 自动更新逻辑不应阻塞主流程
-            print(f"[解析链接] 自动更新启用出错: {e}")
+        if req.scope != "single_only":
+            try:
+                from db import get_author_by_id
+                existing_author_record = get_author_by_id(author_id)
+                if existing_author_record:
+                    auto_update_enabled = existing_author_record.get("auto_update_enabled", True)
+                    if not auto_update_enabled and restaurant:
+                        # 自动更新被关闭，但当前视频识别出了店铺，说明博主仍在更新，重新激活
+                        enable_author_auto_update(author_id)
+                        print(f"[解析链接] 博主 {author_id} 自动更新已重新激活（发现新美食视频）")
+                    elif auto_update_enabled is None:
+                        # 新博主（auto_update_enabled 为 NULL），首次解析时自动启用
+                        enable_author_auto_update(author_id)
+                        print(f"[解析链接] 新博主 {author_id} 自动更新已启用")
+            except Exception as e:
+                # 自动更新逻辑不应阻塞主流程
+                print(f"[解析链接] 自动更新启用出错: {e}")
 
-        # 第十二步：启动后台任务解析博主历史视频
+        # 第十二步：启动后台任务解析博主历史视频（single_only 模式下跳过）
         # 优化3.3：冷却期检查 - 1 天内不重复扫描
-        latest_task = get_latest_bg_task(author_id)
-        should_start_bg = (
-            latest_task is None  # 新博主，从未创建过后台任务
-            or latest_task.get("status") in ("completed", "failed")  # 上次任务已结束
-        )
         is_bg_running = False
-        if should_start_bg and author_sec_uid:
-            # 冷却期检查
-            if is_author_in_cool_down(author_id, hours=24):
-                print(f"[解析链接] 博主 {author_id} 在冷却期内（24小时），跳过后台任务")
-            else:
-                background_tasks.add_task(
-                    parse_author_all_videos_background,
-                    author_id,
-                    author_sec_uid,
-                    vid,
-                )
+        latest_task = None
+        if req.scope != "single_only":
+            latest_task = get_latest_bg_task(author_id)
+            should_start_bg = (
+                latest_task is None  # 新博主，从未创建过后台任务
+                or latest_task.get("status") in ("completed", "failed")  # 上次任务已结束
+            )
+            if should_start_bg and author_sec_uid:
+                # 冷却期检查
+                if is_author_in_cool_down(author_id, hours=24):
+                    print(f"[解析链接] 博主 {author_id} 在冷却期内（24小时），跳过后台任务")
+                else:
+                    background_tasks.add_task(
+                        parse_author_all_videos_background,
+                        author_id,
+                        author_sec_uid,
+                        vid,
+                    )
+                    is_bg_running = True
+                    print(f"[解析链接] 已启动后台任务，异步解析博主 {author_id} 的历史视频")
+            elif latest_task and latest_task.get("status") in ("pending", "running"):
                 is_bg_running = True
-                print(f"[解析链接] 已启动后台任务，异步解析博主 {author_id} 的历史视频")
-        elif latest_task and latest_task.get("status") in ("pending", "running"):
-            is_bg_running = True
+        else:
+            print(f"[解析链接] single_only 模式，跳过关注博主和后台任务")
 
-        # 第十二步：返回结果
+        # 第十三步：返回结果
         return {
             "status": "parsed",
             "restaurant": restaurant,
@@ -972,11 +983,115 @@ def _build_progress_info(task: dict | None) -> dict | None:
 async def get_map_restaurants(user_id: str):
     """
     获取用户地图上应显示的所有店铺
-    返回用户关注的所有博主推荐的店铺，含坐标和博主头像信息
+    返回两类数据：
+    - restaurants：用户关注的博主推荐的店铺（含博主头像信息）
+    - user_restaurants：用户自建的推荐店铺（v4.0 新增）
     """
     try:
         data = get_map_restaurants_for_user(user_id)
+        return data  # 已包含 restaurants 和 user_restaurants 两个字段
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# 用户自建推荐店铺 API（v4.0 新增）
+# ─────────────────────────────────────────
+
+@app.get("/api/user-restaurants/search")
+async def search_user_restaurant(name: str, city: str):
+    """
+    搜索高德 POI 候选店铺（用于用户自建推荐时选择）
+    返回最多 5 条候选结果
+    """
+    try:
+        if not name or len(name.strip()) < 2:
+            raise HTTPException(status_code=400, detail="店铺名称至少需要 2 个字符")
+        if not city or len(city.strip()) < 2:
+            raise HTTPException(status_code=400, detail="请选择所在城市")
+
+        # 复用 search_restaurant_for_review，返回多条候选（最多 5 条）
+        results = await search_restaurant_for_review(name.strip(), city.strip())
+
+        return {"results": results[:5]}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class UserRestaurantRequest(BaseModel):
+    """用户自建推荐店铺请求体"""
+    user_id: str
+    amap_id: str
+    restaurant_name: str
+    address: str = ""
+    city: str = ""
+    latitude: float = 0.0
+    longitude: float = 0.0
+    category: str = ""
+    note: str = ""
+
+
+@app.post("/api/user-restaurants")
+async def create_user_restaurant(req: UserRestaurantRequest):
+    """
+    用户自建推荐店铺
+    流程：upsert restaurants（按 amap_id 去重）→ insert user_created_restaurants
+    """
+    try:
+        if not req.restaurant_name or len(req.restaurant_name.strip()) < 2:
+            raise HTTPException(status_code=400, detail="店铺名称至少需要 2 个字符")
+        if not req.amap_id:
+            raise HTTPException(status_code=400, detail="缺少高德 POI ID")
+
+        # upsert restaurants（以 amap_id 为唯一键，避免重复）
+        saved = upsert_restaurant({
+            "name": req.restaurant_name.strip(),
+            "address": req.address,
+            "city": req.city,
+            "latitude": req.latitude,
+            "longitude": req.longitude,
+            "amap_id": req.amap_id,
+            "category": req.category,
+        })
+        restaurant_id = saved.get("id")
+        if not restaurant_id:
+            raise HTTPException(status_code=500, detail="店铺入库失败")
+
+        # 添加用户自建关联
+        add_user_restaurant(req.user_id, restaurant_id, req.note)
+
+        return {
+            "status": "success",
+            "restaurant_id": restaurant_id,
+            "message": "店铺已添加到我的推荐",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/user-restaurants")
+async def get_user_restaurants(user_id: str):
+    """获取用户自建的所有推荐店铺列表"""
+    try:
+        data = get_user_created_restaurants(user_id)
         return {"restaurants": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/user-restaurants/{restaurant_id}")
+async def delete_user_restaurant(restaurant_id: str, user_id: str):
+    """
+    删除用户自建推荐店铺
+    只删除 user_created_restaurants 关联记录，不删 restaurants 表
+    """
+    try:
+        remove_user_restaurant(user_id, restaurant_id)
+        return {"status": "success", "message": "已从我的推荐中移除"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

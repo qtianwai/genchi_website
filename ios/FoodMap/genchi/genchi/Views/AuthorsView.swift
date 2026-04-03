@@ -16,7 +16,7 @@ struct AuthorsView: View {
                     ProgressView("加载中...")
                 } else if authors.isEmpty {
                     // 空状态
-                    VStack(spacing: 16) {
+                    VStack(spacing: DS.Spacing.lg) {
                         Image(systemName: "person.2.slash")
                             .font(.system(size: 48))
                             .foregroundColor(.gray.opacity(0.5))
@@ -69,7 +69,7 @@ struct AuthorRow: View {
     let onUnfollow: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DS.Spacing.md) {
             AsyncImage(url: URL(string: author.avatar_url ?? "")) { img in
                 img.resizable().scaledToFill()
             } placeholder: {
@@ -77,8 +77,12 @@ struct AuthorRow: View {
             }
             .frame(width: 48, height: 48)
             .clipShape(Circle())
+            .overlay(
+                Circle()
+                    .stroke(DS.Color.separator.opacity(0.35), lineWidth: 0.5)
+            )
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 Text(author.name)
                     .font(.subheadline).fontWeight(.semibold)
                 Text("抖音达人")
@@ -91,16 +95,16 @@ struct AuthorRow: View {
             Button(action: onUnfollow) {
                 Text("取消关注")
                     .font(.caption).fontWeight(.medium)
-                    .foregroundColor(.orange)
-                    .padding(.horizontal, 12)
+                    .foregroundColor(DS.Color.brand)
+                    .padding(.horizontal, DS.Spacing.md)
                     .padding(.vertical, 6)
                     .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.orange, lineWidth: 1)
+                        RoundedRectangle(cornerRadius: DS.Radius.sm)
+                            .stroke(DS.Color.brand, lineWidth: 1)
                     )
             }
             .buttonStyle(.plain)
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, DS.Spacing.sm)
     }
 }

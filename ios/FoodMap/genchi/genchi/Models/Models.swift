@@ -243,3 +243,41 @@ struct RestaurantCandidate: Identifiable, Codable {
 struct RestaurantCandidatesResponse: Codable {
     let candidates: [RestaurantCandidate]
 }
+
+// ─────────────────────────────────────────
+// 用户自建推荐店铺相关模型（v4.0 新增）
+// ─────────────────────────────────────────
+
+// 用户自建推荐店铺记录（对应 user_created_restaurants 表）
+struct UserCreatedRestaurant: Identifiable, Codable {
+    let id: String               // user_created_restaurants.id
+    let user_id: String
+    let restaurant_id: String
+    let note: String?            // 用户备注（预留）
+    let created_at: String?
+    let restaurants: Restaurant? // join 查询的店铺详情
+}
+
+// 用户自建推荐搜索候选（复用 RestaurantCandidate，字段相同）
+// 搜索接口响应
+struct UserRestaurantSearchResponse: Codable {
+    let results: [RestaurantCandidate]
+}
+
+// 用户自建推荐列表响应
+struct UserRestaurantsResponse: Codable {
+    let restaurants: [UserCreatedRestaurant]
+}
+
+// 创建用户自建推荐响应
+struct CreateUserRestaurantResponse: Codable {
+    let status: String
+    let restaurant_id: String?
+    let message: String
+}
+
+// 地图数据响应（v4.0 更新，新增 user_restaurants 字段）
+struct MapRestaurantsResponse: Codable {
+    let restaurants: [MapRestaurant]          // 博主推荐
+    let user_restaurants: [UserCreatedRestaurant]  // 用户自建推荐
+}

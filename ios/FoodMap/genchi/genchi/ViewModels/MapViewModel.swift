@@ -8,9 +8,11 @@ import Combine
 
 @MainActor
 class MapViewModel: ObservableObject {
-    // 地图上显示的店铺列表
+    // 地图上显示的店铺列表（博主推荐）
     @Published var mapRestaurants: [MapRestaurant] = []
-    // 当前选中的博主过滤器（nil = 显示所有博主）
+    // 用户自建推荐店铺列表（v4.0 新增）
+    @Published var userRestaurants: [UserCreatedRestaurant] = []
+    // 当前选中的博主过滤器（nil = 显示所有博主；"my" = 仅显示我的推荐）
     @Published var selectedAuthorId: String? = nil
     // 加载状态
     @Published var isLoading = false
@@ -27,12 +29,21 @@ class MapViewModel: ObservableObject {
     private var refreshTimer: Timer? = nil
     private var lastRestaurantCount = 0
 
-    // 根据过滤器筛选后的店铺列表
+    // 根据过滤器筛选后的博主推荐店铺列表
     var filteredRestaurants: [MapRestaurant] {
+        // 选中"我的推荐"时，博主推荐不显示
+        if selectedAuthorId == "my" { return [] }
         guard let authorId = selectedAuthorId else {
             return mapRestaurants
         }
         return mapRestaurants.filter { $0.author_id == authorId }
+    }
+
+    // 根据过滤器筛选后的用户自建推荐列表
+    var filteredUserRestaurants: [UserCreatedRestaurant] {
+        // 选中某个博主时，不显示用户自建推荐
+        if let authorId = selectedAuthorId, authorId != "my" { return [] }
+        return userRestaurants
     }
 
     // 加载地图数据
@@ -40,8 +51,10 @@ class MapViewModel: ObservableObject {
         isLoading = true
         errorMessage = nil
         do {
-            mapRestaurants = try await APIService.shared.getMapRestaurants(userId: userId)
-            lastRestaurantCount = mapRestaurants.count
+            let resp = try await APIService.shared.getMapRestaurants(userId: userId)
+            mapRestaurants = resp.restaurants
+            userRestaurants = resp.user_restaurants
+            lastRestaurantCount = mapRestaurants.count + userRestaurants.count
         } catch {
             errorMessage = "加载失败：\(error.localizedDescription)"
         }
@@ -51,12 +64,14 @@ class MapViewModel: ObservableObject {
     // 静默刷新地图数据（后台轮询用，不显示 loading 状态）
     func silentRefreshMapData(userId: String) async {
         do {
-            let newData = try await APIService.shared.getMapRestaurants(userId: userId)
+            let resp = try await APIService.shared.getMapRestaurants(userId: userId)
+            let newCount = resp.restaurants.count + resp.user_restaurants.count
             // 只有数据真的变化了才更新（避免无意义的 UI 刷新）
-            if newData.count != lastRestaurantCount {
-                mapRestaurants = newData
-                lastRestaurantCount = newData.count
-                print("[地图自动刷新] 检测到新店铺，已更新地图（当前 \(newData.count) 家）")
+            if newCount != lastRestaurantCount {
+                mapRestaurants = resp.restaurants
+                userRestaurants = resp.user_restaurants
+                lastRestaurantCount = newCount
+                print("[地图自动刷新] 检测到新店铺，已更新地图（当前 \(newCount) 家）")
             }
         } catch {
             print("[地图自动刷新] 静默刷新失败: \(error)")

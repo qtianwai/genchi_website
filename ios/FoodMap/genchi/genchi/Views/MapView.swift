@@ -9,10 +9,12 @@ struct MapView: View {
     @StateObject private var locationManager = LocationManager()
     @EnvironmentObject var authState: AuthState
 
-    // 当前选中的店铺（用于显示底部详情卡片）
+    // 外部触发刷新（MainTabView 添加成功后通知）
+    @Binding var refreshTrigger: Int
+    // 当前选中的博主推荐店铺
     @State private var selectedRestaurant: MapRestaurant? = nil
-    // 是否显示解析链接的弹窗
-    @State private var showParseSheet = false
+    // 当前选中的用户自建推荐店铺（v4.0 新增）
+    @State private var selectedUserRestaurant: UserCreatedRestaurant? = nil
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -20,10 +22,9 @@ struct MapView: View {
             Map(position: $viewModel.mapCameraPosition) {
                 // 用户位置蓝点
                 UserAnnotation()
-                // 店铺标注
+                // 博主推荐店铺标注
                 ForEach(viewModel.filteredRestaurants) { item in
                     Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
-                        // 自定义地图标注：博主头像 + 店铺名
                         MapPinView(
                             avatarURL: item.authors?.avatar_url,
                             isSelected: selectedRestaurant?.id == item.id
@@ -31,6 +32,21 @@ struct MapView: View {
                         .onTapGesture {
                             withAnimation(.spring()) {
                                 selectedRestaurant = item
+                                selectedUserRestaurant = nil
+                            }
+                        }
+                    }
+                }
+                // 用户自建推荐店铺标注（v4.0 新增）
+                ForEach(viewModel.filteredUserRestaurants) { item in
+                    Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
+                        UserPinView(
+                            isSelected: selectedUserRestaurant?.id == item.id
+                        )
+                        .onTapGesture {
+                            withAnimation(.spring()) {
+                                selectedUserRestaurant = item
+                                selectedRestaurant = nil
                             }
                         }
                     }
@@ -42,13 +58,14 @@ struct MapView: View {
                 // ── 顶部博主筛选栏 ──
                 AuthorFilterBar(
                     restaurants: viewModel.mapRestaurants,
+                    userRestaurantCount: viewModel.userRestaurants.count,
                     selectedAuthorId: $viewModel.selectedAuthorId
                 )
                 .padding(.top, 8)
 
                 Spacer()
 
-                // ── 底部店铺详情卡片（点击标注后显示）──
+                // ── 底部店铺详情卡片（点击博主推荐标注后显示）──
                 if let selected = selectedRestaurant,
                    let restaurant = selected.restaurants {
                     RestaurantCard(
@@ -56,67 +73,82 @@ struct MapView: View {
                         author: selected.authors,
                         userId: authState.userId
                     )
-                    .id(restaurant.id)  // 关键修复：用 restaurant.id 作为 View 的唯一标识，强制 SwiftUI 在切换店铺时销毁旧 View 并创建新 View
+                    .id(restaurant.id)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 90)
+                }
+
+                // ── 底部店铺详情卡片（点击用户自建标注后显示）──
+                if let selected = selectedUserRestaurant,
+                   let restaurant = selected.restaurants {
+                    RestaurantCard(
+                        restaurant: restaurant,
+                        author: nil,
+                        userId: authState.userId,
+                        isUserCreated: true
+                    )
+                    .id(restaurant.id)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .padding(.horizontal, 16)
                     .padding(.bottom, 90)
                 }
             }
 
-            // ── 右下角：粘贴链接按钮 ──
-            VStack {
-                Spacer()
-                HStack {
-                    Spacer()
-                    Button(action: { showParseSheet = true }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "link.badge.plus")
-                            Text("粘贴链接")
-                                .fontWeight(.medium)
-                        }
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 12)
-                        .background(Color.orange)
-                        .clipShape(Capsule())
-                        .shadow(radius: 4)
-                    }
-                    .padding(.trailing, 20)
-                    // 根据是否有选中店铺调整按钮位置，避免与详情卡片重合
-                    .padding(.bottom, selectedRestaurant != nil ? 320 : 100)
-                }
-            }
-        }
-        .sheet(isPresented: $showParseSheet) {
-            ParseLinkSheet(onSuccess: {
-                // 解析成功后刷新地图数据
-                Task { await viewModel.loadMapData(userId: authState.userId) }
-            })
-            .environmentObject(authState)
         }
         .task {
             await viewModel.loadMapData(userId: authState.userId)
-            // 请求定位权限并开始定位
             locationManager.requestPermission()
         }
         .onAppear {
-            // 页面可见时启动自动刷新（每 10 秒检查新店铺）
             viewModel.startAutoRefresh(userId: authState.userId)
         }
         .onDisappear {
-            // 页面不可见时停止轮询，节省资源
             viewModel.stopAutoRefresh()
         }
         // 点击地图空白处关闭详情卡片
         .onTapGesture {
-            withAnimation { selectedRestaurant = nil }
+            withAnimation {
+                selectedRestaurant = nil
+                selectedUserRestaurant = nil
+            }
         }
-        // 监听用户位置变化，自动调整地图中心
         .onChange(of: locationManager.locationUpdateCount) { oldValue, newValue in
             if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
                 viewModel.centerMapOnUserLocation(location)
             }
         }
+        // 监听外部刷新触发器（MainTabView 添加成功后通知）
+        .onChange(of: refreshTrigger) { _, _ in
+            Task { await viewModel.loadMapData(userId: authState.userId) }
+        }
+    }
+}
+
+// ─────────────────────────────────────────
+// 用户自建推荐标注视图（v4.0 新增）
+// 紫色圆形 + person 图标，区别于博主头像标注
+// ─────────────────────────────────────────
+struct UserPinView: View {
+    let isSelected: Bool
+    private let pinColor = Color.purple
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                Circle()
+                    .fill(isSelected ? pinColor : DS.Color.surface)
+                    .frame(width: isSelected ? 44 : 36, height: isSelected ? 44 : 36)
+                    .shadow(radius: isSelected ? DS.Shadow.pinSelectedRadius : DS.Shadow.pinNormalRadius)
+                Image(systemName: "person.crop.circle.badge.plus")
+                    .foregroundColor(isSelected ? .white : pinColor)
+                    .font(.system(size: isSelected ? 20 : 16))
+            }
+            Triangle()
+                .fill(isSelected ? pinColor : DS.Color.surface)
+                .frame(width: 10, height: 6)
+        }
+        .animation(.spring(response: 0.3), value: isSelected)
     }
 }
 
@@ -131,9 +163,9 @@ struct MapPinView: View {
         VStack(spacing: 0) {
             ZStack {
                 Circle()
-                    .fill(isSelected ? Color.orange : Color.white)
+                    .fill(isSelected ? DS.Color.brand : DS.Color.surface)
                     .frame(width: isSelected ? 44 : 36, height: isSelected ? 44 : 36)
-                    .shadow(radius: isSelected ? 6 : 3)
+                    .shadow(radius: isSelected ? DS.Shadow.pinSelectedRadius : DS.Shadow.pinNormalRadius)
 
                 // 博主头像（异步加载）
                 AsyncImage(url: URL(string: avatarURL ?? "")) { image in
@@ -147,7 +179,7 @@ struct MapPinView: View {
             }
             // 小三角形指针
             Triangle()
-                .fill(isSelected ? Color.orange : Color.white)
+                .fill(isSelected ? DS.Color.brand : DS.Color.surface)
                 .frame(width: 10, height: 6)
         }
         .animation(.spring(response: 0.3), value: isSelected)
@@ -171,6 +203,7 @@ struct Triangle: Shape {
 // ─────────────────────────────────────────
 struct AuthorFilterBar: View {
     let restaurants: [MapRestaurant]
+    let userRestaurantCount: Int   // 用户自建推荐数量（v4.0 新增）
     @Binding var selectedAuthorId: String?
 
     // 从店铺列表中提取不重复的博主
@@ -181,7 +214,7 @@ struct AuthorFilterBar: View {
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 12) {
+            HStack(spacing: DS.Spacing.md) {
                 // "全部" 按钮
                 FilterChip(
                     label: "全部",
@@ -189,6 +222,18 @@ struct AuthorFilterBar: View {
                     isSelected: selectedAuthorId == nil
                 ) {
                     selectedAuthorId = nil
+                }
+
+                // "我的推荐" 筛选 chip（有自建推荐时显示）
+                if userRestaurantCount > 0 {
+                    FilterChip(
+                        label: "我的推荐",
+                        avatarURL: nil,
+                        isSelected: selectedAuthorId == "my",
+                        accentColor: .purple
+                    ) {
+                        selectedAuthorId = selectedAuthorId == "my" ? nil : "my"
+                    }
                 }
 
                 // 每个博主的筛选按钮
@@ -202,10 +247,15 @@ struct AuthorFilterBar: View {
                     }
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(.horizontal, DS.Spacing.lg)
+            .padding(.vertical, DS.Spacing.sm)
         }
         .background(.ultraThinMaterial)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(DS.Color.separator.opacity(0.25))
+                .frame(height: 0.5)
+        }
     }
 }
 
@@ -213,12 +263,13 @@ struct FilterChip: View {
     let label: String
     let avatarURL: String?
     let isSelected: Bool
+    var accentColor: Color = DS.Color.brand  // 默认橙色，我的推荐用紫色
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                if let url = avatarURL {
+            HStack(spacing: DS.Spacing.sm) {
+                if let url = avatarURL, !url.isEmpty {
                     AsyncImage(url: URL(string: url)) { img in
                         img.resizable().scaledToFill()
                     } placeholder: {
@@ -226,17 +277,24 @@ struct FilterChip: View {
                     }
                     .frame(width: 22, height: 22)
                     .clipShape(Circle())
+                } else if label == "我的推荐" {
+                    // 我的推荐用 person 图标
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .font(.system(size: 14))
+                        .foregroundColor(isSelected ? .white : accentColor)
                 }
                 Text(label)
                     .font(.system(size: 13, weight: .medium))
                     .lineLimit(1)
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(isSelected ? Color.orange : Color.white)
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm)
+            .background(isSelected ? accentColor : DS.Color.surface)
             .foregroundColor(isSelected ? .white : .primary)
             .clipShape(Capsule())
-            .shadow(color: .black.opacity(0.1), radius: 2)
+            .shadow(color: DS.Shadow.chipColor, radius: DS.Shadow.chipRadius, y: DS.Shadow.chipY)
+            .scaleEffect(isSelected ? 1.04 : 1.0)
+            .animation(.spring(response: 0.25, dampingFraction: 0.82), value: isSelected)
         }
     }
 }
@@ -248,19 +306,35 @@ struct RestaurantCard: View {
     let restaurant: Restaurant
     let author: Author?
     let userId: String
+    var isUserCreated: Bool = false  // 是否为用户自建推荐（v4.0 新增）
 
     @State private var isFavorited = false
     @State private var videos: [RestaurantVideo] = []
     @State private var isLoadingVideos = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
             HStack {
-                VStack(alignment: .leading, spacing: 4) {
-                    // 店铺名 + 已验证角标（v3.0 新增）
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
+                    // 店铺名 + 标签行
+                    HStack(spacing: DS.Spacing.sm) {
                         Text(restaurant.name)
                             .font(.headline)
+                        // 用户自建推荐标识（v4.0）
+                        if isUserCreated {
+                            HStack(spacing: 2) {
+                                Image(systemName: "person.crop.circle.badge.plus")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("我的推荐")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundColor(.purple)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 2)
+                            .background(Color.purple.opacity(0.12))
+                            .cornerRadius(4)
+                        }
+                        // 已验证角标（v3.0）
                         if restaurant.verified == true {
                             HStack(spacing: 2) {
                                 Image(systemName: "checkmark")
@@ -268,20 +342,20 @@ struct RestaurantCard: View {
                                 Text("已验证")
                                     .font(.system(size: 10, weight: .medium))
                             }
-                            .foregroundColor(.green)
+                            .foregroundColor(DS.Color.success)
                             .padding(.horizontal, 5)
                             .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.12))
+                            .background(DS.Color.success.opacity(0.12))
                             .cornerRadius(4)
                         }
                     }
                     if let category = restaurant.category {
                         Text(category)
                             .font(.caption)
-                            .foregroundColor(.orange)
-                            .padding(.horizontal, 8)
+                            .foregroundColor(isUserCreated ? .purple : DS.Color.brand)
+                            .padding(.horizontal, DS.Spacing.sm)
                             .padding(.vertical, 2)
-                            .background(Color.orange.opacity(0.1))
+                            .background((isUserCreated ? Color.purple : DS.Color.brand).opacity(0.1))
                             .clipShape(Capsule())
                     }
                 }
@@ -295,8 +369,8 @@ struct RestaurantCard: View {
             }
 
             if let address = restaurant.address {
-                HStack(spacing: 4) {
-                    Image(systemName: "mappin.circle.fill")
+                HStack(spacing: DS.Spacing.xs) {
+                    Image(systemName: "mappin.and.ellipse")
                         .foregroundColor(.gray)
                         .font(.caption)
                     Text(address)
@@ -306,9 +380,9 @@ struct RestaurantCard: View {
                 }
             }
 
-            // 博主推荐信息
+            // 博主推荐信息（非用户自建时显示）
             if let author = author {
-                HStack(spacing: 6) {
+                HStack(spacing: DS.Spacing.sm) {
                     AsyncImage(url: URL(string: author.avatar_url ?? "")) { img in
                         img.resizable().scaledToFill()
                     } placeholder: {
@@ -316,7 +390,6 @@ struct RestaurantCard: View {
                     }
                     .frame(width: 20, height: 20)
                     .clipShape(Circle())
-
                     Text("\(author.name) 推荐")
                         .font(.caption)
                         .foregroundColor(.secondary)
@@ -325,13 +398,12 @@ struct RestaurantCard: View {
 
             // 关联视频列表
             if !videos.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
                     Text("相关视频")
                         .font(.caption)
                         .foregroundColor(.secondary)
-
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
+                        HStack(spacing: DS.Spacing.sm) {
                             ForEach(videos) { video in
                                 VideoThumbnail(video: video)
                             }
@@ -348,10 +420,10 @@ struct RestaurantCard: View {
                 )
             }
         }
-        .padding(16)
-        .background(Color(.systemBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 16))
-        .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
+        .padding(DS.Spacing.lg)
+        .background(DS.Color.surface)
+        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg))
+        .shadow(color: DS.Shadow.cardColor, radius: DS.Shadow.cardRadius, y: DS.Shadow.cardY)
         // 关键修复：用 restaurant.id 作为 task 的 id，店铺切换时自动取消旧任务并重新执行
         .task(id: restaurant.id) {
             videos = []  // 先清空旧数据，避免状态复用
@@ -394,8 +466,7 @@ struct VideoThumbnail: View {
 
     var body: some View {
         Button(action: openVideo) {
-            HStack(spacing: 8) {
-                // 博主头像
+            HStack(spacing: DS.Spacing.sm) {
                 AsyncImage(url: URL(string: video.author_avatar_url ?? "")) { img in
                     img.resizable().scaledToFill()
                 } placeholder: {
@@ -404,7 +475,7 @@ struct VideoThumbnail: View {
                 .frame(width: 32, height: 32)
                 .clipShape(Circle())
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                     Text(video.author_name)
                         .font(.caption)
                         .fontWeight(.medium)
@@ -416,13 +487,13 @@ struct VideoThumbnail: View {
                         Text("查看视频")
                             .font(.caption2)
                     }
-                    .foregroundColor(.orange)
+                    .foregroundColor(DS.Color.brand)
                 }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
-            .background(Color(.systemGray6))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm)
+            .background(DS.Color.surfaceAlt)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
         }
     }
 
@@ -446,7 +517,7 @@ struct NavigationButtons: View {
     let coordinate: CLLocationCoordinate2D
 
     var body: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: DS.Spacing.sm) {
             NavButton(title: "苹果地图", icon: "map.fill", color: .blue) {
                 openAppleMaps()
             }
@@ -505,15 +576,15 @@ struct NavButton: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 4) {
+            HStack(spacing: DS.Spacing.xs) {
                 Image(systemName: icon).font(.caption2)
                 Text(title).font(.caption).fontWeight(.medium)
             }
             .foregroundColor(color)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 6)
+            .padding(.horizontal, DS.Spacing.md)
+            .padding(.vertical, DS.Spacing.sm)
             .background(color.opacity(0.1))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
         }
     }
 }

@@ -710,3 +710,68 @@ def is_admin_user(user_id: str) -> bool:
     """检查用户是否为管理员"""
     result = supabase.table("admin_users").select("user_id").eq("user_id", user_id).execute()
     return bool(result.data)
+
+
+# ─────────────────────────────────────────
+# 用户自建推荐店铺相关操作（v4.0 新增）
+# ─────────────────────────────────────────
+
+def get_user_created_restaurants(user_id: str) -> list[dict]:
+    """获取用户自建的所有推荐店铺（含店铺详情）"""
+    result = (
+        supabase.table("user_created_restaurants")
+        .select("*, restaurants(*)")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def add_user_restaurant(user_id: str, restaurant_id: str, note: str = "") -> dict:
+    """
+    添加用户自建推荐店铺
+    若该用户已添加过同一家店（unique 约束），则直接返回已有记录
+    """
+    data = {"user_id": user_id, "restaurant_id": restaurant_id}
+    if note:
+        data["note"] = note
+    result = supabase.table("user_created_restaurants").upsert(
+        data,
+        on_conflict="user_id,restaurant_id"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def remove_user_restaurant(user_id: str, restaurant_id: str) -> bool:
+    """删除用户自建推荐店铺（只删关联记录，不删 restaurants 表）"""
+    supabase.table("user_created_restaurants").delete().eq(
+        "user_id", user_id
+    ).eq("restaurant_id", restaurant_id).execute()
+    return True
+
+
+def get_map_restaurants_for_user(user_id: str) -> dict:
+    """
+    获取用户地图上应该显示的所有店铺，包含两类：
+    1. author_restaurants：用户关注的博主推荐的店铺
+    2. user_created_restaurants：用户自建的推荐店铺
+    返回 {"restaurants": [...], "user_restaurants": [...]}
+    """
+    # 博主推荐：用户关注的博主 → 这些博主推荐的所有店铺
+    follows = get_user_followed_authors(user_id)
+    author_data = []
+    if follows:
+        author_ids = [f["author_id"] for f in follows]
+        result = (
+            supabase.table("author_restaurants")
+            .select("*, restaurants(*), authors(*)")
+            .in_("author_id", author_ids)
+            .execute()
+        )
+        author_data = result.data or []
+
+    # 用户自建推荐
+    user_data = get_user_created_restaurants(user_id)
+
+    return {"restaurants": author_data, "user_restaurants": user_data}

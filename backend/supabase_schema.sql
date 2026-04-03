@@ -260,6 +260,33 @@ create policy "博主信息可更新" on authors for update using (true) with ch
 
 
 -- ─────────────────────────────────────────
+-- 10. 用户自建推荐店铺表（v4.0 新增）
+-- 记录用户手动添加的推荐店铺（不依赖博主/视频）
+-- ─────────────────────────────────────────
+create table if not exists user_created_restaurants (
+  id              uuid primary key default uuid_generate_v4(),
+  user_id         uuid not null,           -- 创建者（Supabase Auth user_id）
+  restaurant_id   uuid not null references restaurants(id) on delete cascade,
+  note            text,                    -- 用户备注（预留）
+  created_at      timestamptz default now(),
+  unique(user_id, restaurant_id)           -- 同一用户不能重复添加同一家店
+);
+
+create index if not exists idx_ucr_user on user_created_restaurants(user_id);
+create index if not exists idx_ucr_restaurant on user_created_restaurants(restaurant_id);
+
+-- RLS：用户只能操作自己的记录
+alter table user_created_restaurants enable row level security;
+
+create policy "用户只能查看自己的自建推荐" on user_created_restaurants
+  for select using (auth.uid() = user_id);
+create policy "用户只能添加自己的自建推荐" on user_created_restaurants
+  for insert with check (auth.uid() = user_id);
+create policy "用户只能删除自己的自建推荐" on user_created_restaurants
+  for delete using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
 -- v3.0 迁移脚本：后台人工复核功能（已实施，字段已合并至上方表定义）
 -- 若在已有数据库上增量执行，运行以下 ALTER 语句：
 -- ─────────────────────────────────────────
