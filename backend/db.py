@@ -623,14 +623,19 @@ def admin_correct_restaurant(
     restaurant_id = r_result.data[0]["id"]
 
     # 更新 author_restaurants 关联
+    # 先删除该视频的旧关联（旧 restaurant_id 不同，upsert 不会覆盖，必须先删再插）
     author_id = cache.get("author_id")
     video_id = cache.get("video_id", "")
     if author_id:
-        supabase.table("author_restaurants").upsert({
+        if video_id:
+            supabase.table("author_restaurants").delete().eq(
+                "author_id", author_id
+            ).eq("video_id", video_id).execute()
+        supabase.table("author_restaurants").insert({
             "author_id": author_id,
             "restaurant_id": restaurant_id,
             "video_id": video_id,
-        }, on_conflict="author_id,restaurant_id,video_id").execute()
+        }).execute()
 
     # 更新 video_parse_cache
     supabase.table("video_parse_cache").update({

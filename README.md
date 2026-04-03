@@ -1378,3 +1378,39 @@ python main.py
 - 复核列表按 `restaurant_id IS NULL`（P0）优先排序
 - 高德分类映射在后端维护，前端允许管理员覆盖
 - 数据库迁移需用户在 Supabase Dashboard SQL Editor 手动执行 `migration_v3_admin_review.sql`
+
+---
+
+### 2026-04-03 修复 Xcode 报错警告
+
+#### 会话的主要目的
+修复 Xcode 编译警告：废弃 API 和 Swift 6 并发错误。
+
+#### 完成的主要任务
+1. `RestaurantSearchView`：`onChange(of:perform:)` 旧语法 → 新语法（去掉 `_ in`）
+2. `MapView` + `MapViewModel`：废弃的 `Map(coordinateRegion:annotationItems:)` + `MapAnnotation` → iOS 17 新 API `Map(position:)` + `Annotation` + `UserAnnotation`；`region` 属性替换为 `mapCameraPosition: MapCameraPosition`
+3. `ParseLinkSheet`：Timer 闭包内局部变量 `failureCount` 跨并发边界修改 → 改为 `@State private var bgPollingFailureCount`，Task 标注 `@MainActor` 消除 Swift 6 并发警告
+
+#### 修改的文件
+- `ios/FoodMap/genchi/genchi/Views/Admin/RestaurantSearchView.swift`
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`
+- `ios/FoodMap/genchi/genchi/ViewModels/MapViewModel.swift`
+- `ios/FoodMap/genchi/genchi/Views/ParseLinkSheet.swift`
+
+---
+
+### 会话记录 2026-04-03
+
+#### 会话目的
+排查并修复人工复核后地图上同一视频出现两个店铺的 bug。
+
+#### 完成的主要任务
+- 定位 bug 根因：`admin_correct_restaurant` 修正店铺时，向 `author_restaurants` 写入新关联，但旧关联（旧 `restaurant_id`）未删除，导致同一 `video_id` 存在两条不同 `restaurant_id` 的记录，地图查询时两个店铺都显示
+- 修复代码：改为先 `DELETE` 该 `video_id` 的旧关联，再 `INSERT` 新关联
+- 清理存量脏数据：删除数据库中已存在的 3 条重复关联记录
+
+#### 关键决策
+`author_restaurants` 唯一约束是 `(author_id, restaurant_id, video_id)` 三列组合，`restaurant_id` 变化时 upsert 不会命中冲突，必须先删后插。
+
+#### 修改的文件
+- `backend/db.py`（`admin_correct_restaurant` 函数，第 625-633 行）
