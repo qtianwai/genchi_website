@@ -1554,3 +1554,42 @@ Python FastAPI、Supabase PostgreSQL、SwiftUI + MapKit
 - `ios/FoodMap/genchi/genchi/Views/FavoritesView.swift`
 - `需求文档&技术方案/用户自建推荐店铺实施计划.md`（新增）
 - `需求文档&技术方案/产品功能清单.md`
+
+---
+
+## 会话记录 - 2026-04-03（用户信息自定义）
+
+### 会话目的
+新增用户信息自定义功能：用户可自定义昵称和头像，地图上用户自建店铺标注切换为用户自己的头像。
+
+### 完成的主要任务
+- 产品功能清单新增"用户信息自定义"功能条目
+- 创建实施计划文档 `需求文档&技术方案/用户信息自定义实施计划.md`
+- Supabase 执行建表：新增 `user_profiles` 表（user_id、nickname、avatar_url）
+- Supabase Storage 创建 `avatars` bucket（Public，路径 `{user_id}.jpg`）
+- 后端新增 `get_user_profile` / `upsert_user_profile` 数据库函数
+- 后端新增三个 API 接口：`GET /api/profile/{user_id}`、`POST /api/profile/update`、`POST /api/profile/upload-avatar`
+- iOS 新增 `UserProfile` 模型
+- iOS `AuthState` 新增 `nickname`/`avatarURL` 字段及 `loadProfile`/`updateNickname`/`uploadAvatar` 方法
+- iOS `ProfileView` 改造：支持 `PhotosPicker` 上传头像、Alert 编辑昵称
+- iOS `UserPinView` 改造：有头像时显示用户头像，无头像时保持紫色占位图标
+- 同步更新 `supabase_schema.sql`
+
+### 关键决策
+- 默认头像不存图片资源，用橙色圆形 + `person.fill` 图标占位，`AsyncImage` 加载失败也回退到同一占位符
+- 地图标注有头像时与博主标注（`MapPinView`）风格完全一致，无头像时保持原有紫色图标，平滑过渡
+- 头像上传使用 iOS 16+ 原生 `PhotosPicker`，无需第三方库
+
+### 使用的技术栈
+Python FastAPI、Supabase PostgreSQL + Storage、SwiftUI + PhotosUI
+
+### 修改的文件
+- `backend/db.py`
+- `backend/main.py`
+- `backend/supabase_schema.sql`
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`
+- `ios/FoodMap/genchi/genchi/Services/AuthState.swift`
+- `ios/FoodMap/genchi/genchi/Views/ProfileView.swift`
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`
+- `需求文档&技术方案/产品功能清单.md`
+- `需求文档&技术方案/用户信息自定义实施计划.md`（新增）

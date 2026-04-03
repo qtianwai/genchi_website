@@ -41,7 +41,8 @@ struct MapView: View {
                 ForEach(viewModel.filteredUserRestaurants) { item in
                     Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
                         UserPinView(
-                            isSelected: selectedUserRestaurant?.id == item.id
+                            isSelected: selectedUserRestaurant?.id == item.id,
+                            avatarURL: authState.avatarURL
                         )
                         .onTapGesture {
                             withAnimation(.spring()) {
@@ -127,10 +128,11 @@ struct MapView: View {
 
 // ─────────────────────────────────────────
 // 用户自建推荐标注视图（v4.0 新增）
-// 紫色圆形 + person 图标，区别于博主头像标注
+// 有头像时显示用户头像（与博主标注风格一致），无头像时显示紫色 person 图标
 // ─────────────────────────────────────────
 struct UserPinView: View {
     let isSelected: Bool
+    let avatarURL: String?  // 用户头像 URL，nil 时显示紫色占位图标
     private let pinColor = Color.purple
 
     var body: some View {
@@ -140,9 +142,22 @@ struct UserPinView: View {
                     .fill(isSelected ? pinColor : DS.Color.surface)
                     .frame(width: isSelected ? 44 : 36, height: isSelected ? 44 : 36)
                     .shadow(radius: isSelected ? DS.Shadow.pinSelectedRadius : DS.Shadow.pinNormalRadius)
-                Image(systemName: "person.crop.circle.badge.plus")
-                    .foregroundColor(isSelected ? .white : pinColor)
-                    .font(.system(size: isSelected ? 20 : 16))
+
+                if let urlStr = avatarURL, let url = URL(string: urlStr) {
+                    // 有头像：与 MapPinView 风格一致
+                    AsyncImage(url: url) { image in
+                        image.resizable().scaledToFill()
+                    } placeholder: {
+                        Image(systemName: "person.fill").foregroundColor(.gray)
+                    }
+                    .frame(width: isSelected ? 36 : 28, height: isSelected ? 36 : 28)
+                    .clipShape(Circle())
+                } else {
+                    // 无头像：保持原有紫色 person 图标
+                    Image(systemName: "person.crop.circle.badge.plus")
+                        .foregroundColor(isSelected ? .white : pinColor)
+                        .font(.system(size: isSelected ? 20 : 16))
+                }
             }
             Triangle()
                 .fill(isSelected ? pinColor : DS.Color.surface)

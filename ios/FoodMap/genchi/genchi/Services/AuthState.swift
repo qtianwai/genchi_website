@@ -11,6 +11,8 @@ class AuthState: ObservableObject {
     @Published var userId = ""
     @Published var isLoading = true  // 启动时检查登录状态
     @Published var isAdmin = false   // 是否为管理员（v3.0 新增）
+    @Published var nickname: String = "美食探索者"  // 用户昵称
+    @Published var avatarURL: String? = nil         // 用户头像 URL，nil 表示未上传
 
     init() {
         checkStoredSession()
@@ -22,8 +24,11 @@ class AuthState: ObservableObject {
            !uid.isEmpty {
             self.userId = uid
             self.isLoggedIn = true
-            // 异步检查管理员身份
-            Task { await checkAdminStatus(userId: uid) }
+            // 异步检查管理员身份 + 加载用户 profile
+            Task {
+                await checkAdminStatus(userId: uid)
+                await loadProfile(userId: uid)
+            }
         }
         self.isLoading = false
     }
@@ -110,6 +115,8 @@ class AuthState: ObservableObject {
 
         // 检查管理员身份（v3.0 新增）
         await checkAdminStatus(userId: resp.user_id)
+        // 加载用户 profile
+        await loadProfile(userId: resp.user_id)
     }
 
     // TODO: 微信开放平台审核通过后取消注释
@@ -163,6 +170,70 @@ class AuthState: ObservableObject {
         isLoggedIn = false
         userId = ""
         isAdmin = false  // 登出时重置管理员状态
+        nickname = "美食探索者"  // 重置昵称
+        avatarURL = nil          // 重置头像
+    }
+
+    // 加载用户 profile（昵称 + 头像）
+    func loadProfile(userId: String) async {
+        guard let url = URL(string: "\(BASE_URL)/api/profile/\(userId)") else { return }
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let profile = try? JSONDecoder().decode(UserProfile.self, from: data) else { return }
+        await MainActor.run {
+            self.nickname = profile.nickname
+            self.avatarURL = profile.avatar_url
+        }
+    }
+
+    // 更新昵称
+    func updateNickname(_ newNickname: String) async throws {
+        guard let url = URL(string: "\(BASE_URL)/api/profile/update") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+
+        struct Body: Codable { let user_id: String; let nickname: String }
+        request.httpBody = try JSONEncoder().encode(Body(user_id: userId, nickname: newNickname))
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw AuthError.custom(detail)
+            }
+            throw AuthError.custom("昵称更新失败")
+        }
+        await MainActor.run { self.nickname = newNickname }
+    }
+
+    // 上传头像（multipart/form-data）
+    func uploadAvatar(_ imageData: Data) async throws {
+        guard let url = URL(string: "\(BASE_URL)/api/profile/upload-avatar") else {
+            throw URLError(.badURL)
+        }
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        // user_id 字段
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"user_id\"\r\n\r\n\(userId)\r\n".data(using: .utf8)!)
+        // file 字段
+        body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+            throw AuthError.custom("头像上传失败")
+        }
+        struct Resp: Codable { let avatar_url: String }
+        let resp = try JSONDecoder().decode(Resp.self, from: data)
+        await MainActor.run { self.avatarURL = resp.avatar_url }
     }
 }
 

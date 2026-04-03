@@ -5,7 +5,7 @@
 import os
 import asyncio
 from datetime import datetime
-from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, Depends, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -37,6 +37,8 @@ from db import (
     admin_confirm_correct, admin_confirm_empty, admin_correct_restaurant, admin_skip,
     # 新增：用户自建推荐店铺相关（v4.0）
     get_user_created_restaurants, add_user_restaurant, remove_user_restaurant,
+    # 新增：用户 profile 相关
+    get_user_profile, upsert_user_profile,
 )
 
 load_dotenv()
@@ -1491,6 +1493,75 @@ async def review_skip(
     """跳过该条复核记录，更新 review_status = 'skipped'"""
     admin_skip(req.cache_id, admin_user_id)
     return {"status": "ok", "message": "已跳过"}
+
+
+# ─────────────────────────────────────────
+# 用户 Profile 接口（昵称 + 头像）
+# ─────────────────────────────────────────
+
+class UpdateProfileRequest(BaseModel):
+    user_id: str
+    nickname: str  # 1-20 字符
+
+
+@app.get("/api/profile/{user_id}")
+async def get_profile(user_id: str):
+    """
+    获取用户 profile。
+    若用户尚未设置过 profile，返回默认值（昵称"美食探索者"，avatar_url null）。
+    """
+    profile = get_user_profile(user_id)
+    if not profile:
+        return {"user_id": user_id, "nickname": "美食探索者", "avatar_url": None}
+    return profile
+
+
+@app.post("/api/profile/update")
+async def update_profile(req: UpdateProfileRequest):
+    """
+    更新用户昵称。
+    昵称长度限制 1-20 字符，超出则返回 400。
+    """
+    nickname = req.nickname.strip()
+    if not nickname or len(nickname) > 20:
+        raise HTTPException(status_code=400, detail="昵称长度需在 1-20 字符之间")
+    profile = upsert_user_profile(req.user_id, nickname=nickname)
+    return {"status": "ok", "profile": profile}
+
+
+@app.post("/api/profile/upload-avatar")
+async def upload_avatar(
+    user_id: str = Form(...),
+    file: UploadFile = File(...)
+):
+    """
+    上传用户头像。
+    接收 multipart/form-data，校验文件类型（jpg/png/webp）和大小（≤2MB）。
+    上传到 Supabase Storage avatars bucket，路径为 {user_id}.jpg，覆盖旧文件。
+    成功后将 avatar_url 写入 user_profiles 表。
+    """
+    # 校验文件类型
+    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+        raise HTTPException(status_code=400, detail="仅支持 JPG/PNG/WebP 格式")
+
+    content = await file.read()
+    if len(content) > 2 * 1024 * 1024:  # 2MB
+        raise HTTPException(status_code=400, detail="图片大小不能超过 2MB")
+
+    # 上传到 Supabase Storage（固定路径，upsert 覆盖旧头像）
+    from db import supabase as _supabase
+    path = f"{user_id}.jpg"
+    _supabase.storage.from_("avatars").upload(
+        path, content,
+        file_options={"content-type": "image/jpeg", "upsert": "true"}
+    )
+
+    # 构造公开 URL
+    avatar_url = _supabase.storage.from_("avatars").get_public_url(path)
+
+    # 写入 user_profiles
+    profile = upsert_user_profile(user_id, avatar_url=avatar_url)
+    return {"status": "ok", "avatar_url": avatar_url, "profile": profile}
 
 
 # ─────────────────────────────────────────

@@ -784,3 +784,26 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
     user_data = get_user_created_restaurants(user_id)
 
     return {"restaurants": author_data, "user_restaurants": user_data}
+
+
+# ─────────────────────────────────────────
+# 用户 Profile 相关操作
+# ─────────────────────────────────────────
+
+def get_user_profile(user_id: str) -> dict | None:
+    """获取用户 profile，不存在返回 None"""
+    result = supabase.table("user_profiles").select("*").eq("user_id", user_id).execute()
+    return result.data[0] if result.data else None
+
+
+def upsert_user_profile(user_id: str, nickname: str = None, avatar_url: str = None) -> dict:
+    """创建或更新用户 profile（upsert），只更新传入的字段"""
+    data = {"user_id": user_id}
+    if nickname is not None:
+        data["nickname"] = nickname
+    if avatar_url is not None:
+        data["avatar_url"] = avatar_url
+    result = supabase.table("user_profiles").upsert(
+        data, on_conflict="user_id"
+    ).execute()
+    return result.data[0] if result.data else {}

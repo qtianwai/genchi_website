@@ -309,3 +309,23 @@ create policy "用户只能删除自己的自建推荐" on user_created_restaura
 -- 3. restaurants 新增人工验证字段（已合并至第 2 节）
 -- ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS verified boolean NOT NULL DEFAULT false;
 -- ALTER TABLE restaurants ADD COLUMN IF NOT EXISTS verified_at timestamptz;
+
+
+-- ─────────────────────────────────────────
+-- 11. 用户 Profile 表（v5.0 新增）
+-- 存储用户自定义昵称和头像 URL
+-- ─────────────────────────────────────────
+create table if not exists user_profiles (
+  user_id     uuid primary key,                        -- 对应 phone_to_user_id 生成的 UUID
+  nickname    text not null default '美食探索者',       -- 用户昵称，默认"美食探索者"
+  avatar_url  text,                                    -- 头像公开 URL（Supabase Storage avatars bucket），null 表示未上传
+  updated_at  timestamptz default now()
+);
+
+-- RLS：profile 公开可读（地图标注异步加载头像需要），写操作走后端 service_role key 绕过 RLS
+alter table user_profiles enable row level security;
+
+create policy "profile 公开可读" on user_profiles
+  for select using (true);
+create policy "用户只能修改自己的 profile" on user_profiles
+  for all using (auth.uid() = user_id);

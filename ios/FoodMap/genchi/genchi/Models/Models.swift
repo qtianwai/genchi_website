@@ -281,3 +281,10 @@ struct MapRestaurantsResponse: Codable {
     let restaurants: [MapRestaurant]          // 博主推荐
     let user_restaurants: [UserCreatedRestaurant]  // 用户自建推荐
 }
+
+// 用户 profile（昵称 + 头像）
+struct UserProfile: Codable {
+    let user_id: String
+    let nickname: String
+    let avatar_url: String?  // nil 表示未上传，使用默认占位符
+}
