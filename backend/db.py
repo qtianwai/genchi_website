@@ -611,6 +611,15 @@ def admin_confirm_empty(cache_id: str, admin_user_id: str) -> bool:
                     "verified_at": None,
                 }).eq("id", old_restaurant_id).execute()
 
+    # 删除 author_restaurants 里该视频的关联，避免地图继续显示
+    if cache:
+        author_id = cache.get("author_id")
+        video_id = cache.get("video_id", "")
+        if author_id and video_id:
+            supabase.table("author_restaurants").delete().eq(
+                "author_id", author_id
+            ).eq("video_id", video_id).execute()
+
     supabase.table("video_parse_cache").update({
         "review_status": "confirmed",
         "restaurant_id": None,   # 清空关联店铺
