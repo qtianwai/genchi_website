@@ -36,4 +36,6 @@ DerivedData/
 .DS_Store
 .AppleDouble
 .LSOverride
-ios/FoodMap/genchi/
+ios/FoodMap/genchi/genchi.xcodeproj/xcuserdata/
+ios/FoodMap/genchi/genchi.xcworkspace/xcuserdata/
+ios/FoodMap/genchi/DerivedData/

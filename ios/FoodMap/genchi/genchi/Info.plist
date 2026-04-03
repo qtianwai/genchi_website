@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>maps</string>
+		<string>baidumap</string>
+		<string>iosamap</string>
+		<string>snssdk1128</string>
+		<string>weixin</string>
+		<string>weixinULAPI</string>
+	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>weixin</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<!-- TODO: 替换为你的微信 AppID，格式如 wx1234567890abcdef -->
+				<string>YOUR_WECHAT_APP_ID</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>
