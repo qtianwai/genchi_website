@@ -5,6 +5,12 @@ import Foundation
 import SwiftUI
 import MapKit
 
+private enum MapZoomBucket {
+    case names
+    case avatars
+    case clusters
+}
+
 enum MapAuthorFilter: Hashable {
     case all
     case mine
@@ -128,6 +134,17 @@ class MapViewModel: ObservableObject {
 
     // 是否是首次定位（首次定位时自动移动地图到用户位置）
     var isFirstLocationUpdate = true
+
+    // 缩放阈值（平衡档）+ 滞回防抖
+    private let nameShowEnterDelta: CLLocationDegrees = 0.06
+    private let nameShowExitDelta: CLLocationDegrees = 0.065
+    private let clusterEnterDelta: CLLocationDegrees = 0.11
+    private let clusterExitDelta: CLLocationDegrees = 0.105
+    private let cameraThrottleInterval: TimeInterval = 0.12
+
+    private var renderRegion: MKCoordinateRegion? = nil
+    private var zoomBucket: MapZoomBucket = .clusters
+    private var lastCameraRefreshAt = Date.distantPast
 
     private var refreshTimer: Timer? = nil
     private var lastDataSignature = ""
@@ -299,7 +316,7 @@ class MapViewModel: ObservableObject {
             }
         }
 
-        let region = visibleRegion ?? MKCoordinateRegion(
+        let region = renderRegion ?? visibleRegion ?? MKCoordinateRegion(
             center: CLLocationCoordinate2D(latitude: 31.2304, longitude: 121.4737),
             span: MKCoordinateSpan(latitudeDelta: 0.18, longitudeDelta: 0.18)
         )
@@ -333,18 +350,27 @@ class MapViewModel: ObservableObject {
     }
 
     private var shouldCluster: Bool {
-        guard let region = visibleRegion else { return false }
-        return region.span.latitudeDelta >= 0.09
+        zoomBucket == .clusters
     }
 
     var shouldShowStoreName: Bool {
-        guard let region = visibleRegion else { return false }
-        return region.span.latitudeDelta <= 0.03
+        zoomBucket == .names
     }
 
     // MARK: - Camera
-    func updateVisibleRegion(_ region: MKCoordinateRegion) {
+    func updateVisibleRegion(_ region: MKCoordinateRegion, forceRefresh: Bool = false) {
         visibleRegion = region
+
+        let nextBucket = computeNextBucket(for: region.span.latitudeDelta)
+        let now = Date()
+        let shouldRefreshByTime = now.timeIntervalSince(lastCameraRefreshAt) >= cameraThrottleInterval
+        let bucketChanged = nextBucket != zoomBucket
+
+        if bucketChanged || forceRefresh || shouldRefreshByTime {
+            zoomBucket = nextBucket
+            renderRegion = region
+            lastCameraRefreshAt = now
+        }
     }
 
     func centerMapOnUserLocation(_ location: CLLocationCoordinate2D) {
@@ -389,10 +415,28 @@ class MapViewModel: ObservableObject {
                 span: MKCoordinateSpan(latitudeDelta: targetSpan, longitudeDelta: targetSpan)
             )
         )
+        zoomBucket = .avatars
     }
 
     func clearFilters() {
         filter = MapFilterState()
+    }
+
+    private func computeNextBucket(for latitudeDelta: CLLocationDegrees) -> MapZoomBucket {
+        switch zoomBucket {
+        case .names:
+            if latitudeDelta >= clusterEnterDelta { return .clusters }
+            if latitudeDelta >= nameShowExitDelta { return .avatars }
+            return .names
+        case .avatars:
+            if latitudeDelta >= clusterEnterDelta { return .clusters }
+            if latitudeDelta <= nameShowEnterDelta { return .names }
+            return .avatars
+        case .clusters:
+            if latitudeDelta <= nameShowEnterDelta { return .names }
+            if latitudeDelta <= clusterExitDelta { return .avatars }
+            return .clusters
+        }
     }
 
     // MARK: - Data Loading

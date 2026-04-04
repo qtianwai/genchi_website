@@ -104,6 +104,9 @@ struct MapView: View {
         .onChange(of: selectedItem?.id) { _, newId in
             handleSelectionTransition(newSelectedId: newId)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .restaurantStateDidChange)) { _ in
+            Task { await reloadAllData() }
+        }
         .confirmationDialog("添加店铺", isPresented: $showAddMenu, titleVisibility: .visible) {
             Button("解析抖音链接") {
                 pendingParseLink = nil
@@ -185,7 +188,6 @@ struct MapView: View {
                         RestaurantPinView(
                             avatarURL: item.author?.avatar_url ?? authState.avatarURL,
                             title: item.restaurant.name,
-                            status: pinStatus(for: item),
                             isSelected: selectedItem?.id == item.id,
                             isHighlighted: viewModel.highlightedItemId == item.id,
                             isUserCreated: item.isUserCreated,
@@ -204,6 +206,9 @@ struct MapView: View {
         .mapStyle(.standard(elevation: .flat))
         .onMapCameraChange(frequency: .continuous) { context in
             viewModel.updateVisibleRegion(context.region)
+        }
+        .onMapCameraChange(frequency: .onEnd) { context in
+            viewModel.updateVisibleRegion(context.region, forceRefresh: true)
         }
         .onTapGesture {
             withAnimation(.easeOut(duration: 0.15)) {
@@ -272,7 +277,7 @@ struct MapView: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, DS.Spacing.lg)
-            .padding(.top, proxy.safeAreaInsets.top + DS.Spacing.sm)
+            .padding(.top, proxy.safeAreaInsets.top + 12)
             .animation(.spring(response: 0.28, dampingFraction: 0.84), value: showFilterPanel)
         }
     }
@@ -286,7 +291,6 @@ struct MapView: View {
                     MapQuickActionCard(
                         item: item,
                         videos: selectedVideos,
-                        isLoadingVideos: isLoadingVideos,
                         isMarkedDeleted: stagedDeletionRestaurantIds.contains(item.restaurantId),
                         onFavorite: { toggleFavorite(item) },
                         onAvoid: { toggleAvoid(item) },
@@ -334,7 +338,7 @@ struct MapView: View {
             .foregroundColor(.primary)
             .padding(.horizontal, DS.Spacing.md)
             .padding(.vertical, DS.Spacing.sm)
-            .frame(minHeight: 40)
+            .frame(minHeight: 44)
             .background(.ultraThinMaterial, in: Capsule())
             .overlay {
                 Capsule().stroke(DS.Color.separator.opacity(0.25), lineWidth: 0.6)
@@ -406,12 +410,6 @@ struct MapView: View {
         isSearchFocused
             && viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !searchHistory.isEmpty
-    }
-
-    private func pinStatus(for item: MapDisplayItem) -> PinVisualStatus {
-        if item.isAvoided { return .avoided }
-        if item.isFavorited { return .favorited }
-        return .normal
     }
 
     private func reloadAllData() async {
@@ -758,16 +756,9 @@ struct MapToolCircleButton: View {
 }
 
 // MARK: - Pins
-enum PinVisualStatus {
-    case normal
-    case favorited
-    case avoided
-}
-
 struct RestaurantPinView: View {
     let avatarURL: String?
     let title: String
-    let status: PinVisualStatus
     let isSelected: Bool
     let isHighlighted: Bool
     let isUserCreated: Bool
@@ -791,15 +782,6 @@ struct RestaurantPinView: View {
                 }
                 .frame(width: size, height: size)
                 .clipShape(Circle())
-
-                if status != .normal {
-                    Circle()
-                        .fill(maskColor.opacity(0.42))
-                        .frame(width: size, height: size)
-                    Image(systemName: maskIcon)
-                        .font(.system(size: isSelected ? 14 : 12, weight: .bold))
-                        .foregroundColor(.white)
-                }
 
                 if isHighlighted {
                     Circle()
@@ -831,22 +813,6 @@ struct RestaurantPinView: View {
     }
 
     private var size: CGFloat { isSelected ? 42 : 34 }
-
-    private var maskColor: Color {
-        switch status {
-        case .normal: return .clear
-        case .favorited: return .red
-        case .avoided: return .orange
-        }
-    }
-
-    private var maskIcon: String {
-        switch status {
-        case .normal: return ""
-        case .favorited: return "heart.fill"
-        case .avoided: return "exclamationmark.triangle.fill"
-        }
-    }
 }
 
 struct UserLocationPinView: View {
@@ -1154,7 +1120,6 @@ struct SearchResultsView: View {
 struct MapQuickActionCard: View {
     let item: MapDisplayItem
     let videos: [RestaurantVideo]
-    let isLoadingVideos: Bool
     let isMarkedDeleted: Bool
     let onFavorite: () -> Void
     let onAvoid: () -> Void
@@ -1238,43 +1203,50 @@ struct MapQuickActionCard: View {
                 .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: DS.Radius.sm))
             }
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: DS.Spacing.sm) {
-                CardActionButton(
-                    title: item.isFavorited ? "取消收藏" : "收藏",
-                    icon: item.isFavorited ? "heart.slash" : "heart.fill",
-                    tint: .red,
-                    action: onFavorite
-                )
-                CardActionButton(
-                    title: item.isAvoided ? "取消避雷" : "避雷",
-                    icon: "exclamationmark.triangle.fill",
-                    tint: .orange,
-                    action: onAvoid
-                )
-                CardActionButton(
-                    title: isMarkedDeleted ? "取消删除" : "标记删除",
-                    icon: isMarkedDeleted ? "trash.slash" : "trash",
-                    tint: .gray,
-                    action: onToggleDelete
-                )
-                CardActionButton(
-                    title: "导航",
-                    icon: "arrow.triangle.turn.up.right.diamond.fill",
-                    tint: .blue,
-                    action: onNavigate
-                )
-                CardActionButton(
-                    title: "分享",
-                    icon: "square.and.arrow.up",
-                    tint: .gray,
-                    action: onSharePlaceholder
-                )
-                CardActionButton(
-                    title: isLoadingVideos ? "加载中" : "视频源",
-                    icon: "play.rectangle.fill",
-                    tint: .purple,
-                    action: onOpenSource
-                )
+            VStack(spacing: DS.Spacing.sm) {
+                HStack(spacing: DS.Spacing.sm) {
+                    CardActionButton(
+                        title: item.isFavorited ? "取消收藏" : "收藏",
+                        icon: item.isFavorited ? "heart.slash" : "heart.fill",
+                        tint: .red,
+                        emphasis: .primary,
+                        action: onFavorite
+                    )
+                    CardActionButton(
+                        title: item.isAvoided ? "取消避雷" : "避雷",
+                        icon: "exclamationmark.triangle.fill",
+                        tint: .orange,
+                        emphasis: .primary,
+                        action: onAvoid
+                    )
+                    CardActionButton(
+                        title: "导航",
+                        icon: "arrow.triangle.turn.up.right.diamond.fill",
+                        tint: .blue,
+                        emphasis: .primary,
+                        action: onNavigate
+                    )
+                }
+
+                HStack(spacing: DS.Spacing.sm) {
+                    CardActionButton(
+                        title: isMarkedDeleted ? "取消删除" : "标记删除",
+                        icon: isMarkedDeleted ? "trash.slash" : "trash",
+                        tint: .gray,
+                        emphasis: .secondary,
+                        action: onToggleDelete
+                    )
+                    CardActionButton(
+                        title: "分享",
+                        icon: "square.and.arrow.up",
+                        tint: .gray,
+                        emphasis: .secondary,
+                        action: onSharePlaceholder
+                    )
+                    Color.clear
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
             }
         }
         .padding(DS.Spacing.lg)
@@ -1344,9 +1316,15 @@ struct MiniTag: View {
 }
 
 struct CardActionButton: View {
+    enum Emphasis {
+        case primary
+        case secondary
+    }
+
     let title: String
     let icon: String
     let tint: Color
+    let emphasis: Emphasis
     let action: () -> Void
 
     var body: some View {
@@ -1360,10 +1338,25 @@ struct CardActionButton: View {
             }
             .foregroundColor(tint)
             .frame(maxWidth: .infinity)
-            .frame(height: 46)
-            .background(tint.opacity(0.11), in: RoundedRectangle(cornerRadius: DS.Radius.sm))
+            .frame(height: 44)
+            .background(backgroundColor, in: RoundedRectangle(cornerRadius: DS.Radius.sm))
+            .overlay {
+                if emphasis == .secondary {
+                    RoundedRectangle(cornerRadius: DS.Radius.sm)
+                        .stroke(DS.Color.separator.opacity(0.2), lineWidth: 0.7)
+                }
+            }
         }
         .buttonStyle(PressableScaleButtonStyle())
+    }
+
+    private var backgroundColor: Color {
+        switch emphasis {
+        case .primary:
+            return tint.opacity(0.14)
+        case .secondary:
+            return DS.Color.surfaceAlt.opacity(0.45)
+        }
     }
 }
 
