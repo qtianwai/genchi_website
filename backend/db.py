@@ -534,7 +534,7 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
         "id, video_id, video_url, author_id, restaurant_id, status, review_status, "
         "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
         "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
-        "video_extra, "  -- v7.0 新增：视频扩展信息 JSON
+        "video_extra, "  # v7.0 新增：视频扩展信息 JSON
         "reviewed_at, created_at, authors(name, avatar_url)"
     )
 
