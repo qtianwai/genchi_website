@@ -1,6 +1,6 @@
 // 收藏页面（v5.0 完全重写）
 // 合并原【博主】Tab 和【收藏】Tab 为统一入口
-// 上半部分：关注的博主列表（含自己）
+// 上半部分：关注的博主列表（不含自己，自己在店铺列表页管理）
 // 下半部分：收藏的店铺列表（左滑操作 + 卡片图标）
 
 import SwiftUI
@@ -35,19 +35,7 @@ struct FavoritesView: View {
 
                 // 关注的博主区域
                 Section("关注的博主") {
-                    // 自己（第一行，点击进入店铺列表页）
-                    NavigationLink {
-                        RestaurantListView()
-                    } label: {
-                        authorRow(
-                            avatarURL: authState.avatarURL,
-                            name: authState.nickname,
-                            subtitle: "我",
-                            isMe: true
-                        )
-                    }
-
-                    // 已关注博主列表
+                    // 已关注博主列表（不显示用户自己）
                     ForEach(filteredAuthors) { author in
                         NavigationLink {
                             AuthorDetailView(author: author)
@@ -132,6 +120,14 @@ struct FavoritesView: View {
             .listStyle(.insetGrouped)
             .navigationTitle("收藏")
             .toolbar {
+                // 左上角返回按钮 → 跳转到店铺列表页
+                ToolbarItem(placement: .navigationBarLeading) {
+                    NavigationLink {
+                        RestaurantListView()
+                    } label: {
+                        Image(systemName: "list.bullet")
+                    }
+                }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
                         withAnimation { showSearch.toggle() }

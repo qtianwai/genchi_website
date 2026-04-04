@@ -6,6 +6,7 @@ import SwiftUI
 
 struct RestaurantListView: View {
     @EnvironmentObject var authState: AuthState
+    @Environment(\.dismiss) private var dismiss
 
     // 数据
     @State private var allCount = 0
@@ -31,11 +32,9 @@ struct RestaurantListView: View {
                     groupRow(icon: "square.grid.2x2", title: "全部店铺", count: allCount, color: .blue)
                 }
 
-                NavigationLink {
-                    GroupRestaurantListView(
-                        title: "收藏的店铺",
-                        groupType: .favorites
-                    )
+                // 收藏的店铺 → 直接返回收藏页（收藏页本身就展示收藏店铺列表）
+                Button {
+                    dismiss()
                 } label: {
                     groupRow(icon: "bookmark.fill", title: "收藏的店铺", count: favCount, color: .orange)
                 }
@@ -126,18 +125,26 @@ struct RestaurantListView: View {
         isLoading = true
         do {
             // 并行加载各项数据
+            async let mapTask = APIService.shared.getMapRestaurants(userId: authState.userId)
             async let favsTask = APIService.shared.getFavorites(userId: authState.userId)
             async let avoidedTask = APIService.shared.getAvoidedRestaurants(userId: authState.userId)
             async let groupsTask = APIService.shared.getGroups(userId: authState.userId)
 
+            let mapResp = try await mapTask
             let favs = try await favsTask
             let avoided = try await avoidedTask
             let groups = try await groupsTask
 
             favCount = favs.count
             avoidedCount = avoided.count
-            // 全部 = 收藏 + 避雷（去重后的总数，简化处理）
-            let allIds = Set(favs.map { $0.restaurant_id } + avoided.map { $0.restaurant_id })
+            // 全部店铺 = 地图上所有可见店铺（博主推荐 + 用户自建推荐，去重）
+            var allIds = Set<String>()
+            for r in mapResp.restaurants {
+                allIds.insert(r.restaurant_id)
+            }
+            for r in mapResp.user_restaurants {
+                allIds.insert(r.restaurant_id)
+            }
             allCount = allIds.count
             customGroups = groups
         } catch {
@@ -244,16 +251,15 @@ struct GroupRestaurantListView: View {
         do {
             switch groupType {
             case .all:
-                // 合并收藏和避雷的店铺（去重）
-                let favs = try await APIService.shared.getFavorites(userId: authState.userId)
-                let avoided = try await APIService.shared.getAvoidedRestaurants(userId: authState.userId)
+                // 全部店铺 = 地图上所有可见店铺（博主推荐 + 用户自建推荐，去重）
+                let mapResp = try await APIService.shared.getMapRestaurants(userId: authState.userId)
                 var seen = Set<String>()
                 var all: [Restaurant] = []
-                for f in favs {
-                    if let r = f.restaurants, seen.insert(r.id).inserted { all.append(r) }
+                for item in mapResp.restaurants {
+                    if let r = item.restaurants, seen.insert(r.id).inserted { all.append(r) }
                 }
-                for a in avoided {
-                    if let r = a.restaurants, seen.insert(r.id).inserted { all.append(r) }
+                for item in mapResp.user_restaurants {
+                    if let r = item.restaurants, seen.insert(r.id).inserted { all.append(r) }
                 }
                 restaurants = all
             case .favorites:
