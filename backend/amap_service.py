@@ -55,7 +55,7 @@ async def _search_amap(keywords: str, city: str, offset: int = 5) -> list[dict]:
         "output": "json",
         "offset": offset,
         "page": 1,
-        "extensions": "base",
+        "extensions": "all",   # all 模式可返回人均消费(biz_ext.avgprice)和图片(photos)
     }
     # 城市有效时才加城市限制（"未知"/"" 不传，避免搜索范围错误）
     if city and city not in ("未知", "unknown"):
@@ -81,6 +81,15 @@ def _parse_poi(poi: dict, city: str) -> dict | None:
         return None
     lng, lat = location.split(",", 1)
     try:
+        # 提取人均消费（extensions=all 时 biz_ext.avgprice 有值，单位：元）
+        biz_ext = poi.get("biz_ext", {}) or {}
+        avg_price_raw = biz_ext.get("avgprice", "")
+        avg_price = int(avg_price_raw) if avg_price_raw and avg_price_raw.isdigit() else None
+
+        # 提取第一张图片 URL（extensions=all 时 photos 为列表）
+        photos = poi.get("photos", []) or []
+        photo_url = photos[0].get("url", "") if photos else ""
+
         return {
             "name": poi.get("name", ""),
             "address": poi.get("address", ""),
@@ -88,6 +97,8 @@ def _parse_poi(poi: dict, city: str) -> dict | None:
             "longitude": float(lng),
             "amap_id": poi.get("id", ""),
             "city": poi.get("cityname", city) or city,
+            "avg_price": avg_price,       # 人均消费（元），无数据时为 None
+            "photo_url": photo_url,       # 店铺封面图 URL，无数据时为空字符串
         }
     except ValueError:
         return None
@@ -279,6 +290,11 @@ async def search_restaurant_for_review(name: str, city: str) -> list[dict]:
         lng, lat = location.split(",", 1)
         try:
             amap_type = poi.get("type", "")
+            biz_ext = poi.get("biz_ext", {}) or {}
+            avg_price_raw = biz_ext.get("avgprice", "")
+            avg_price = int(avg_price_raw) if avg_price_raw and avg_price_raw.isdigit() else None
+            photos = poi.get("photos", []) or []
+            photo_url = photos[0].get("url", "") if photos else ""
             candidates.append({
                 "amap_id": poi.get("id", ""),
                 "name": poi.get("name", ""),
@@ -288,6 +304,8 @@ async def search_restaurant_for_review(name: str, city: str) -> list[dict]:
                 "longitude": float(lng),
                 "category_raw": amap_type,
                 "category_mapped": map_amap_category(amap_type),
+                "avg_price": avg_price,   # 人均消费（元）
+                "photo_url": photo_url,   # 店铺封面图 URL
             })
         except ValueError:
             continue

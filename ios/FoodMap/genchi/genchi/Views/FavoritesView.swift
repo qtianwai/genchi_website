@@ -166,13 +166,27 @@ struct FavoriteRow: View {
 
     var body: some View {
         HStack(spacing: DS.Spacing.md) {
-            // 分类图标
+            // 店铺图片（有图时显示，无图时显示分类图标占位）
             ZStack {
                 RoundedRectangle(cornerRadius: DS.Radius.md)
                     .fill(accentColor.opacity(0.12))
-                    .frame(width: 44, height: 44)
-                Image(systemName: "fork.knife")
-                    .foregroundColor(accentColor)
+                    .frame(width: 56, height: 56)
+                if let photoUrl = restaurant.photo_url, !photoUrl.isEmpty {
+                    AsyncImage(url: URL(string: photoUrl)) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                        default:
+                            Image(systemName: "fork.knife")
+                                .foregroundColor(accentColor)
+                        }
+                    }
+                    .frame(width: 56, height: 56)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
+                } else {
+                    Image(systemName: "fork.knife")
+                        .foregroundColor(accentColor)
+                }
             }
 
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
@@ -184,10 +198,22 @@ struct FavoriteRow: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
-                if let category = restaurant.category {
-                    Text(category)
-                        .font(.caption2)
-                        .foregroundColor(accentColor)
+                // 分类 + 均价
+                HStack(spacing: DS.Spacing.sm) {
+                    if let category = restaurant.category {
+                        Text(category)
+                            .font(.caption2)
+                            .foregroundColor(accentColor)
+                    }
+                    if let price = restaurant.avg_price {
+                        HStack(spacing: 2) {
+                            Image(systemName: "yensign.circle")
+                                .font(.system(size: 9))
+                            Text("人均 ¥\(price)")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.orange)
+                    }
                 }
             }
 

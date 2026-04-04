@@ -44,6 +44,9 @@ create table if not exists restaurants (
   -- v3.0 新增：人工验证字段
   verified      boolean not null default false,  -- 是否经过人工复核验证
   verified_at   timestamptz,            -- 人工验证时间
+  -- v5.0 新增：高德扩展信息
+  avg_price     integer,                -- 人均消费（元），来自高德 biz_ext.avgprice
+  photo_url     text,                   -- 店铺封面图 URL，来自高德 photos[0].url
   created_at    timestamptz default now()
 );
 

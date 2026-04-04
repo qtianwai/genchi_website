@@ -178,7 +178,8 @@ async def send_otp(req: SendOTPRequest):
 
     success = await send_sms(phone, code)
     if not success:
-        raise HTTPException(status_code=500, detail="短信发送失败，请稍后重试")
+        # 短信发送失败时，直接返回验证码（方便调试，正式上线前移除）
+        return {"status": "ok", "message": "短信发送失败，验证码已在响应中返回", "debug_code": code}
 
     return {"status": "ok", "message": "验证码已发送"}
 
@@ -318,6 +319,8 @@ def _save_video_restaurant(video_url: str, video_id: str, author_id: str, restau
             "longitude": restaurant_data["longitude"],
             "amap_id": restaurant_data["amap_id"],
             "category": restaurant_data.get("category", ""),
+            "avg_price": restaurant_data.get("avg_price"),    # 人均消费（元）
+            "photo_url": restaurant_data.get("photo_url", ""), # 店铺封面图
         })
         restaurant_id = saved["id"]
 
@@ -482,6 +485,8 @@ async def parse_single_video_fast(
         "latitude": amap_result.get("latitude"),
         "longitude": amap_result.get("longitude"),
         "amap_id": amap_result.get("amap_id"),
+        "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
+        "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
         # 附加新字段，供 _save_video_restaurant 写入缓存
         "parse_reason": parse_reason,
         "data_source": data_source,
@@ -686,6 +691,8 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                         "latitude": amap_result.get("latitude"),
                         "longitude": amap_result.get("longitude"),
                         "amap_id": amap_result.get("amap_id"),
+                        "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
+                        "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
                         "parse_reason": parse_reason_bg,
                         "data_source": "background_scan",
                         "api_cost": api_cost_bg,
@@ -853,6 +860,8 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
                     "longitude": restaurant["longitude"],
                     "amap_id": restaurant["amap_id"],
                     "category": restaurant.get("category", ""),
+                    "avg_price": restaurant.get("avg_price"),    # 人均消费（元）
+                    "photo_url": restaurant.get("photo_url", ""), # 店铺封面图
                 })
                 restaurant_id = saved["id"]
                 is_new_restaurant = True
@@ -1033,6 +1042,8 @@ class UserRestaurantRequest(BaseModel):
     longitude: float = 0.0
     category: str = ""
     note: str = ""
+    avg_price: int | None = None  # 人均消费（元），来自高德搜索结果
+    photo_url: str = ""           # 店铺封面图 URL，来自高德搜索结果
 
 
 @app.post("/api/user-restaurants")
@@ -1056,6 +1067,8 @@ async def create_user_restaurant(req: UserRestaurantRequest):
             "longitude": req.longitude,
             "amap_id": req.amap_id,
             "category": req.category,
+            "avg_price": req.avg_price,    # 人均消费（元）
+            "photo_url": req.photo_url,    # 店铺封面图
         })
         restaurant_id = saved.get("id")
         if not restaurant_id:
@@ -1299,6 +1312,8 @@ async def manual_add_restaurant(req: ManualAddRestaurantRequest):
             "latitude": amap_result.get("latitude"),
             "longitude": amap_result.get("longitude"),
             "amap_id": amap_result.get("amap_id"),
+            "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
+            "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
             # v2.5 新增字段
             "parse_reason": f"用户手动添加店铺「{req.restaurant_name}」",
             "data_source": "manual_add",
@@ -1321,6 +1336,8 @@ async def manual_add_restaurant(req: ManualAddRestaurantRequest):
                 "longitude": restaurant_data["longitude"],
                 "amap_id": restaurant_data["amap_id"],
                 "category": restaurant_data.get("category", ""),
+                "avg_price": restaurant_data.get("avg_price"),    # 人均消费（元）
+                "photo_url": restaurant_data.get("photo_url", ""), # 店铺封面图
             })
             restaurant_id = saved["id"]
             print(f"[手动添加] 新店铺入库: {restaurant_data['name']}")

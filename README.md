@@ -1593,3 +1593,56 @@ Python FastAPI、Supabase PostgreSQL + Storage、SwiftUI + PhotosUI
 - `ios/FoodMap/genchi/genchi/Views/MapView.swift`
 - `需求文档&技术方案/产品功能清单.md`
 - `需求文档&技术方案/用户信息自定义实施计划.md`（新增）
+
+---
+
+## 会话记录 - 2026-04-04
+
+### 会话目的
+从高德地图接口获取店铺的人均消费和店铺图片，并存入数据库。
+
+### 完成的主要任务
+- 将高德搜索接口的 `extensions` 参数从 `base` 改为 `all`，解锁扩展字段
+- `_parse_poi` 函数新增提取 `avg_price`（人均消费，来自 `biz_ext.avgprice`）和 `photo_url`（来自 `photos[0].url`）
+- `search_restaurant_for_review` 复核候选列表同步返回两个新字段
+- `restaurants` 表新增 `avg_price integer` 和 `photo_url text` 两列（已执行数据库迁移）
+- `main.py` 所有 `upsert_restaurant` 调用均透传新字段；`UserRestaurantRequest` 新增对应字段
+
+### 关键决策
+- 使用 `extensions=all` 而非 `extensions=base`，一次请求同时获取人均消费和图片，无额外 API 调用成本
+- `avg_price` 存为 `integer`（元），无数据时为 `null`；`photo_url` 存为 `text`，无数据时为空字符串
+- 新字段通过 `upsert` 的 `on_conflict=amap_id` 机制，后续解析同一店铺时会自动更新
+
+### 使用的技术栈
+Python FastAPI、高德地图 POI 搜索 API（extensions=all）、Supabase PostgreSQL
+
+### 修改的文件
+- `backend/amap_service.py`
+- `backend/main.py`
+- `backend/supabase_schema.sql`
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`
+
+---
+
+## 会话记录 - 2026-04-04（二）
+
+### 会话目的
+在地图店铺卡片和我的收藏页面，增加店铺图片和均价显示。
+
+### 完成的主要任务
+- `Models.swift` Restaurant 模型新增 `avg_price: Int?` 和 `photo_url: String?` 字段
+- `MapView.swift` RestaurantCard 在地址行下方新增：店铺封面图（72×72）+ 人均均价胶囊标签
+- `FavoritesView.swift` FavoriteRow 左侧图标区域升级为店铺图片（56×56，无图时回退到图标占位），分类行新增均价标签
+
+### 关键决策
+- 图片和均价均为可选展示：无数据时不占位，保持原有布局不变
+- 收藏行图片尺寸 56×56，地图卡片图片 72×72，与各自卡片比例协调
+- 均价用橙色胶囊标签，与分类标签并排，视觉区分明确
+
+### 使用的技术栈
+SwiftUI AsyncImage、iOS 16+
+
+### 修改的文件
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`
+- `ios/FoodMap/genchi/genchi/Views/FavoritesView.swift`

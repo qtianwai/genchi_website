@@ -395,7 +395,37 @@ struct RestaurantCard: View {
                 }
             }
 
-            // 博主推荐信息（非用户自建时显示）
+            // 店铺图片 + 均价（v5.0 新增）
+            HStack(spacing: DS.Spacing.md) {
+                // 店铺封面图
+                if let photoUrl = restaurant.photo_url, !photoUrl.isEmpty {
+                    AsyncImage(url: URL(string: photoUrl)) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                        default:
+                            Color.gray.opacity(0.15)
+                        }
+                    }
+                    .frame(width: 72, height: 72)
+                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
+                }
+                // 均价标签
+                if let price = restaurant.avg_price {
+                    HStack(spacing: 2) {
+                        Image(systemName: "yensign.circle")
+                            .font(.caption)
+                        Text("人均 ¥\(price)")
+                            .font(.caption)
+                            .fontWeight(.medium)
+                    }
+                    .foregroundColor(.orange)
+                    .padding(.horizontal, DS.Spacing.sm)
+                    .padding(.vertical, 4)
+                    .background(Color.orange.opacity(0.1))
+                    .clipShape(Capsule())
+                }
+            }
             if let author = author {
                 HStack(spacing: DS.Spacing.sm) {
                     AsyncImage(url: URL(string: author.avatar_url ?? "")) { img in

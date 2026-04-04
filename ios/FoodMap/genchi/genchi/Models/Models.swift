@@ -28,6 +28,8 @@ struct Restaurant: Identifiable, Codable, Hashable {
     let amap_id: String?
     let category: String?
     let verified: Bool?      // 是否经过人工验证（v3.0 新增，可选兼容旧数据）
+    let avg_price: Int?      // 人均消费（元），来自高德 biz_ext.avgprice（v5.0 新增）
+    let photo_url: String?   // 店铺封面图 URL，来自高德 photos[0].url（v5.0 新增）
 
     // 计算属性：转换为 CoreLocation 坐标（地图标注用）
     var coordinate: CLLocationCoordinate2D? {
