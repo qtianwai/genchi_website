@@ -28,6 +28,7 @@ struct FoodMapApp: App {
                         .environmentObject(authState)
                 }
             }
+            .preferredColorScheme(.light)
         }
     }
 }

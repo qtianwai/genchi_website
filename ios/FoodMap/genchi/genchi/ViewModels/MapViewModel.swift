@@ -200,8 +200,11 @@ class MapViewModel: ObservableObject {
     }
 
     // MARK: - Filtering / Search
-    func filteredItems(userLocation: CLLocationCoordinate2D?) -> [MapDisplayItem] {
-        var items = allItems
+    func filteredItems(
+        userLocation: CLLocationCoordinate2D?,
+        hiddenRestaurantIds: Set<String> = []
+    ) -> [MapDisplayItem] {
+        var items = allItems.filter { !hiddenRestaurantIds.contains($0.restaurantId) }
 
         // Author filter
         switch filter.author {
@@ -253,12 +256,12 @@ class MapViewModel: ObservableObject {
         return items
     }
 
-    func searchResults(limit: Int = 8) -> [MapDisplayItem] {
+    func searchResults(limit: Int = 8, hiddenRestaurantIds: Set<String> = []) -> [MapDisplayItem] {
         let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !keyword.isEmpty else { return [] }
 
         var ranked: [(item: MapDisplayItem, score: Int)] = []
-        for item in allItems {
+        for item in allItems where !hiddenRestaurantIds.contains(item.restaurantId) {
             let name = item.restaurant.name
             let authorName = item.author?.name ?? ""
 
@@ -282,8 +285,14 @@ class MapViewModel: ObservableObject {
     }
 
     // MARK: - Clustering
-    func clusteredItems(userLocation: CLLocationCoordinate2D?) -> [MapCluster] {
-        let items = filteredItems(userLocation: userLocation)
+    func clusteredItems(
+        userLocation: CLLocationCoordinate2D?,
+        hiddenRestaurantIds: Set<String> = []
+    ) -> [MapCluster] {
+        let items = filteredItems(
+            userLocation: userLocation,
+            hiddenRestaurantIds: hiddenRestaurantIds
+        )
         guard shouldCluster else {
             return items.map { item in
                 MapCluster(id: "single:\(item.id)", coordinate: item.coordinate, members: [item])
@@ -317,11 +326,20 @@ class MapViewModel: ObservableObject {
                 members: members
             )
         }
+        .sorted { lhs, rhs in
+            if lhs.isCluster != rhs.isCluster { return lhs.isCluster && !rhs.isCluster }
+            return lhs.count > rhs.count
+        }
     }
 
     private var shouldCluster: Bool {
         guard let region = visibleRegion else { return false }
         return region.span.latitudeDelta >= 0.09
+    }
+
+    var shouldShowStoreName: Bool {
+        guard let region = visibleRegion else { return false }
+        return region.span.latitudeDelta <= 0.03
     }
 
     // MARK: - Camera
@@ -349,13 +367,26 @@ class MapViewModel: ObservableObject {
         )
     }
 
-    func zoomIn(on cluster: MapCluster) {
-        let current = visibleRegion?.span.latitudeDelta ?? 0.12
-        let next = max(current / 2.2, 0.02)
+    func expandCluster(_ cluster: MapCluster) {
+        guard !cluster.members.isEmpty else { return }
+        let latitudes = cluster.members.map(\.coordinate.latitude)
+        let longitudes = cluster.members.map(\.coordinate.longitude)
+
+        guard let minLat = latitudes.min(),
+              let maxLat = latitudes.max(),
+              let minLng = longitudes.min(),
+              let maxLng = longitudes.max() else {
+            return
+        }
+
+        let latSpan = max((maxLat - minLat) * 1.8, 0.015)
+        let lngSpan = max((maxLng - minLng) * 1.8, 0.015)
+        let targetSpan = min(max(latSpan, lngSpan), 0.08)
+
         mapCameraPosition = .region(
             MKCoordinateRegion(
                 center: cluster.coordinate,
-                span: MKCoordinateSpan(latitudeDelta: next, longitudeDelta: next)
+                span: MKCoordinateSpan(latitudeDelta: targetSpan, longitudeDelta: targetSpan)
             )
         )
     }

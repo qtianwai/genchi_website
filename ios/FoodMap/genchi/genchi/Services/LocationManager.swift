@@ -15,6 +15,8 @@ class LocationManager: NSObject, ObservableObject {
     @Published var errorMessage: String?
     // 位置更新计数器（用于触发 onChange）
     @Published var locationUpdateCount: Int = 0
+    // 用户朝向（0-360度）
+    @Published var heading: CLLocationDirection? = nil
 
     private let locationManager = CLLocationManager()
 
@@ -22,6 +24,7 @@ class LocationManager: NSObject, ObservableObject {
         super.init()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        locationManager.headingFilter = 5
         authorizationStatus = locationManager.authorizationStatus
     }
 
@@ -33,11 +36,15 @@ class LocationManager: NSObject, ObservableObject {
     // 开始定位
     func startUpdatingLocation() {
         locationManager.startUpdatingLocation()
+        if CLLocationManager.headingAvailable() {
+            locationManager.startUpdatingHeading()
+        }
     }
 
     // 停止定位
     func stopUpdatingLocation() {
         locationManager.stopUpdatingLocation()
+        locationManager.stopUpdatingHeading()
     }
 }
 
@@ -47,7 +54,20 @@ extension LocationManager: CLLocationManagerDelegate {
         guard let location = locations.last else { return }
         Task { @MainActor in
             self.userLocation = location.coordinate
+            if location.course >= 0 {
+                self.heading = location.course
+            }
             self.locationUpdateCount += 1
+        }
+    }
+
+    nonisolated func locationManager(_ manager: CLLocationManager, didUpdateHeading newHeading: CLHeading) {
+        Task { @MainActor in
+            if newHeading.trueHeading >= 0 {
+                self.heading = newHeading.trueHeading
+            } else if newHeading.magneticHeading >= 0 {
+                self.heading = newHeading.magneticHeading
+            }
         }
     }
 
