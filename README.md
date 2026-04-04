@@ -1974,3 +1974,88 @@ Python httpx、Supabase REST API、SwiftUI AsyncImage
 - `README.md`（追加本会话记录）
 
 ---
+
+## 会话记录 - 2026-04-04（修复 Xcode 编译错误）
+
+### 会话目的
+修复 Xcode 报错：`Invalid redeclaration of 'UserMapViewModel'` 和 `Ambiguous use of 'init()'`。
+
+### 完成的主要任务
+- 删除 `UserMapView.swift` 中重复的 `UserMapViewModel` 类定义（保留独立的 `ViewModels/UserMapViewModel.swift`）
+- 将 `UserMapView.swift` 中的 `loadMapData` 调用统一改为 `loadMapInfo`
+- 给 `UserMapViewModel.swift` 补上 `subscribeMap` 方法
+- 修正 `is_public`（Bool 类型）的判断语法（去掉多余的 `if let` 解包）
+
+### 修改的文件
+- `ios/FoodMap/genchi/genchi/Views/UserMapView.swift`
+- `ios/FoodMap/genchi/genchi/ViewModels/UserMapViewModel.swift`
+
+---
+
+## 会话记录 - 2026-04-04：修复收藏页面点击失效
+
+### 主要目的
+修复收藏页面所有点击功能失效的问题（无法点击博主进入详情、无法点击店铺进入详情等）。
+
+### 完成的任务
+定位并修复了 `FavoritesCard` 组件中渐变装饰 overlay 层拦截触摸事件的 bug。
+
+### 关键决策和解决方案
+`FavoritesCard` 的 `.fill(FavoritesTheme.overlay)` overlay 覆盖在卡片内容之上，默认拦截所有触摸事件。添加 `.allowsHitTesting(false)` 让触摸事件穿透装饰层。
+
+### 技术栈
+SwiftUI
+
+### 修改的文件
+- `ios/FoodMap/genchi/genchi/Views/FavoritesModuleUI.swift`
+
+---
+
+## 会话记录 - 2026-04-04：修复 AI Prompt 规则冲突导致视频无法解析出店铺
+
+### 主要目的
+分析抖音视频（"上海超级巨无敌好吃的不改良重庆火锅"）无法解析出店铺的原因并修复。
+
+### 完成的任务
+- 定位根因：AI Prompt 第 9 条规则（"标题中只有食物品类描述时返回 null"）与第 12 条规则（"评论高频提到同一店铺名时可给出答案"）存在冲突，AI 优先执行了第 9 条返回 null，忽略了评论中 259 赞高热评论明确指出的店名"最山城"
+- 修复 `ai_extractor.py` 中 `extract_restaurants_priority` 和 `extract_restaurants_with_replies` 两个函数的 Prompt 第 9/6 条规则，明确标题无店名但评论有高赞店名时应按评论高频识别规则处理，不返回 null
+- 清除该视频的缓存记录，允许重新解析
+
+### 关键决策和解决方案
+问题本质是 Prompt 规则间的优先级冲突：第 9 条的 null 规则过于绝对，没有为第 12 条的评论补充识别留出例外。修复方式是在第 9 条中增加显式引用，指向第 12 条规则。
+
+### 技术栈
+AI Prompt 工程（通义千问 qwen-plus）
+
+### 修改的文件
+- `backend/ai_extractor.py`（两处 Prompt 规则修复）
+
+---
+
+## 会话记录 - 2026-04-04：复核模块纳入 AI 解析失败记录
+
+### 主要目的
+修复复核模块看不到 AI 解析失败（status=failed）数据的问题，让所有探店类视频无论解析成功或失败都纳入人工复核范围。
+
+### 完成的任务
+- 后端 `db.py`：`get_review_list` 查询条件从 `.eq("status", "completed")` 改为 `.in_("status", ["completed", "failed"])`，待复核和已复核两个 Tab 均已修改；select 字段新增 `status`
+- 后端 `db.py`：`admin_correct_restaurant` 人工修正时同步将 `status` 更新为 `"completed"`（原来不更新，导致 failed 记录修正后仍为 failed）
+- iOS `Models.swift`：`ReviewItem` 新增 `status` 字段和 `isFailed` 计算属性
+- iOS `ReviewListView.swift`：待复核列表行新增紫色「AI失败」标签，区分 failed 和 completed 记录
+- iOS `ReviewDetailView.swift`：详情页优先级区域新增紫色「AI解析失败」标签和「需人工兜底」提示文案
+- 更新复核功能实施计划文档（v1.3 → v1.4）
+
+### 关键决策和解决方案
+问题根因：`get_review_list` 只查询 `status="completed"` 的记录，而 AI 解析失败的记录 `status="failed"` 被完全排除在复核范围外。修复方式是将查询条件改为同时包含 completed 和 failed，并在 iOS 端用紫色标签区分两种状态，让管理员一眼识别哪些需要人工兜底。
+
+### 技术栈
+Python FastAPI、SwiftUI、Supabase PostgreSQL
+
+### 修改的文件
+- `backend/db.py`
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/ReviewListView.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/ReviewDetailView.swift`
+- `需求文档&技术方案/后台人工复核功能实施计划.md`
+
+---

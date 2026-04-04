@@ -3,10 +3,15 @@
 
 import SwiftUI
 
+// Universal Link 导航用的 Identifiable 包装
+struct UserMapDestination: Identifiable {
+    let id: String  // user_id
+}
+
 @main
 struct FoodMapApp: App {
     @StateObject private var authState = AuthState()
-    @State private var openUserMapId: String? = nil  // v6.0 新增：Universal Link 导航
+    @State private var openUserMapDestination: UserMapDestination? = nil  // v6.0：Universal Link 导航
 
     // TODO: 微信开放平台审核通过后取消注释
     // init() {
@@ -24,12 +29,9 @@ struct FoodMapApp: App {
                 } else if authState.isLoggedIn {
                     MainTabView()
                         .environmentObject(authState)
-                        .sheet(item: Binding(
-                            get: { openUserMapId.map { NSString(string: $0) as NSString } },
-                            set: { openUserMapId = $0 as String? }
-                        )) { userId in
+                        .sheet(item: $openUserMapDestination) { dest in
                             NavigationStack {
-                                UserMapView(targetUserId: userId as String)
+                                UserMapView(targetUserId: dest.id)
                             }
                         }
                 } else {
@@ -40,7 +42,7 @@ struct FoodMapApp: App {
             .preferredColorScheme(.light)
             .onOpenURL { url in  // v6.0 新增：处理 Universal Link
                 if let userId = parseMapUserId(from: url) {
-                    openUserMapId = userId
+                    openUserMapDestination = UserMapDestination(id: userId)
                 }
             }
         }

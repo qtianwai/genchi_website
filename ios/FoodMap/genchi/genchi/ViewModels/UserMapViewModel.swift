@@ -18,8 +18,8 @@ class UserMapViewModel: ObservableObject {
         do {
             let info = try await APIService.shared.getUserMapInfo(targetUserId: targetUserId)
 
-            // 检查是否为私密地图
-            if let isPrivate = info.is_public, !isPrivate {
+            // 检查是否为私密地图（is_public == false 表示私密）
+            if !info.is_public {
                 self.isPrivate = true
                 self.mapInfo = nil
             } else {
@@ -55,5 +55,13 @@ class UserMapViewModel: ObservableObject {
 
     func refresh(targetUserId: String) async {
         await loadMapInfo(targetUserId: targetUserId)
+    }
+
+    // 订阅他人地图
+    func subscribeMap(targetUserId: String) async throws {
+        guard let userId = UserDefaults.standard.string(forKey: "user_id") else {
+            throw NSError(domain: "UserMapViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "未登录"])
+        }
+        try await APIService.shared.subscribeUserMap(subscriberId: userId, targetUserId: targetUserId)
     }
 }

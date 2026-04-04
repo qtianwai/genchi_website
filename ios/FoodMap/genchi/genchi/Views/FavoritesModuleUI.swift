@@ -203,6 +203,7 @@ struct FavoritesCard<Content: View>: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .fill(FavoritesTheme.overlay)
                     .opacity(0.55)
+                    .allowsHitTesting(false) // 让触摸事件穿透装饰层，避免拦截点击
             }
             .shadow(color: Color.black.opacity(0.05), radius: 10, y: 4)
     }

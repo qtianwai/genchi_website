@@ -113,7 +113,7 @@ struct UserMapView: View {
                                     verified: nil,
                                     avg_price: nil,
                                     photo_url: restaurant.photo_url
-                                ), isReadOnly: true)) {
+                                ), restaurantId: restaurant.id)) {
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(restaurant.name)
                                             .font(.system(size: 15, weight: .semibold))
@@ -136,7 +136,7 @@ struct UserMapView: View {
                         }
                         .listStyle(.plain)
                         .refreshable {
-                            await viewModel.loadMapData(targetUserId: targetUserId)
+                            await viewModel.loadMapInfo(targetUserId: targetUserId)
                         }
                     }
                 }
@@ -156,7 +156,7 @@ struct UserMapView: View {
                             .font(.system(size: 12))
                             .foregroundColor(.gray)
                             .multilineTextAlignment(.center)
-                        Button(action: { Task { await viewModel.loadMapData(targetUserId: targetUserId) } }) {
+                        Button(action: { Task { await viewModel.loadMapInfo(targetUserId: targetUserId) } }) {
                             Text("重试")
                                 .font(.system(size: 14, weight: .semibold))
                                 .foregroundColor(.orange)
@@ -186,7 +186,7 @@ struct UserMapView: View {
         }
         .onAppear {
             Task {
-                await viewModel.loadMapData(targetUserId: targetUserId)
+                await viewModel.loadMapInfo(targetUserId: targetUserId)
             }
         }
     }
@@ -209,53 +209,6 @@ struct UserMapView: View {
     }
 }
 
-@MainActor
-class UserMapViewModel: ObservableObject {
-    @Published var mapInfo: UserMapInfo?
-    @Published var restaurants: [UserMapRestaurantItem] = []
-    @Published var isLoading = false
-    @Published var isPrivate = false
-    @Published var errorMessage: String?
-
-    func loadMapData(targetUserId: String) async {
-        isLoading = true
-        errorMessage = nil
-
-        do {
-            // 获取地图基本信息
-            let info = try await APIService.shared.getUserMapInfo(targetUserId: targetUserId)
-            if info.user_id.isEmpty {
-                isPrivate = true
-                isLoading = false
-                return
-            }
-
-            self.mapInfo = info
-
-            // 获取店铺列表
-            let response = try await APIService.shared.getUserMapRestaurants(targetUserId: targetUserId)
-            if response.is_private == true {
-                isPrivate = true
-            } else {
-                self.restaurants = response.restaurants
-            }
-        } catch {
-            errorMessage = error.localizedDescription
-        }
-
-        isLoading = false
-    }
-
-    func subscribeMap(targetUserId: String) async throws {
-        // 需要从 AuthState 获取当前用户 ID
-        // 这里假设通过某种方式获取到 userId
-        guard let userId = UserDefaults.standard.string(forKey: "user_id") else {
-            throw NSError(domain: "UserMapViewModel", code: -1, userInfo: [NSLocalizedDescriptionKey: "未登录"])
-        }
-
-        try await APIService.shared.subscribeUserMap(subscriberId: userId, targetUserId: targetUserId)
-    }
-}
 
 #Preview {
     NavigationStack {

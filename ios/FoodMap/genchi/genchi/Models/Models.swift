@@ -188,6 +188,7 @@ struct ReviewItem: Identifiable, Codable {
     let video_url: String?
     let author_id: String?
     let restaurant_id: String?
+    let status: String?         // "completed" 或 "failed"（解析状态）
     let review_status: String?
     let review_priority: String?  // "P0" 或 "P1"
     let parse_reason: String?
@@ -208,6 +209,9 @@ struct ReviewItem: Identifiable, Codable {
 
     // P0：AI 未识别（restaurant_id 为 nil）
     var isP0: Bool { restaurant_id == nil }
+
+    // AI 解析失败（status == "failed"），需要人工兜底
+    var isFailed: Bool { status == "failed" }
 
     // 抖音视频跳转 URL（与地图卡片 VideoThumbnail 保持一致，用路径格式）
     var douyinAppURL: URL? {
@@ -346,37 +350,7 @@ struct GroupRestaurant: Identifiable, Codable {
 // ─────────────────────────────────────────
 // v6.0 个人专属美食地图 - 数据模型
 // ─────────────────────────────────────────
-
-// 推荐来源类型（一个店铺可能来自多个来源）
-enum RecommendSourceType: Hashable {
-    case author(Author)                                    // 博主推荐
-    case selfCreated                                       // 自建推荐
-    case subscribedUser(userId: String, nickname: String, avatarUrl: String?)  // 订阅用户推荐
-}
-
-// 地图标注项（扩展版，包含所有推荐来源）
-struct MapDisplayItem: Identifiable, Hashable {
-    let id: String                          // restaurant_id
-    let restaurant_id: String
-    let name: String
-    let address: String?
-    let city: String?
-    let category: String?
-    let latitude: Double?
-    let longitude: Double?
-    let photo_url: String?
-    let avg_price: Int?
-    let verified: Bool?
-
-    // v6.0 新增：所有推荐来源
-    var recommendedBy: [RecommendSourceType] = []
-
-    // 计算属性：转换为 CoreLocation 坐标
-    var coordinate: CLLocationCoordinate2D? {
-        guard let lat = latitude, let lng = longitude else { return nil }
-        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
-    }
-}
+// 注意：RecommendSourceType、MapDisplayItem 定义在 MapViewModel.swift 中，避免重复声明
 
 // 用户地图基本信息
 struct UserMapInfo: Codable {

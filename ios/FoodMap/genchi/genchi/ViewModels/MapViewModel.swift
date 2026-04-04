@@ -11,6 +11,36 @@ private enum MapZoomBucket {
     case clusters
 }
 
+private actor AsyncSemaphore {
+    private var value: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(value: Int) {
+        self.value = value
+    }
+
+    func wait() async {
+        if value > 0 {
+            value -= 1
+            return
+        }
+
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    func signal() {
+        if waiters.isEmpty {
+            value += 1
+            return
+        }
+
+        let continuation = waiters.removeFirst()
+        continuation.resume()
+    }
+}
+
 enum MapAuthorFilter: Hashable {
     case all
     case mine
@@ -483,7 +513,6 @@ class MapViewModel: ObservableObject {
             for sub in enabledSubs {
                 group.addTask {
                     await semaphore.wait()
-                    defer { semaphore.signal() }
 
                     do {
                         let data = try await APIService.shared.getUserMapRestaurants(
@@ -500,6 +529,8 @@ class MapViewModel: ObservableObject {
                     } catch {
                         print("[订阅地图] 加载 \(sub.target_user_id) 失败: \(error)")
                     }
+
+                    await semaphore.signal()
                 }
             }
         }
@@ -529,7 +560,7 @@ class MapViewModel: ObservableObject {
         try await APIService.shared.unsubscribeUserMap(subscriberId: subscriberId, targetUserId: targetUserId)
         // 取消订阅后，移除本地数据并刷新列表
         await MainActor.run {
-            self.subscribedMapData.removeValue(forKey: targetUserId)
+            _ = self.subscribedMapData.removeValue(forKey: targetUserId)
         }
         await refreshSubscriptions(userId: subscriberId)
     }
@@ -565,6 +596,20 @@ class MapViewModel: ObservableObject {
     func mergedAllItems(hiddenRestaurantIds: Set<String> = []) -> [MapDisplayItem] {
         var itemsByRestaurantId: [String: MapDisplayItem] = [:]
         var itemsByCoord: [String: MapDisplayItem] = [:]
+
+        func appendRecommendation(
+            _ source: RecommendSourceType,
+            to existingItem: MapDisplayItem,
+            restaurantId: String,
+            coordKey: String
+        ) {
+            var updated = existingItem
+            if !updated.recommendedBy.contains(source) {
+                updated.recommendedBy.append(source)
+            }
+            itemsByRestaurantId[restaurantId] = updated
+            itemsByCoord[coordKey] = updated
+        }
 
         // 1. 添加自建推荐（优先级最高）
         for item in userRestaurants {
@@ -602,11 +647,9 @@ class MapViewModel: ObservableObject {
             let key = nearbyKey(coordinate: coordinate, name: restaurant.name)
 
             if let existing = itemsByRestaurantId[item.restaurant_id] {
-                // 已存在，追加来源
-                existing.recommendedBy.append(.author(author))
+                appendRecommendation(.author(author), to: existing, restaurantId: item.restaurant_id, coordKey: key)
             } else if let existing = itemsByCoord[key] {
-                // 坐标兜底匹配，追加来源
-                existing.recommendedBy.append(.author(author))
+                appendRecommendation(.author(author), to: existing, restaurantId: existing.restaurantId, coordKey: key)
             } else {
                 // 新增
                 var displayItem = MapDisplayItem(
@@ -660,14 +703,18 @@ class MapViewModel: ObservableObject {
                 )
 
                 if let existing = itemsByRestaurantId[restaurant.restaurant_id] {
-                    // 已存在，追加来源
-                    existing.recommendedBy.append(
-                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)
+                    appendRecommendation(
+                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url),
+                        to: existing,
+                        restaurantId: restaurant.restaurant_id,
+                        coordKey: key
                     )
                 } else if let existing = itemsByCoord[key] {
-                    // 坐标兜底匹配，追加来源
-                    existing.recommendedBy.append(
-                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)
+                    appendRecommendation(
+                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url),
+                        to: existing,
+                        restaurantId: existing.restaurantId,
+                        coordKey: key
                     )
                 } else {
                     // 新增

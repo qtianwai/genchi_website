@@ -102,6 +102,18 @@ struct ReviewRowView: View {
                     .background(item.isP0 ? Color.red : Color.orange)
                     .cornerRadius(4)
 
+                // AI 解析失败标签（failed 状态显示）
+                if item.isFailed {
+                    Text("AI失败")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.purple)
+                        .cornerRadius(4)
+                }
+
                 // 博主名
                 Text(item.authors?.name ?? "未知博主")
                     .font(.caption)

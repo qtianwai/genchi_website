@@ -21,7 +21,7 @@ class LocationManager: NSObject, ObservableObject {
     private let locationManager = CLLocationManager()
     private let simulatorPreviewCoordinate = CLLocationCoordinate2D(
         latitude: 31.321631,
-        longitude: 121.591371
+        longitude: 121.591266
     )
 
     override init() {

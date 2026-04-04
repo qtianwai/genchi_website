@@ -498,13 +498,14 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
     """
     获取复核列表。
     tab='pending'：待复核（review_status IN pending/skipped），P0 优先，同级按 created_at 倒序。
+                   包含 completed 和 failed 状态的记录（AI 解析失败也需要人工兜底）。
     tab='reviewed'：已复核（review_status IN approved/corrected/confirmed），按 reviewed_at 倒序。
     返回 {items, total, page, page_size}
     """
     offset = (page - 1) * page_size
 
     select_fields = (
-        "id, video_id, video_url, author_id, restaurant_id, review_status, "
+        "id, video_id, video_url, author_id, restaurant_id, status, review_status, "
         "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
         "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
         "reviewed_at, created_at, authors(name, avatar_url)"
@@ -516,18 +517,19 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
             supabase.table("video_parse_cache")
             .select(select_fields, count="exact")
             .in_("review_status", ["approved", "corrected", "confirmed"])
-            .eq("status", "completed")
+            .in_("status", ["completed", "failed"])
             .order("reviewed_at", desc=True)
             .range(offset, offset + page_size - 1)
             .execute()
         )
     else:
         # 待复核：pending / skipped，P0（restaurant_id IS NULL）在前
+        # 包含 completed 和 failed 状态（AI 解析失败的记录也需要人工复核兜底）
         result = (
             supabase.table("video_parse_cache")
             .select(select_fields, count="exact")
             .in_("review_status", ["pending", "skipped"])
-            .eq("status", "completed")
+            .in_("status", ["completed", "failed"])
             .order("restaurant_id", desc=False, nullsfirst=True)  # NULL 在前（P0）
             .order("created_at", desc=True)
             .range(offset, offset + page_size - 1)
@@ -696,8 +698,9 @@ def admin_correct_restaurant(
             "video_id": video_id,
         }).execute()
 
-    # 更新 video_parse_cache
+    # 更新 video_parse_cache（人工修正后 status 统一设为 completed，即使原来是 failed）
     supabase.table("video_parse_cache").update({
+        "status": "completed",
         "restaurant_id": restaurant_id,
         "restaurant_name": name,
         "restaurant_address": address,

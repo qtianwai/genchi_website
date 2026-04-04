@@ -113,21 +113,21 @@ struct ParseLinkSheet: View {
 
                         VStack(alignment: .leading, spacing: DS.Spacing.md) {
                             sectionHeader(
-                                title: "保存范围",
-                                subtitle: "决定是顺带关注这位推荐人，还是只留下当前店铺"
+                                title: "添加方式",
+                                subtitle: "选择关注博主全部推荐，或仅添加本店铺"
                             )
 
                             ScopeOptionRow(
                                 icon: "person.crop.circle.badge.plus",
-                                title: "一起收下这位推荐人",
-                                subtitle: "除了当前店铺，也同步带入这位推荐人的更多探店内容",
+                                title: "关注博主全部推荐",
+                                subtitle: "解析博主所有探店视频，自动关注博主",
                                 isSelected: selectedScope == .followAll
                             ) { selectedScope = .followAll }
 
                             ScopeOptionRow(
                                 icon: "fork.knife.circle",
-                                title: "只保存这家店",
-                                subtitle: "只导入当前视频识别出的店铺，不额外关注推荐人",
+                                title: "仅添加本店铺",
+                                subtitle: "只添加这条视频的店铺，不关注博主",
                                 isSelected: selectedScope == .singleOnly
                             ) { selectedScope = .singleOnly }
                         }

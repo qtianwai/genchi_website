@@ -37,7 +37,18 @@ struct ReviewDetailView: View {
                             .padding(.vertical, 4)
                             .background(item.isP0 ? Color.red : Color.orange)
                             .cornerRadius(6)
-                        Text(item.isP0 ? "AI 未识别店铺" : "AI 已识别，待确认")
+                        // AI 解析失败标签
+                        if item.isFailed {
+                            Text("AI解析失败")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.purple)
+                                .cornerRadius(6)
+                        }
+                        Text(item.isFailed ? "AI 解析失败，需人工兜底" : (item.isP0 ? "AI 未识别店铺" : "AI 已识别，待确认"))
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         Spacer()

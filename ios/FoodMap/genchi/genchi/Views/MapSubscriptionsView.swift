@@ -141,59 +141,6 @@ struct MapSubscriptionsView: View {
     }
 }
 
-// ViewModel for MapSubscriptionsView
-@MainActor
-class MapSubscriptionsViewModel: ObservableObject {
-    @Published var subscriptions: [MapSubscription] = []
-    @Published var isLoading = false
-    @Published var errorMessage: String?
-
-    func loadSubscriptions(userId: String) async {
-        isLoading = true
-        do {
-            subscriptions = try await APIService.shared.getMapSubscriptions(userId: userId)
-        } catch {
-            errorMessage = "加载订阅列表失败：\(error.localizedDescription)"
-            print("[订阅管理] 加载失败: \(error)")
-        }
-        isLoading = false
-    }
-
-    func toggleSubscription(subscriberId: String, targetUserId: String, isEnabled: Bool) async {
-        do {
-            try await APIService.shared.toggleMapSubscription(
-                subscriberId: subscriberId,
-                targetUserId: targetUserId,
-                isEnabled: isEnabled
-            )
-            // 更新本地状态
-            if let idx = subscriptions.firstIndex(where: { $0.target_user_id == targetUserId }) {
-                subscriptions[idx].is_enabled = isEnabled
-            }
-        } catch {
-            errorMessage = "切换失败：\(error.localizedDescription)"
-            print("[订阅管理] 切换失败: \(error)")
-            // 失败时回滚
-            if let idx = subscriptions.firstIndex(where: { $0.target_user_id == targetUserId }) {
-                subscriptions[idx].is_enabled = !isEnabled
-            }
-        }
-    }
-
-    func unsubscribe(subscriberId: String, targetUserId: String) async {
-        do {
-            try await APIService.shared.unsubscribeUserMap(
-                subscriberId: subscriberId,
-                targetUserId: targetUserId
-            )
-            // 移除本地记录
-            subscriptions.removeAll { $0.target_user_id == targetUserId }
-        } catch {
-            errorMessage = "取消订阅失败：\(error.localizedDescription)"
-            print("[订阅管理] 取消订阅失败: \(error)")
-        }
-    }
-}
 
 #Preview {
     MapSubscriptionsView(userId: "test-user-id")
