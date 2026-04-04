@@ -231,9 +231,56 @@ async def parse_douyin_link(url: str) -> dict:
         hot_comments_raw.sort(key=lambda x: x["digg_count"], reverse=True)
         all_comments.sort(key=lambda x: x["digg_count"], reverse=True)
 
+    # 提取视频扩展信息（v7.0 新增）
+    # 视频标签（video_tag 字段）
+    video_tags = []
+    for tag in (aweme.get("video_tag") or []):
+        tag_name = tag.get("tag_name", "")
+        if tag_name:
+            video_tags.append(tag_name)
+
+    # 挑战/话题列表（cha_list）
+    cha_list = []
+    for challenge in (aweme.get("cha_list") or []):
+        cha_name = challenge.get("cha_name", "")
+        if cha_name:
+            cha_list.append(cha_name)
+
+    # 热搜关键词（suggest_words）
+    hot_search_keywords = []
+    for sw in (aweme.get("suggest_words") or {}).get("suggest_words") or []:
+        for word_info in (sw.get("words") or []):
+            keyword = word_info.get("word", "")
+            if keyword:
+                hot_search_keywords.append(keyword)
+
+    # 封面图
+    video_cover_url = (
+        aweme.get("video", {}).get("cover", {}).get("url_list", [""])[0]
+        or ""
+    )
+
+    # 统计数据（点赞数、评论数）
+    statistics = aweme.get("statistics") or {}
+    video_digg_count = statistics.get("digg_count", 0)
+    video_comment_count = statistics.get("comment_count", 0)
+
+    # 视频发布时间（Unix 时间戳 → 可读时间）
+    create_timestamp = aweme.get("create_time", 0)
+    if create_timestamp:
+        from datetime import datetime, timezone
+        publish_dt = datetime.fromtimestamp(create_timestamp, tz=timezone.utc)
+        publish_time = publish_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        publish_time = ""
+
+    # 分享链接（share_url）
+    share_url = aweme.get("share_url", "") or redirect_url
+
     print(f"[抖音解析] 解析成功: video_id={video_id}, author={author_name}, sec_uid={author_sec_uid[:20] if author_sec_uid else ''}")
     print(f"[抖音解析] 扩展信息: 话题={hashtags}, 城市={city_name}, "
           f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条, 总评论={len(all_comments)}条")
+    print(f"[抖音解析] 视频扩展: 封面图={bool(video_cover_url)}, 点赞={video_digg_count}, 评论={video_comment_count}, 视频标签={video_tags}, 热搜词={hot_search_keywords}")
 
     return {
         "video_id": video_id,
@@ -242,8 +289,24 @@ async def parse_douyin_link(url: str) -> dict:
         "author_name": author_name,
         "author_avatar": author_avatar,
         "author_sec_uid": author_sec_uid,
+        # v7.0 新增：博主扩展信息
+        "author_signature": author.get("signature", ""),
+        "author_video_count": author.get("aweme_count", 0),
+        "author_total_likes": author.get("total_favorited", 0),
+        # v7.0 新增：视频扩展信息
         "hashtags": hashtags,
         "city_name": city_name,
+        "video_cover_url": video_cover_url,
+        "video_publish_timestamp": create_timestamp,
+        "video_publish_time": publish_time,
+        "video_digg_count": video_digg_count,
+        "video_comment_count": video_comment_count,
+        "video_tags": video_tags,
+        "cha_list": cha_list,
+        "hot_search_keywords": hot_search_keywords,
+        "aweme_type_tags": aweme.get("aweme_type_tags", ""),
+        "share_url": share_url,
+        # 评论信息
         "author_liked_comments": author_liked_comments,
         "hot_comments": hot_comments,
         "hot_comments_raw": hot_comments_raw,
@@ -505,6 +568,45 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
     print(f"[抖音解析] 视频扩展信息: 话题={hashtags}, 城市={city_name}, "
           f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条, 总评论={len(all_comments)}条")
 
+    # 提取视频扩展信息（v7.0 新增，用于后台解析路径）
+    # 视频标签
+    video_tags = []
+    for tag in (aweme.get("video_tag") or []):
+        tag_name = tag.get("tag_name", "")
+        if tag_name:
+            video_tags.append(tag_name)
+
+    # 挑战/话题列表
+    cha_list = []
+    for challenge in (aweme.get("cha_list") or []):
+        cha_name = challenge.get("cha_name", "")
+        if cha_name:
+            cha_list.append(cha_name)
+
+    # 热搜关键词
+    hot_search_keywords = []
+    for sw in (aweme.get("suggest_words") or {}).get("suggest_words") or []:
+        for word_info in (sw.get("words") or []):
+            keyword = word_info.get("word", "")
+            if keyword:
+                hot_search_keywords.append(keyword)
+
+    # 封面图、发布时间
+    video_cover_url = (
+        aweme.get("video", {}).get("cover", {}).get("url_list", [""])[0]
+        or ""
+    )
+    statistics = aweme.get("statistics") or {}
+    video_digg_count = statistics.get("digg_count", 0)
+    video_comment_count = statistics.get("comment_count", 0)
+    create_timestamp = aweme.get("create_time", 0)
+    if create_timestamp:
+        from datetime import datetime, timezone
+        publish_dt = datetime.fromtimestamp(create_timestamp, tz=timezone.utc)
+        publish_time = publish_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        publish_time = ""
+
     return {
         "hashtags": hashtags,
         "city_code": city_code,
@@ -513,6 +615,16 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
         "hot_comments": hot_comments,
         "hot_comments_raw": hot_comments_raw,  # 含 cid，供评论回复轮询使用
         "all_comments": all_comments,
+        # v7.0 新增：视频扩展信息
+        "video_cover_url": video_cover_url,
+        "video_publish_timestamp": create_timestamp,
+        "video_publish_time": publish_time,
+        "video_digg_count": video_digg_count,
+        "video_comment_count": video_comment_count,
+        "video_tags": video_tags,
+        "cha_list": cha_list,
+        "hot_search_keywords": hot_search_keywords,
+        "aweme_type_tags": aweme.get("aweme_type_tags", ""),
     }
 
 

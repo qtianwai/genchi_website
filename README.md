@@ -2059,3 +2059,32 @@ Python FastAPI、SwiftUI、Supabase PostgreSQL
 - `需求文档&技术方案/后台人工复核功能实施计划.md`
 
 ---
+
+## 会话记录 - 2026-04-04：视频解析新增博主和视频扩展字段采集与存储
+
+### 主要目的
+扩展视频解析流程，新增博主相关信息（账号简介、发布视频数、获赞数）和视频相关信息（标题、发布城市、发布时间、点赞数、评论数、封面图、话题标签、视频标签、平台热搜关联、标签属性）的采集与存储。
+
+### 完成的任务
+- 数据库：`supabase_schema.sql` 中 `authors` 表新增 `signature`、`video_count`、`total_likes` 三字段；`video_parse_cache` 表新增 `video_extra jsonb` 字段及 GIN 索引
+- 解析层：`douyin_parser.py` 的 `parse_douyin_link` 和 `fetch_video_detail_extra` 均扩展返回值，从 JustOneAPI `get-video-detail/v2` 接口提取博主签名、视频数、获赞数、封面图、时间戳、点赞/评论数、视频标签、挑战话题、热搜关键词等
+- 数据库层：`db.py` 新增 `update_video_cache_extra` 和 `update_video_cache_extra_by_video_id` 两个函数；`upsert_author` 注释更新支持新字段透传；`get_review_list` 复核接口 select 新增 `video_extra`
+- API 层：`main.py` 解析完成后实时将 `video_extra` JSON 写入数据库；已有关注博主的扩展信息也会实时刷新（每次提交新视频时更新）
+- 技术文档：同步更新 `视频解析与数据入库技术方案.md`，版本 v7.0
+
+### 关键决策和解决方案
+- `video_extra` 采用 JSONB 而非拆字段，兼顾扩展性和查询灵活性（支持 GIN 索引按标签/话题筛选）
+- `authors` 扩展字段在每次提交新视频时实时更新，确保数据新鲜度
+- 后台解析路径（`fetch_video_detail_extra`）同样返回新字段，确保快速路径和后台路径数据一致性
+
+### 技术栈
+Python FastAPI、Supabase PostgreSQL（JSONB）、JustOneAPI、httpx
+
+### 修改的文件
+- `backend/supabase_schema.sql`
+- `backend/douyin_parser.py`
+- `backend/db.py`
+- `backend/main.py`
+- `需求文档&技术方案/视频解析与数据入库技术方案.md`
+
+---

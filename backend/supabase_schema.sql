@@ -17,6 +17,9 @@ create table if not exists authors (
   sec_uid       text,                   -- 抖音 sec_uid（用于获取视频列表）
   name          text not null,          -- 博主昵称
   avatar_url    text,                   -- 博主头像 URL
+  signature     text,                   -- 账号简介（v7.0 新增）
+  video_count   int,                   -- 发布视频数（来自 aweme_count，v7.0 新增）
+  total_likes   bigint,                -- 获赞数（来自 total_favorited，v7.0 新增）
   -- 自动更新检测相关字段（v2.4 新增）
   auto_update_enabled    boolean default true,  -- 是否启用自动更新检测
   last_update_check      timestamptz,          -- 上次执行自动检测的时间
@@ -143,6 +146,8 @@ create table if not exists video_parse_cache (
   data_source     text not null default 'user_submit',  -- 数据来源：user_submit/background_scan/auto_check/manual_add
   api_cost        numeric(10,6),        -- 本条数据消耗的 JustOneAPI 成本（单位：元）
   api_cost_note   text,                 -- API 成本说明（如：调用了哪些接口、各自消耗多少）
+  -- v7.0 新增：视频扩展信息（JSON）
+  video_extra     jsonb,                -- 视频扩展信息，包含标题/城市/时间/互动数据/封面图/标签等
   created_at      timestamptz default now(),
   updated_at      timestamptz default now(),
   -- v3.0 新增：人工复核字段
@@ -157,6 +162,8 @@ create unique index if not exists idx_video_cache_url on video_parse_cache(video
 create index if not exists idx_video_cache_videoid on video_parse_cache(video_id);
 -- 索引：按复核状态查询（v3.0 新增，用于复核列表查询）
 create index if not exists idx_vpc_review_status on video_parse_cache(review_status);
+-- 索引：按 video_extra JSON 字段内容查询（v7.0 新增，用于按标签/话题筛选）
+create index if not exists idx_video_cache_video_extra on video_parse_cache using gin (video_extra);
 
 
 -- ─────────────────────────────────────────
@@ -418,7 +425,23 @@ create policy "用户只能操作自己的分组店铺" on user_group_restaurant
 
 
 -- ─────────────────────────────────────────
--- 16. 用户地图表（v6.0 新增）
+-- v7.0 迁移脚本：新增博主扩展字段和视频扩展字段
+-- 若在已有数据库上增量执行，运行以下 ALTER 语句：
+-- ─────────────────────────────────────────
+
+-- authors 表新增字段
+-- ALTER TABLE authors ADD COLUMN IF NOT EXISTS signature TEXT;
+-- ALTER TABLE authors ADD COLUMN IF NOT EXISTS video_count INT;
+-- ALTER TABLE authors ADD COLUMN IF NOT EXISTS total_likes BIGINT;
+
+-- video_parse_cache 表新增字段
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS video_extra JSONB;
+
+-- JSONB 字段索引（用于按视频标签、话题等查询）
+-- CREATE INDEX IF NOT EXISTS idx_video_cache_video_extra ON video_parse_cache USING GIN (video_extra);
+
+-- ─────────────────────────────────────────
+-- 17. 用户地图表（v6.0 新增）
 -- 控制用户地图的公开/私密状态
 -- ─────────────────────────────────────────
 create table if not exists user_maps (

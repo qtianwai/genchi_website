@@ -26,6 +26,8 @@ from db import (
     # 新增：视频缓存和后台任务相关
     get_video_cache_by_url, upsert_video_cache, update_video_cache_restaurant,
     update_video_cache_failed, get_video_cache_by_id,
+    update_video_cache_extra,  # v7.0 新增：写入 video_extra JSON 字段
+    update_video_cache_extra_by_video_id,  # v7.0 新增：按 video_id 写入 video_extra
     create_bg_task, update_bg_task_started, update_bg_task_progress,
     complete_bg_task, fail_bg_task, get_latest_bg_task,
     is_author_in_cool_down,  # 新增：博主扫描冷却期检查（优化 3.3）
@@ -647,6 +649,26 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
             ]
             api_cost_bg = len(api_calls_bg) * COST_PER_CALL
 
+            # v7.0 新增：写入视频扩展信息到 video_parse_cache
+            # 先收集 extra 中的新字段（背景路径调用的是 fetch_video_detail_extra，结果在 extra 里）
+            bg_video_extra = {
+                "title": title,
+                "city_name": extra.get("city_name", ""),
+                "publish_time": extra.get("video_publish_time", ""),
+                "publish_timestamp": extra.get("video_publish_timestamp", 0),
+                "digg_count": extra.get("video_digg_count", 0),
+                "comment_count": extra.get("video_comment_count", 0),
+                "cover_url": extra.get("video_cover_url", ""),
+                "hashtags": extra.get("hashtags", []),
+                "video_tags": extra.get("video_tags", []),
+                "cha_list": extra.get("cha_list", []),
+                "hot_search_keywords": extra.get("hot_search_keywords", []),
+                "aweme_type_tags": extra.get("aweme_type_tags", ""),
+                "share_url": video_url,
+            }
+            # 更新该视频的 video_extra（按 video_id 查找，URL 可能不精确匹配）
+            update_video_cache_extra_by_video_id(vid, bg_video_extra)
+
             # AI 提取（v2.3：废弃降级算法，优先级算法返回空时直接返回空）
             extracted = await extract_restaurants_priority(
                 video_title=title,
@@ -858,13 +880,26 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         existing_author = get_author_by_douyin_id(author_douyin_id)
         if existing_author:
             author_id = existing_author["id"]
-            author_record = existing_author
+            # v7.0 新增：已有关注博主的扩展信息也实时更新（账号简介/视频数/获赞数可能变化）
+            author_record = upsert_author({
+                "douyin_uid": author_douyin_id,
+                "sec_uid": author_sec_uid,
+                "name": video_info.get("author_name", existing_author.get("name", "未知博主")),
+                "avatar_url": video_info.get("author_avatar", existing_author.get("avatar_url", "")),
+                "signature": video_info.get("author_signature", ""),
+                "video_count": video_info.get("author_video_count", 0),
+                "total_likes": video_info.get("author_total_likes", 0),
+            })
         else:
             author_record = upsert_author({
                 "douyin_uid": author_douyin_id,
                 "sec_uid": author_sec_uid,
                 "name": video_info.get("author_name", "未知博主"),
                 "avatar_url": video_info.get("author_avatar", ""),
+                # v7.0 新增：博主扩展信息
+                "signature": video_info.get("author_signature", ""),
+                "video_count": video_info.get("author_video_count", 0),
+                "total_likes": video_info.get("author_total_likes", 0),
             })
             author_id = author_record["id"]
 
@@ -880,7 +915,25 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         parse_result = await parse_single_video_fast(clean_url, video_info, author_id, data_source="user_submit")
         restaurant = parse_result.get("restaurant")
 
-        # 第九步：建立博主-店铺关联（当前视频的店铺）
+        # 第九步：写入视频扩展信息到 video_parse_cache（v7.0 新增）
+        video_extra = {
+            "title": video_info.get("title", ""),
+            "city_name": video_info.get("city_name", ""),
+            "publish_time": video_info.get("video_publish_time", ""),
+            "publish_timestamp": video_info.get("video_publish_timestamp", 0),
+            "digg_count": video_info.get("video_digg_count", 0),
+            "comment_count": video_info.get("video_comment_count", 0),
+            "cover_url": video_info.get("video_cover_url", ""),
+            "hashtags": video_info.get("hashtags", []),
+            "video_tags": video_info.get("video_tags", []),
+            "cha_list": video_info.get("cha_list", []),
+            "hot_search_keywords": video_info.get("hot_search_keywords", []),
+            "aweme_type_tags": video_info.get("aweme_type_tags", ""),
+            "share_url": video_info.get("share_url", ""),
+        }
+        update_video_cache_extra(clean_url, video_extra)
+
+        # 第十步：建立博主-店铺关联（当前视频的店铺）
         is_new_restaurant = False
         if restaurant:
             existing = get_restaurant_by_amap_id(restaurant["amap_id"])

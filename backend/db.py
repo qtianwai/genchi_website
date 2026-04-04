@@ -29,6 +29,8 @@ def upsert_author(author_data: dict) -> dict:
     """
     插入或更新博主信息
     author_data 字段：douyin_uid, sec_uid, name, avatar_url
+    v7.0 新增扩展字段：signature, video_count, total_likes
+    （supabase upsert 自动忽略多余字段，无需额外处理）
     """
     result = supabase.table("authors").upsert(
         author_data,
@@ -281,6 +283,30 @@ def update_video_cache_failed(video_url: str, error_message: str) -> dict:
     return result.data[0] if result.data else {}
 
 
+def update_video_cache_extra(video_url: str, video_extra: dict) -> dict:
+    """
+    视频解析完成后，更新 video_extra JSON 字段（v7.0 新增）。
+    video_extra 包含：标题、城市、发布时间、互动数据、封面图、标签等。
+    """
+    result = supabase.table("video_parse_cache").update({
+        "video_extra": video_extra,
+        "updated_at": "now()",
+    }).eq("video_url", video_url).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_video_cache_extra_by_video_id(video_id: str, video_extra: dict) -> dict:
+    """
+    根据 video_id 更新 video_extra JSON 字段（v7.0 新增）。
+    用于后台解析流程中，视频 URL 不确定时按 video_id 更新。
+    """
+    result = supabase.table("video_parse_cache").update({
+        "video_extra": video_extra,
+        "updated_at": "now()",
+    }).eq("video_id", video_id).execute()
+    return result.data[0] if result.data else {}
+
+
 # ─────────────────────────────────────────
 # 博主后台解析任务相关操作
 # （管理博主历史视频的异步解析任务）
@@ -508,6 +534,7 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
         "id, video_id, video_url, author_id, restaurant_id, status, review_status, "
         "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
         "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
+        "video_extra, "  -- v7.0 新增：视频扩展信息 JSON
         "reviewed_at, created_at, authors(name, avatar_url)"
     )
 
