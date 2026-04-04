@@ -9,6 +9,8 @@ struct ParseLinkSheet: View {
     @Environment(\.dismiss) var dismiss
 
     let onSuccess: () -> Void
+    var initialLink: String? = nil
+    var autoStart: Bool = false
 
     @State private var linkText = ""
     @State private var isLoading = false
@@ -27,6 +29,8 @@ struct ParseLinkSheet: View {
     @State private var bgPollingFailureCount = 0
     // 入库范围选择：关注博主全部推荐 or 仅添加本店铺
     @State private var selectedScope: ParseScope = .followAll
+    // 预填链接自动解析只触发一次
+    @State private var hasAutoStarted = false
 
     enum ParseScope {
         case followAll   // 关注博主全部推荐（默认）
@@ -182,6 +186,15 @@ struct ParseLinkSheet: View {
         }
         .onDisappear {
             bgProgressTimer?.invalidate()
+        }
+        .onAppear {
+            if let initialLink, !initialLink.isEmpty {
+                linkText = initialLink
+            }
+            if autoStart, !hasAutoStarted, !linkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                hasAutoStarted = true
+                parseLink()
+            }
         }
         .sheet(isPresented: $showManualAddSheet) {
             if let result = result {

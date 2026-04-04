@@ -157,6 +157,17 @@ def get_user_favorites(user_id: str) -> list[dict]:
     return result.data or []
 
 
+def get_favorite_restaurant_ids(user_id: str) -> set[str]:
+    """获取用户已收藏的店铺 ID 集合（用于地图状态标记）"""
+    result = (
+        supabase.table("user_favorites")
+        .select("restaurant_id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return {row["restaurant_id"] for row in (result.data or []) if row.get("restaurant_id")}
+
+
 def add_favorite(user_id: str, restaurant_id: str) -> dict:
     """收藏店铺"""
     result = supabase.table("user_favorites").upsert(
@@ -920,6 +931,27 @@ def get_group_restaurants(group_id: str, user_id: str) -> list[dict]:
     return result.data or []
 
 
+def get_group_ids_by_restaurant(user_id: str) -> dict[str, list[str]]:
+    """
+    获取用户维度下「店铺 -> 分组 ID 列表」映射。
+    用于地图分组筛选，不额外请求分组明细接口。
+    """
+    result = (
+        supabase.table("user_group_restaurants")
+        .select("restaurant_id, group_id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    mapping: dict[str, list[str]] = {}
+    for row in (result.data or []):
+        rid = row.get("restaurant_id")
+        gid = row.get("group_id")
+        if not rid or not gid:
+            continue
+        mapping.setdefault(rid, []).append(gid)
+    return mapping
+
+
 # ─────────────────────────────────────────
 # 博主统计相关操作（v5.0 新增）
 # ─────────────────────────────────────────
@@ -985,6 +1017,8 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
     # 获取用户已删除和已避雷的店铺 ID
     deleted_ids = get_deleted_restaurant_ids(user_id)
     avoided_ids = set(get_avoided_restaurant_ids(user_id))
+    favorited_ids = get_favorite_restaurant_ids(user_id)
+    group_map = get_group_ids_by_restaurant(user_id)
 
     # 博主推荐：用户关注的博主 → 这些博主推荐的所有店铺
     follows = get_user_followed_authors(user_id)
@@ -1004,6 +1038,8 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
             if rid in deleted_ids:
                 continue
             item["is_avoided"] = rid in avoided_ids
+            item["is_favorited"] = rid in favorited_ids
+            item["group_ids"] = group_map.get(rid, [])
             author_data.append(item)
 
     # 用户自建推荐
@@ -1014,6 +1050,8 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
         if rid in deleted_ids:
             continue
         item["is_avoided"] = rid in avoided_ids
+        item["is_favorited"] = rid in favorited_ids
+        item["group_ids"] = group_map.get(rid, [])
         user_data.append(item)
 
     return {"restaurants": author_data, "user_restaurants": user_data}
