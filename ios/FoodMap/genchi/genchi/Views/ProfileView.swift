@@ -13,6 +13,12 @@ struct ProfileView: View {
     @State private var isUploadingAvatar = false
     @State private var uploadError: String? = nil
 
+    // v6.0 新增：地图隐私设置
+    @State private var isMapPublic = true
+    @State private var isUpdatingMapPrivacy = false
+    @State private var showMapPrivacyError: String? = nil
+    @State private var showShareSheet = false
+
     var body: some View {
         NavigationView {
             List {
@@ -80,6 +86,44 @@ struct ProfileView: View {
                     }
                 }
 
+                // v6.0 新增：我的地图设置
+                Section("我的地图") {
+                    HStack {
+                        Label("公开地图", systemImage: "globe")
+                        Spacer()
+                        Toggle("", isOn: Binding(
+                            get: { isMapPublic },
+                            set: { newValue in
+                                Task {
+                                    await updateMapPrivacy(isPublic: newValue)
+                                }
+                            }
+                        ))
+                        .labelsHidden()
+                        .disabled(isUpdatingMapPrivacy)
+                    }
+
+                    if let error = showMapPrivacyError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+
+                    ShareLink(
+                        item: URL(string: "https://claudetest-production-c925.up.railway.app/map/\(authState.userId)")!,
+                        subject: Text("\(authState.nickname)的美食地图"),
+                        message: Text("来看看我推荐的美食地图吧！")
+                    ) {
+                        Label("分享我的地图", systemImage: "square.and.arrow.up")
+                            .foregroundColor(.orange)
+                    }
+
+                    NavigationLink(destination: MapSubscriptionsView(userId: authState.userId)) {
+                        Label("订阅管理", systemImage: "bookmark.fill")
+                            .foregroundColor(.orange)
+                    }
+                }
+
                 // 功能区
                 Section("设置") {
                     Label("关于 App", systemImage: "info.circle")
@@ -115,6 +159,11 @@ struct ProfileView: View {
                 }
                 Button("取消", role: .cancel) {}
             }
+            .onAppear {
+                Task {
+                    await loadMapPrivacy()
+                }
+            }
         }
     }
 
@@ -143,6 +192,35 @@ struct ProfileView: View {
             Image(systemName: "person.fill")
                 .font(.title2)
                 .foregroundColor(.orange)
+        }
+    }
+
+    // v6.0 新增：加载地图隐私设置
+    private func loadMapPrivacy() async {
+        do {
+            let info = try await APIService.shared.getUserMapInfo(targetUserId: authState.userId)
+            await MainActor.run {
+                isMapPublic = info.is_public
+            }
+        } catch {
+            print("[地图隐私] 加载失败: \(error)")
+        }
+    }
+
+    // v6.0 新增：更新地图隐私设置
+    private func updateMapPrivacy(isPublic: Bool) async {
+        isUpdatingMapPrivacy = true
+        showMapPrivacyError = nil
+        defer { isUpdatingMapPrivacy = false }
+
+        do {
+            try await APIService.shared.updateMapPrivacy(userId: authState.userId, isPublic: isPublic)
+            await MainActor.run {
+                isMapPublic = isPublic
+            }
+        } catch {
+            showMapPrivacyError = "更新失败，请重试"
+            print("[地图隐私] 更新失败: \(error)")
         }
     }
 }

@@ -45,6 +45,21 @@ struct MapView: View {
     @AppStorage("map_last_clipboard_prompt_at") private var lastClipboardPromptAt = 0.0
     @AppStorage("map_recent_searches") private var searchHistoryStore = ""
 
+    private var windowSafeAreaInsets: UIEdgeInsets {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .flatMap(\.windows)
+            .first(where: \.isKeyWindow)?
+            .safeAreaInsets ?? .zero
+    }
+
+    private var filterSummaryText: String {
+        if viewModel.hasActiveFilters {
+            return "已筛选 \(viewModel.activeFilterCount) 项"
+        }
+        return "筛选条件"
+    }
+
     var body: some View {
         ZStack {
             mapLayer
@@ -79,6 +94,9 @@ struct MapView: View {
             await reloadAllData()
             locationManager.requestPermission()
             loadSearchHistory()
+            if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
+                viewModel.centerMapOnUserLocation(location)
+            }
         }
         .onAppear {
             viewModel.startAutoRefresh(userId: authState.userId)
@@ -107,16 +125,19 @@ struct MapView: View {
         .onReceive(NotificationCenter.default.publisher(for: .restaurantStateDidChange)) { _ in
             Task { await reloadAllData() }
         }
-        .confirmationDialog("添加店铺", isPresented: $showAddMenu, titleVisibility: .visible) {
-            Button("解析抖音链接") {
-                pendingParseLink = nil
-                parseAutoStart = false
-                showParseSheet = true
-            }
-            Button("手动添加店铺") { showUserAddSheet = true }
-            Button("取消", role: .cancel) {}
-        } message: {
-            Text("选择添加方式")
+        .sheet(isPresented: $showAddMenu) {
+            MapAddEntrySheet(
+                onParseLink: {
+                    pendingParseLink = nil
+                    parseAutoStart = false
+                    presentAddDestination(.parseLink)
+                },
+                onManualAdd: {
+                    presentAddDestination(.manualAdd)
+                }
+            )
+            .presentationDetents([.height(268)])
+            .presentationDragIndicator(.visible)
         }
         .sheet(isPresented: $showParseSheet, onDismiss: {
             pendingParseLink = nil
@@ -140,8 +161,8 @@ struct MapView: View {
         }
         .confirmationDialog("选择导航应用", isPresented: $showNavSheet, titleVisibility: .visible) {
             if let item = selectedItem {
-                Button("Apple 地图") { openAppleMaps(for: item) }
                 Button("高德地图") { openAmap(for: item) }
+                Button("Apple 地图") { openAppleMaps(for: item) }
                 Button("百度地图") { openBaidu(for: item) }
             }
             Button("取消", role: .cancel) {}
@@ -191,7 +212,8 @@ struct MapView: View {
                             isSelected: selectedItem?.id == item.id,
                             isHighlighted: viewModel.highlightedItemId == item.id,
                             isUserCreated: item.isUserCreated,
-                            showTitle: viewModel.shouldShowStoreName
+                            showTitle: viewModel.shouldShowStoreName,
+                            recommendSourceCount: item.recommendedBy.count  // v6.0 新增：推荐来源数量
                         )
                         .onTapGesture {
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
@@ -221,28 +243,43 @@ struct MapView: View {
 
     private var topOverlay: some View {
         GeometryReader { proxy in
-            VStack(spacing: DS.Spacing.sm) {
-                HStack(spacing: DS.Spacing.sm) {
-                    filterTriggerButton
-                    Spacer(minLength: DS.Spacing.md)
-                    addButton
-                }
+            let topInset = max(proxy.safeAreaInsets.top, windowSafeAreaInsets.top)
 
-                HStack(spacing: DS.Spacing.sm) {
-                    searchField
-                    locateButton
+            VStack(spacing: DS.Spacing.sm) {
+                VStack(spacing: DS.Spacing.sm) {
+                    HStack(spacing: DS.Spacing.sm) {
+                        searchField
+                        locateButton
+                        addButton
+                    }
+
+                    HStack(spacing: DS.Spacing.sm) {
+                        filterTriggerButton
+
+                        if viewModel.hasActiveFilters {
+                            clearFilterButton
+                        }
+                    }
                 }
+                .padding(DS.Spacing.md)
+                .background(DS.Color.surface.opacity(0.96), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 22, style: .continuous)
+                        .stroke(DS.Color.separator.opacity(0.12), lineWidth: 0.8)
+                }
+                .shadow(color: .black.opacity(0.08), radius: 16, y: 6)
 
                 if showFilterPanel {
                     FilterPanelView(
                         authors: viewModel.availableAuthors,
                         groups: viewModel.userGroups,
-                        categories: viewModel.availableCategories,
+                        subscriptions: viewModel.mapSubscriptions,  // v6.0 新增：订阅用户列表
                         filter: $viewModel.filter,
                         onReset: {
                             viewModel.clearFilters()
                         }
                     )
+                    .padding(.top, 2)
                     .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
@@ -277,13 +314,15 @@ struct MapView: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, DS.Spacing.lg)
-            .padding(.top, proxy.safeAreaInsets.top + 12)
+            .padding(.top, topInset + 8)
             .animation(.spring(response: 0.28, dampingFraction: 0.84), value: showFilterPanel)
         }
     }
 
     private var bottomCard: some View {
         GeometryReader { proxy in
+            let bottomInset = max(proxy.safeAreaInsets.bottom, windowSafeAreaInsets.bottom)
+
             VStack {
                 Spacer()
                 if let item = selectedItem,
@@ -312,7 +351,7 @@ struct MapView: View {
                         }
                     )
                     .padding(.horizontal, DS.Spacing.lg)
-                    .padding(.bottom, max(proxy.safeAreaInsets.bottom + 62, 92))
+                    .padding(.bottom, max(bottomInset + 62, 92))
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .animation(.spring(response: 0.28, dampingFraction: 0.85), value: selectedItem?.id)
                 }
@@ -326,40 +365,60 @@ struct MapView: View {
                 showFilterPanel.toggle()
             }
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
                     .font(.system(size: 15, weight: .semibold))
-                Text(filterTitle)
-                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(DS.Color.brand)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(filterSummaryText)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text(viewModel.hasActiveFilters ? "点击继续细化范围" : "博主、分组、距离、分类")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                Spacer(minLength: 0)
                 Image(systemName: showFilterPanel ? "chevron.up" : "chevron.down")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundColor(.secondary)
             }
-            .foregroundColor(.primary)
             .padding(.horizontal, DS.Spacing.md)
-            .padding(.vertical, DS.Spacing.sm)
-            .frame(minHeight: 44)
-            .background(.ultraThinMaterial, in: Capsule())
+            .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .background(DS.Color.surfaceAlt.opacity(0.95), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
             .overlay {
-                Capsule().stroke(DS.Color.separator.opacity(0.25), lineWidth: 0.6)
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(DS.Color.separator.opacity(0.18), lineWidth: 0.8)
             }
             .contentShape(Rectangle())
         }
         .buttonStyle(PressableScaleButtonStyle())
     }
 
-    private var filterTitle: String {
-        viewModel.hasActiveFilters ? "已筛选(\(viewModel.activeFilterCount))" : "全部"
+    private var clearFilterButton: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                viewModel.clearFilters()
+            }
+        } label: {
+            Text("清空")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(DS.Color.brand)
+                .padding(.horizontal, 14)
+                .frame(height: 54)
+                .background(DS.Color.brand.opacity(0.10), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        }
+        .buttonStyle(PressableScaleButtonStyle())
     }
 
     private var addButton: some View {
-        MapToolCircleButton(icon: "plus", isStrong: true) {
+        MapToolCircleButton(icon: "plus", style: .strong) {
             showAddMenu = true
         }
     }
 
     private var locateButton: some View {
-        MapToolCircleButton(icon: "location") {
+        MapToolCircleButton(icon: "location.fill", style: .neutral) {
             if let location = locationManager.userLocation {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     viewModel.centerMapOnUserLocation(location)
@@ -393,11 +452,11 @@ struct MapView: View {
             }
         }
         .padding(.horizontal, DS.Spacing.md)
-        .frame(height: 40)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.md))
+        .frame(height: 46)
+        .background(DS.Color.surfaceAlt.opacity(0.95), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: DS.Radius.md)
-                .stroke(DS.Color.separator.opacity(0.15), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(DS.Color.separator.opacity(0.15), lineWidth: 0.8)
         }
     }
 
@@ -416,6 +475,19 @@ struct MapView: View {
         await viewModel.loadMapData(userId: authState.userId)
         await viewModel.loadUserGroups(userId: authState.userId)
         syncSelectionWithLatestData()
+    }
+
+    private func presentAddDestination(_ destination: MapAddDestination) {
+        showAddMenu = false
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            switch destination {
+            case .parseLink:
+                showParseSheet = true
+            case .manualAdd:
+                showUserAddSheet = true
+            }
+        }
     }
 
     private func syncSelectionWithLatestData() {
@@ -730,28 +802,51 @@ struct MapView: View {
 
 // MARK: - Top Buttons
 struct MapToolCircleButton: View {
+    enum Style {
+        case neutral
+        case strong
+    }
+
     let icon: String
-    var isStrong: Bool = false
+    var style: Style = .neutral
     let action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: isStrong ? 18 : 15, weight: .semibold))
-                .foregroundColor(.primary)
-                .frame(width: 44, height: 44)
+                .font(.system(size: style == .strong ? 18 : 15, weight: .semibold))
+                .foregroundColor(style == .strong ? .white : .primary)
+                .frame(width: 46, height: 46)
                 .background(
-                    .ultraThinMaterial,
+                    backgroundColor,
                     in: Circle()
                 )
                 .overlay {
                     Circle()
-                        .stroke(DS.Color.separator.opacity(0.25), lineWidth: 0.6)
+                        .stroke(borderColor, lineWidth: style == .strong ? 0 : 0.6)
                 }
                 .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
         }
         .buttonStyle(PressableScaleButtonStyle())
         .contentShape(Circle())
+    }
+
+    private var backgroundColor: Color {
+        switch style {
+        case .neutral:
+            return DS.Color.surfaceAlt.opacity(0.95)
+        case .strong:
+            return DS.Color.brand
+        }
+    }
+
+    private var borderColor: Color {
+        switch style {
+        case .neutral:
+            return DS.Color.separator.opacity(0.18)
+        case .strong:
+            return .clear
+        }
     }
 }
 
@@ -763,37 +858,53 @@ struct RestaurantPinView: View {
     let isHighlighted: Bool
     let isUserCreated: Bool
     let showTitle: Bool
+    let recommendSourceCount: Int = 1  // v6.0 新增：推荐来源数量
 
     var body: some View {
         VStack(spacing: 4) {
-            ZStack {
-                AsyncImage(url: URL(string: avatarURL ?? "")) { image in
-                    image
-                        .resizable()
-                        .scaledToFill()
-                } placeholder: {
-                    Image(systemName: isUserCreated ? "person.crop.circle.badge.plus" : "person.crop.circle")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
-                        .frame(width: size - 4, height: size - 4)
-                        .background(
-                            Circle().fill(isUserCreated ? Color.purple.opacity(0.8) : DS.Color.brand.opacity(0.8))
-                        )
-                }
-                .frame(width: size, height: size)
-                .clipShape(Circle())
+            ZStack(alignment: .topTrailing) {
+                ZStack {
+                    AsyncImage(url: URL(string: avatarURL ?? "")) { image in
+                        image
+                            .resizable()
+                            .scaledToFill()
+                    } placeholder: {
+                        Image(systemName: isUserCreated ? "person.crop.circle.badge.plus" : "person.crop.circle")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: size - 4, height: size - 4)
+                            .background(
+                                Circle().fill(isUserCreated ? Color.purple.opacity(0.8) : DS.Color.brand.opacity(0.8))
+                            )
+                    }
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
 
-                if isHighlighted {
+                    if isHighlighted {
+                        Circle()
+                            .stroke(DS.Color.brand, lineWidth: 2)
+                            .frame(width: size + 6, height: size + 6)
+                    }
+                }
+                .overlay {
                     Circle()
-                        .stroke(DS.Color.brand, lineWidth: 2)
-                        .frame(width: size + 6, height: size + 6)
+                        .stroke(isSelected ? DS.Color.brand : Color.white.opacity(0.55), lineWidth: isSelected ? 2 : 0.8)
+                }
+                .shadow(color: .black.opacity(isSelected ? 0.25 : 0.15), radius: isSelected ? 6 : 3, y: 2)
+
+                // v6.0 新增：多人推荐角标
+                if recommendSourceCount > 1 {
+                    ZStack {
+                        Circle()
+                            .fill(Color.orange)
+                            .frame(width: 20, height: 20)
+                        Text("\(recommendSourceCount)")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                    .offset(x: 4, y: -4)
                 }
             }
-            .overlay {
-                Circle()
-                    .stroke(isSelected ? DS.Color.brand : Color.white.opacity(0.55), lineWidth: isSelected ? 2 : 0.8)
-            }
-            .shadow(color: .black.opacity(isSelected ? 0.25 : 0.15), radius: isSelected ? 6 : 3, y: 2)
 
             if showTitle {
                 Text(title)
@@ -859,42 +970,114 @@ struct ClusterPinView: View {
 struct FilterPanelView: View {
     let authors: [Author]
     let groups: [RestaurantGroup]
-    let categories: [String]
+    let subscriptions: [MapSubscription]  // v6.0 新增：订阅用户列表
     @Binding var filter: MapFilterState
     let onReset: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+        VStack(alignment: .leading, spacing: DS.Spacing.md) {
             HStack {
-                Text("筛选")
-                    .font(.subheadline.weight(.semibold))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("筛选地图内容")
+                        .font(.system(size: 18, weight: .bold))
+                    Text(filter.hasActiveFilters ? "当前已启用 \(filter.activeCount) 项条件" : "先选范围，再看周边店铺")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
                 Spacer()
                 Button("重置") { onReset() }
-                    .font(.caption)
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(DS.Color.brand)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(DS.Color.brand.opacity(0.10), in: Capsule())
             }
 
-            section("博主") {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: DS.Spacing.sm) {
-                        SingleChip(title: "全部", selected: filter.author == .all) {
+            sectionCard("推荐来源", systemImage: "person.2.fill") {
+                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 96), spacing: DS.Spacing.sm)],
+                        alignment: .leading,
+                        spacing: DS.Spacing.sm
+                    ) {
+                        SingleChip(title: "全部店铺", selected: filter.author == .all) {
                             filter.author = .all
                         }
-                        SingleChip(title: "我的推荐", selected: filter.author == .mine, tint: .purple) {
+                        SingleChip(title: "我的推荐", selected: filter.author == .mine) {
                             filter.author = .mine
                         }
-                        ForEach(authors) { author in
-                            SingleChip(title: author.name, selected: filter.author == .author(author.id)) {
-                                filter.author = .author(author.id)
+                    }
+
+                    if !authors.isEmpty || !subscriptions.isEmpty {
+                        Menu {
+                            if !authors.isEmpty {
+                                Section("博主") {
+                                    ForEach(authors) { author in
+                                        Button {
+                                            filter.author = .author(author.id)
+                                        } label: {
+                                            if filter.author == .author(author.id) {
+                                                Label(author.name, systemImage: "checkmark")
+                                            } else {
+                                                Text(author.name)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !subscriptions.isEmpty {
+                                Section("订阅地图") {
+                                    ForEach(subscriptions) { sub in
+                                        Button {
+                                            filter.author = .subscribedUser(sub.target_user_id)
+                                        } label: {
+                                            if case .subscribedUser(let userId) = filter.author, userId == sub.target_user_id {
+                                                Label(sub.nickname, systemImage: "checkmark")
+                                            } else {
+                                                Text(sub.nickname)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        } label: {
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(sourceTitle)
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundColor(.primary)
+                                    Text(sourceSubtitle)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "chevron.up.chevron.down")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 12)
+                            .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(DS.Color.separator.opacity(0.14), lineWidth: 0.8)
                             }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
             }
 
-            section("店铺分组") {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: DS.Spacing.sm) {
+            sectionCard("店铺分组", systemImage: "square.grid.2x2.fill") {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 78), spacing: DS.Spacing.sm)],
+                    alignment: .leading,
+                    spacing: DS.Spacing.sm
+                ) {
+                    Group {
                         SingleChip(title: "全部", selected: filter.group == .all) {
                             filter.group = .all
                         }
@@ -905,10 +1088,7 @@ struct FilterPanelView: View {
                             filter.group = .avoided
                         }
                         ForEach(groups) { group in
-                            SingleChip(
-                                title: group.name,
-                                selected: filter.group == .custom(group.id)
-                            ) {
+                            SingleChip(title: group.name, selected: filter.group == .custom(group.id)) {
                                 filter.group = .custom(group.id)
                             }
                         }
@@ -916,8 +1096,12 @@ struct FilterPanelView: View {
                 }
             }
 
-            section("距离") {
-                HStack(spacing: DS.Spacing.sm) {
+            sectionCard("距离范围", systemImage: "location.circle.fill") {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 64), spacing: DS.Spacing.sm)],
+                    alignment: .leading,
+                    spacing: DS.Spacing.sm
+                ) {
                     ForEach(MapDistanceFilter.allCases) { option in
                         SingleChip(title: option.title, selected: filter.distance == option) {
                             filter.distance = option
@@ -925,36 +1109,61 @@ struct FilterPanelView: View {
                     }
                 }
             }
-
-            section("美食分类") {
-                if categories.isEmpty {
-                    Text("暂无分类数据")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                } else {
-                    FlexibleChipGrid(items: categories) { category in
-                        filter.categories.toggleMembership(category)
-                    } isSelected: { category in
-                        filter.categories.contains(category)
-                    }
-                }
-            }
         }
-        .padding(DS.Spacing.md)
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.lg))
+        .padding(DS.Spacing.lg)
+        .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: DS.Radius.lg)
-                .stroke(DS.Color.separator.opacity(0.18), lineWidth: 0.6)
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(DS.Color.separator.opacity(0.14), lineWidth: 0.8)
         }
-        .shadow(color: .black.opacity(0.12), radius: 10, y: 4)
+        .shadow(color: .black.opacity(0.12), radius: 16, y: 8)
     }
 
-    private func section<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-            Text(title)
-                .font(.caption)
-                .foregroundColor(.secondary)
+    private var sourceTitle: String {
+        switch filter.author {
+        case .all:
+            return "当前显示全部来源"
+        case .mine:
+            return "当前只看我的推荐"
+        case .author(let authorId):
+            return authors.first(where: { $0.id == authorId })?.name ?? "已选择博主"
+        case .subscribedUser(let userId):
+            return subscriptions.first(where: { $0.target_user_id == userId })?.nickname ?? "已选择订阅地图"
+        }
+    }
+
+    private var sourceSubtitle: String {
+        switch filter.author {
+        case .all, .mine:
+            return "需要时再从博主或订阅地图里精确选择"
+        case .author:
+            return "已按单个博主筛选，再点可以切换"
+        case .subscribedUser:
+            return "已按订阅地图筛选，再点可以切换"
+        }
+    }
+
+    private func sectionCard<Content: View>(
+        _ title: String,
+        systemImage: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            HStack(spacing: 8) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(DS.Color.brand)
+                Text(title)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.primary)
+            }
             content()
+        }
+        .padding(DS.Spacing.md)
+        .background(DS.Color.surfaceAlt.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
         }
     }
 }
@@ -969,20 +1178,104 @@ struct SingleChip: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(selected ? .white : .primary)
-                .padding(.horizontal, DS.Spacing.sm)
-                .padding(.vertical, 6)
-                .background(selected ? tint : DS.Color.surface)
+                .foregroundColor(selected ? tint : .primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(selected ? tint.opacity(0.14) : DS.Color.surface)
                 .clipShape(Capsule())
                 .overlay {
-                    if !selected {
-                        Capsule().stroke(DS.Color.separator.opacity(0.22), lineWidth: 0.6)
-                    }
+                    Capsule().stroke(selected ? tint.opacity(0.28) : DS.Color.separator.opacity(0.18), lineWidth: 0.8)
                 }
         }
         .buttonStyle(.plain)
         .scaleEffect(selected ? 1.02 : 1.0)
         .animation(.spring(response: 0.24, dampingFraction: 0.84), value: selected)
+    }
+}
+
+private enum MapAddDestination {
+    case parseLink
+    case manualAdd
+}
+
+private struct MapAddEntrySheet: View {
+    let onParseLink: () -> Void
+    let onManualAdd: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("添加新店")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.primary)
+                Text("选一种更顺手的方式，把想去的店放进地图")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
+
+            VStack(spacing: DS.Spacing.sm) {
+                addOptionButton(
+                    icon: "link.badge.plus",
+                    title: "从抖音添加",
+                    subtitle: "粘贴视频链接，自动识别店铺和推荐人"
+                ) {
+                    onParseLink()
+                }
+
+                addOptionButton(
+                    icon: "fork.knife.circle",
+                    title: "搜索店铺添加",
+                    subtitle: "输入店名和城市，直接把这家店加入地图"
+                ) {
+                    onManualAdd()
+                }
+            }
+        }
+        .padding(DS.Spacing.xl)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(.systemGroupedBackground))
+    }
+
+    private func addOptionButton(
+        icon: String,
+        title: String,
+        subtitle: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: DS.Spacing.md) {
+                ZStack {
+                    Circle()
+                        .fill(DS.Color.brand.opacity(0.12))
+                        .frame(width: 42, height: 42)
+                    Image(systemName: icon)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(DS.Color.brand)
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text(subtitle)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(DS.Spacing.md)
+            .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .stroke(DS.Color.separator.opacity(0.12), lineWidth: 0.8)
+            }
+        }
+        .buttonStyle(PressableScaleButtonStyle())
     }
 }
 
@@ -1259,43 +1552,82 @@ struct MapQuickActionCard: View {
     }
 
     private var authorModule: some View {
-        HStack(spacing: DS.Spacing.sm) {
-            AsyncImage(url: URL(string: item.author?.avatar_url ?? "")) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Circle()
-                    .fill(DS.Color.surfaceAlt)
-                    .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
-            }
-            .frame(width: 28, height: 28)
-            .clipShape(Circle())
-
-            Text(item.author?.name ?? "我的推荐")
-                .font(.system(size: 13, weight: .semibold))
-                .lineLimit(1)
-
-            Button(action: onCopyAuthor) {
-                Image(systemName: "doc.on.doc")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
-            }
-            .buttonStyle(.plain)
-
-            Spacer()
-
-            Button(action: onOpenSource) {
-                HStack(spacing: 4) {
-                    Image(systemName: "play.circle.fill")
-                    Text(videos.isEmpty ? "抖音主页" : "探店视频")
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+            // 主推荐来源
+            HStack(spacing: DS.Spacing.sm) {
+                AsyncImage(url: URL(string: item.author?.avatar_url ?? "")) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Circle()
+                        .fill(DS.Color.surfaceAlt)
+                        .overlay(Image(systemName: "person.fill").foregroundColor(.gray))
                 }
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(DS.Color.brand)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .background(DS.Color.brand.opacity(0.12), in: Capsule())
+                .frame(width: 28, height: 28)
+                .clipShape(Circle())
+
+                Text(item.author?.name ?? "我的推荐")
+                    .font(.system(size: 13, weight: .semibold))
+                    .lineLimit(1)
+
+                Button(action: onCopyAuthor) {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Button(action: onOpenSource) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "play.circle.fill")
+                        Text(videos.isEmpty ? "抖音主页" : "探店视频")
+                            .lineLimit(1)
+                    }
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(DS.Color.brand)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(DS.Color.brand.opacity(0.12), in: Capsule())
+                }
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
+
+            // v6.0 新增：其他推荐来源（如果有多个来源）
+            if item.recommendedBy.count > 1 {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("其他推荐来源")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+
+                    ForEach(item.recommendedBy.dropFirst(), id: \.self) { source in
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 10))
+                                .foregroundColor(.orange)
+
+                            switch source {
+                            case .author(let author):
+                                Text("来自 @\(author.name)")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.primary)
+                            case .selfCreated:
+                                Text("来自 我的推荐")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.primary)
+                            case .subscribedUser(_, let nickname, _):
+                                Text("来自 @\(nickname)")
+                                    .font(.system(size: 12))
+                                    .foregroundColor(.primary)
+                            }
+
+                            Spacer()
+                        }
+                    }
+                }
+                .padding(8)
+                .background(DS.Color.surfaceAlt, in: RoundedRectangle(cornerRadius: DS.Radius.sm))
+            }
         }
     }
 }

@@ -1,165 +1,240 @@
-// 店铺列表页（v5.0 新增）
-// 从收藏页点击"自己"进入，管理用户所有店铺的分组视图
-// 包含系统预设分组（全部、收藏、避雷）和用户自定义分组
-
 import SwiftUI
 
+private struct SystemGroupRoute: Identifiable, Hashable {
+    let title: String
+    let groupType: SystemGroupType
+
+    var id: String { title }
+}
+
 struct RestaurantListView: View {
-    @EnvironmentObject var authState: AuthState
+    @EnvironmentObject private var authState: AuthState
     @Environment(\.dismiss) private var dismiss
 
-    // 数据
     @State private var allCount = 0
     @State private var favCount = 0
     @State private var avoidedCount = 0
     @State private var customGroups: [RestaurantGroup] = []
     @State private var isLoading = true
 
-    // 创建分组
-    @State private var showCreateGroup = false
-    @State private var newGroupName = ""
+    @State private var showCreateGroupSheet = false
+    @State private var selectedSystemGroup: SystemGroupRoute?
+    @State private var selectedCustomGroup: RestaurantGroup?
 
     var body: some View {
         List {
-            // 系统预设分组（不可编辑/删除）
-            Section("系统分组") {
-                NavigationLink {
-                    GroupRestaurantListView(
-                        title: "全部店铺",
-                        groupType: .all
-                    )
-                } label: {
-                    groupRow(icon: "square.grid.2x2", title: "全部店铺", count: allCount, color: .blue)
-                }
+            FavoritesSectionHeader("系统分组")
 
-                // 收藏的店铺 → 直接返回收藏页（收藏页本身就展示收藏店铺列表）
+            if isLoading {
+                loadingRow
+            } else {
+                systemGroupsRow
+            }
+
+            FavoritesSectionHeader("我的分组")
+
+            if isLoading {
+                loadingRow
+            } else if customGroups.isEmpty {
+                customGroupsEmptyRow
+            } else {
+                ForEach(customGroups) { group in
+                    customGroupRow(group)
+                }
+            }
+        }
+        .listStyle(.plain)
+        .navigationTitle("店铺列表")
+        .navigationBarTitleDisplayMode(.large)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showCreateGroupSheet = true
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(FavoritesTheme.accent)
+                }
+            }
+        }
+        .navigationDestination(item: $selectedSystemGroup) { route in
+            GroupRestaurantListView(title: route.title, groupType: route.groupType)
+        }
+        .navigationDestination(item: $selectedCustomGroup) { group in
+            GroupDetailView(group: group)
+        }
+        .task {
+            await loadData()
+        }
+        .refreshable {
+            await loadData()
+        }
+        .sheet(isPresented: $showCreateGroupSheet) {
+            CreateGroupSheet(
+                onCreate: { name in
+                    Task { await createGroup(named: name) }
+                }
+            )
+            .presentationDetents([.medium])
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .restaurantStateDidChange)) { _ in
+            Task { await loadData() }
+        }
+        .favoritesMinimalBackButton()
+        .favoritesPageChrome()
+    }
+
+    private var loadingRow: some View {
+        FavoritesCard {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .tint(FavoritesTheme.accent)
+                    .padding(.vertical, DS.Spacing.xxl)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private var systemGroupsRow: some View {
+        FavoritesCard {
+            VStack(spacing: 0) {
+                Button {
+                    selectedSystemGroup = SystemGroupRoute(title: "全部店铺", groupType: .all)
+                } label: {
+                    FavoritesGroupRow(
+                        icon: "square.grid.2x2",
+                        iconTint: .blue,
+                        title: "全部店铺",
+                        countText: "\(allCount)"
+                    )
+                }
+                .buttonStyle(.plain)
+
+                systemDivider
+
                 Button {
                     dismiss()
                 } label: {
-                    groupRow(icon: "bookmark.fill", title: "收藏的店铺", count: favCount, color: .orange)
-                }
-
-                NavigationLink {
-                    GroupRestaurantListView(
-                        title: "避雷的店铺",
-                        groupType: .avoided
+                    FavoritesGroupRow(
+                        icon: "bookmark.fill",
+                        iconTint: FavoritesTheme.accent,
+                        title: "收藏的店铺",
+                        countText: "\(favCount)"
                     )
-                } label: {
-                    groupRow(icon: "exclamationmark.shield.fill", title: "避雷的店铺", count: avoidedCount, color: .red)
                 }
-            }
+                .buttonStyle(.plain)
 
-            // 自定义分组
-            if !customGroups.isEmpty {
-                Section("我的分组") {
-                    ForEach(customGroups) { group in
-                        NavigationLink {
-                            GroupDetailView(group: group)
-                        } label: {
-                            groupRow(
-                                icon: "folder.fill",
-                                title: group.name,
-                                count: group.restaurant_count ?? 0,
-                                color: .purple
-                            )
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button("删除", role: .destructive) {
-                                Task { await deleteGroup(group) }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        .navigationTitle("店铺列表")
-        .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+                systemDivider
+
                 Button {
-                    showCreateGroup = true
+                    selectedSystemGroup = SystemGroupRoute(title: "避雷的店铺", groupType: .avoided)
                 } label: {
-                    Image(systemName: "folder.badge.plus")
+                    FavoritesGroupRow(
+                        icon: "exclamationmark.shield.fill",
+                        iconTint: FavoritesTheme.avoid,
+                        title: "避雷的店铺",
+                        countText: "\(avoidedCount)"
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 16)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private var systemDivider: some View {
+        Divider()
+            .overlay(FavoritesTheme.separator)
+            .padding(.leading, 54)
+    }
+
+    private var customGroupsEmptyRow: some View {
+        FavoritesEmptyStateCard(
+            icon: "folder.badge.plus",
+            title: "还没有自定义分组",
+            subtitle: "新建分组后，可以把收藏店铺整理到自己的分类里。"
+        )
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private func customGroupRow(_ group: RestaurantGroup) -> some View {
+        FavoritesCard {
+            FavoritesGroupRow(
+                icon: "folder.fill",
+                iconTint: FavoritesTheme.purple,
+                title: group.name,
+                countText: "\(group.restaurant_count ?? 0)"
+            )
+            .onTapGesture {
+                selectedCustomGroup = group
+            }
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                Button("删除", role: .destructive) {
+                    Task { await deleteGroup(group) }
                 }
             }
         }
-        .overlay {
-            if isLoading {
-                ProgressView()
-            }
-        }
-        .task { await loadData() }
-        .refreshable { await loadData() }
-        // 创建分组弹窗
-        .alert("新建分组", isPresented: $showCreateGroup) {
-            TextField("分组名称", text: $newGroupName)
-            Button("创建") {
-                Task { await createGroup() }
-            }
-            Button("取消", role: .cancel) {
-                newGroupName = ""
-            }
-        } message: {
-            Text("请输入分组名称（最多 20 字）")
-        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
-    // 分组行
-    private func groupRow(icon: String, title: String, count: Int, color: Color) -> some View {
-        HStack(spacing: DS.Spacing.md) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundColor(color)
-                .frame(width: 32)
-            Text(title)
-                .font(.body)
-            Spacer()
-            Text("\(count)")
-                .font(.subheadline)
-                .foregroundColor(.secondary)
-        }
-        .padding(.vertical, DS.Spacing.xs)
-    }
-
-    // MARK: - 数据加载
     private func loadData() async {
         isLoading = true
         do {
-            // 并行加载各项数据
             async let mapTask = APIService.shared.getMapRestaurants(userId: authState.userId)
-            async let favsTask = APIService.shared.getFavorites(userId: authState.userId)
+            async let favoritesTask = APIService.shared.getFavorites(userId: authState.userId)
             async let avoidedTask = APIService.shared.getAvoidedRestaurants(userId: authState.userId)
             async let groupsTask = APIService.shared.getGroups(userId: authState.userId)
 
-            let mapResp = try await mapTask
-            let favs = try await favsTask
+            let mapResponse = try await mapTask
+            let favorites = try await favoritesTask
             let avoided = try await avoidedTask
             let groups = try await groupsTask
 
-            favCount = favs.count
+            var restaurantIds = Set<String>()
+            for item in mapResponse.restaurants {
+                restaurantIds.insert(item.restaurant_id)
+            }
+            for item in mapResponse.user_restaurants {
+                restaurantIds.insert(item.restaurant_id)
+            }
+
+            allCount = restaurantIds.count
+            favCount = favorites.count
             avoidedCount = avoided.count
-            // 全部店铺 = 地图上所有可见店铺（博主推荐 + 用户自建推荐，去重）
-            var allIds = Set<String>()
-            for r in mapResp.restaurants {
-                allIds.insert(r.restaurant_id)
-            }
-            for r in mapResp.user_restaurants {
-                allIds.insert(r.restaurant_id)
-            }
-            allCount = allIds.count
-            customGroups = groups
+            customGroups = groups.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         } catch {
             print("[店铺列表] 加载失败: \(error)")
         }
         isLoading = false
     }
 
-    private func createGroup() async {
-        let name = newGroupName.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !name.isEmpty else { return }
+    private func createGroup(named name: String) async {
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+
         do {
-            let group = try await APIService.shared.createGroup(userId: authState.userId, name: name)
+            let group = try await APIService.shared.createGroup(userId: authState.userId, name: trimmedName)
             customGroups.append(group)
-            newGroupName = ""
+            customGroups.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            showCreateGroupSheet = false
         } catch {
             print("[店铺列表] 创建分组失败: \(error)")
         }
@@ -175,75 +250,111 @@ struct RestaurantListView: View {
     }
 }
 
-// MARK: - 系统分组类型
-enum SystemGroupType {
+enum SystemGroupType: Hashable {
     case all
     case favorites
     case avoided
 }
 
-// MARK: - 系统分组店铺列表页（全部/收藏/避雷）
 struct GroupRestaurantListView: View {
     let title: String
     let groupType: SystemGroupType
 
-    @EnvironmentObject var authState: AuthState
+    @EnvironmentObject private var authState: AuthState
+
     @State private var restaurants: [Restaurant] = []
     @State private var isLoading = true
+    @State private var selectedRestaurant: RestaurantDestination?
 
     var body: some View {
         List {
             if isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .listRowSeparator(.hidden)
+                loadingRow
             } else if restaurants.isEmpty {
-                Text("暂无店铺")
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity)
-                    .listRowSeparator(.hidden)
+                emptyRow
             } else {
                 ForEach(restaurants) { restaurant in
-                    NavigationLink {
-                        RestaurantDetailView(
-                            restaurant: restaurant,
-                            restaurantId: restaurant.id
-                        )
-                    } label: {
-                        restaurantRow(restaurant)
-                    }
+                    restaurantRow(restaurant)
                 }
             }
         }
+        .listStyle(.plain)
         .navigationTitle(title)
-        .task { await loadData() }
+        .navigationBarTitleDisplayMode(.large)
+        .navigationDestination(item: $selectedRestaurant) { destination in
+            RestaurantDetailView(
+                restaurant: destination.restaurant,
+                restaurantId: destination.restaurantId
+            )
+        }
+        .task {
+            await loadData()
+        }
+        .refreshable {
+            await loadData()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .restaurantStateDidChange)) { notification in
+            handleRestaurantStateChange(notification)
+        }
+        .favoritesMinimalBackButton()
+        .favoritesPageChrome()
+    }
+
+    private var loadingRow: some View {
+        FavoritesCard {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .tint(FavoritesTheme.accent)
+                    .padding(.vertical, DS.Spacing.xxl)
+                Spacer()
+            }
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private var emptyRow: some View {
+        FavoritesEmptyStateCard(
+            icon: "tray",
+            title: "暂无店铺",
+            subtitle: "这里会展示当前分组下可访问的店铺。"
+        )
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     private func restaurantRow(_ restaurant: Restaurant) -> some View {
-        HStack(spacing: DS.Spacing.md) {
-            AsyncImage(url: URL(string: restaurant.photo_url ?? "")) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                RoundedRectangle(cornerRadius: DS.Radius.sm)
-                    .fill(DS.Color.surfaceAlt)
-                    .overlay(Image(systemName: "fork.knife").foregroundColor(.gray))
+        FavoritesCard {
+            FavoritesRestaurantRow(
+                restaurant: restaurant,
+                configuration: FavoritesRestaurantRowConfiguration(
+                    addressText: restaurant.address,
+                    badgeText: restaurant.category,
+                    trailing: .chevron
+                )
+            )
+            .onTapGesture {
+                selectedRestaurant = RestaurantDestination(
+                    restaurant: restaurant,
+                    restaurantId: restaurant.id
+                )
             }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(restaurant.name)
-                    .font(.subheadline.bold())
-                    .lineLimit(1)
-                if let address = restaurant.address, !address.isEmpty {
-                    Text(address)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-            }
-            Spacer()
         }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, restaurants.first?.id == restaurant.id ? 8 : 0)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     private func loadData() async {
@@ -251,27 +362,149 @@ struct GroupRestaurantListView: View {
         do {
             switch groupType {
             case .all:
-                // 全部店铺 = 地图上所有可见店铺（博主推荐 + 用户自建推荐，去重）
-                let mapResp = try await APIService.shared.getMapRestaurants(userId: authState.userId)
+                let mapResponse = try await APIService.shared.getMapRestaurants(userId: authState.userId)
                 var seen = Set<String>()
-                var all: [Restaurant] = []
-                for item in mapResp.restaurants {
-                    if let r = item.restaurants, seen.insert(r.id).inserted { all.append(r) }
+                var allRestaurants: [Restaurant] = []
+
+                for item in mapResponse.restaurants {
+                    if let restaurant = item.restaurants, seen.insert(restaurant.id).inserted {
+                        allRestaurants.append(restaurant)
+                    }
                 }
-                for item in mapResp.user_restaurants {
-                    if let r = item.restaurants, seen.insert(r.id).inserted { all.append(r) }
+
+                for item in mapResponse.user_restaurants {
+                    if let restaurant = item.restaurants, seen.insert(restaurant.id).inserted {
+                        allRestaurants.append(restaurant)
+                    }
                 }
-                restaurants = all
+
+                restaurants = allRestaurants
             case .favorites:
-                let favs = try await APIService.shared.getFavorites(userId: authState.userId)
-                restaurants = favs.compactMap { $0.restaurants }
+                let favorites = try await APIService.shared.getFavorites(userId: authState.userId)
+                restaurants = favorites.compactMap(\.restaurants)
             case .avoided:
                 let avoided = try await APIService.shared.getAvoidedRestaurants(userId: authState.userId)
-                restaurants = avoided.compactMap { $0.restaurants }
+                restaurants = avoided.compactMap(\.restaurants)
             }
         } catch {
-            print("[分组列表] 加载失败: \(error)")
+            print("[系统分组] 加载失败: \(error)")
         }
         isLoading = false
+    }
+
+    private func handleRestaurantStateChange(_ notification: Notification) {
+        guard let change = RestaurantStateChange(notification) else { return }
+
+        if change.isDeleted {
+            restaurants.removeAll { $0.id == change.restaurantId }
+            return
+        }
+
+        switch groupType {
+        case .favorites:
+            if change.isFavorited == false {
+                restaurants.removeAll { $0.id == change.restaurantId }
+            } else if change.isFavorited == true {
+                Task { await loadData() }
+            }
+        case .avoided:
+            if change.isAvoided == false {
+                restaurants.removeAll { $0.id == change.restaurantId }
+            } else if change.isAvoided == true {
+                Task { await loadData() }
+            }
+        case .all:
+            break
+        }
+    }
+}
+
+private struct FavoritesGroupRow: View {
+    let icon: String
+    let iconTint: Color
+    let title: String
+    let countText: String
+
+    var body: some View {
+        HStack(spacing: DS.Spacing.md) {
+            Image(systemName: icon)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(iconTint)
+                .frame(width: 24)
+
+            Text(title)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(FavoritesTheme.body)
+
+            Spacer()
+
+            Text(countText)
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(FavoritesTheme.secondary)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(FavoritesTheme.tertiary)
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.vertical, 16)
+        .contentShape(Rectangle())
+    }
+}
+
+private struct CreateGroupSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var groupName = ""
+
+    let onCreate: (String) -> Void
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                FavoritesTheme.background
+                    .ignoresSafeArea()
+
+                VStack(alignment: .leading, spacing: DS.Spacing.lg) {
+                    Text("给你的店铺集合起个名字，后续可以继续添加收藏店铺。")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(FavoritesTheme.secondary)
+
+                    FavoritesCard {
+                        VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                            Text("分组名称")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(FavoritesTheme.body)
+
+                            TextField("例如：火锅 / 夜宵 / 想带朋友去", text: $groupName)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .foregroundStyle(FavoritesTheme.title)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 12)
+                                .background(FavoritesTheme.surfaceElevated, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                        .padding(DS.Spacing.lg)
+                    }
+
+                    Spacer()
+                }
+                .padding(DS.Spacing.lg)
+            }
+            .navigationTitle("新建分组")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("创建") {
+                        onCreate(groupName)
+                    }
+                    .disabled(groupName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+            .favoritesPageChrome()
+        }
     }
 }

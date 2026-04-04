@@ -415,3 +415,52 @@ create policy "用户只能操作自己的分组店铺" on user_group_restaurant
 -- 若在已有数据库上增量执行，运行以下 ALTER 语句：
 -- ─────────────────────────────────────────
 -- ALTER TABLE user_favorites ADD COLUMN IF NOT EXISTS note text;
+
+
+-- ─────────────────────────────────────────
+-- 16. 用户地图表（v6.0 新增）
+-- 控制用户地图的公开/私密状态
+-- ─────────────────────────────────────────
+create table if not exists user_maps (
+  user_id    uuid primary key,
+  is_public  boolean not null default true,
+  updated_at timestamptz default now()
+);
+
+-- 为现有用户初始化地图记录（默认公开）
+insert into user_maps (user_id, is_public)
+select user_id, true from user_profiles
+on conflict (user_id) do nothing;
+
+alter table user_maps enable row level security;
+
+-- 公开地图任何人可读
+create policy "公开地图可读" on user_maps
+  for select using (is_public = true or auth.uid() = user_id);
+
+-- 用户只能修改自己的地图设置
+create policy "用户只能修改自己的地图设置" on user_maps
+  for all using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
+-- 17. 用户地图订阅表（v6.0 新增）
+-- 记录用户订阅其他用户的地图
+-- ─────────────────────────────────────────
+create table if not exists user_map_subscriptions (
+  id              uuid primary key default uuid_generate_v4(),
+  subscriber_id   uuid not null,
+  target_user_id  uuid not null,
+  is_enabled      boolean not null default true,
+  created_at      timestamptz default now(),
+  unique(subscriber_id, target_user_id)
+);
+
+create index if not exists idx_ums_subscriber on user_map_subscriptions(subscriber_id);
+create index if not exists idx_ums_target     on user_map_subscriptions(target_user_id);
+
+alter table user_map_subscriptions enable row level security;
+
+-- 用户只能操作自己的订阅
+create policy "用户只能操作自己的订阅" on user_map_subscriptions
+  for all using (auth.uid() = subscriber_id);

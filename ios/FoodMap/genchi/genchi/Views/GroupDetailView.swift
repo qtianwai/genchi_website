@@ -1,102 +1,129 @@
-// 分组详情页（v5.0 新增）
-// 展示某个自定义分组内的店铺列表，支持添加/移除店铺
-
 import SwiftUI
 
 struct GroupDetailView: View {
     let group: RestaurantGroup
 
-    @EnvironmentObject var authState: AuthState
+    @EnvironmentObject private var authState: AuthState
 
     @State private var restaurants: [GroupRestaurant] = []
     @State private var isLoading = true
     @State private var showAddSheet = false
+    @State private var selectedRestaurant: RestaurantDestination?
 
     var body: some View {
         List {
             if isLoading {
-                ProgressView()
-                    .frame(maxWidth: .infinity)
-                    .listRowSeparator(.hidden)
+                loadingRow
             } else if restaurants.isEmpty {
-                VStack(spacing: DS.Spacing.md) {
-                    Image(systemName: "folder")
-                        .font(.largeTitle)
-                        .foregroundColor(.secondary)
-                    Text("分组内暂无店铺")
-                        .foregroundColor(.secondary)
-                    Text("点击右上角添加按钮添加店铺")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.top, 40)
-                .listRowSeparator(.hidden)
+                emptyRow
             } else {
                 ForEach(restaurants) { item in
-                    if let restaurant = item.restaurants {
-                        NavigationLink {
-                            RestaurantDetailView(
-                                restaurant: restaurant,
-                                restaurantId: item.restaurant_id
-                            )
-                        } label: {
-                            restaurantRow(restaurant)
-                        }
-                        .swipeActions(edge: .trailing) {
-                            Button("移除", role: .destructive) {
-                                Task { await removeFromGroup(item) }
-                            }
-                        }
-                    }
+                    restaurantRow(item)
                 }
             }
         }
+        .listStyle(.plain)
         .navigationTitle(group.name)
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
-            ToolbarItem(placement: .navigationBarTrailing) {
+            ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     showAddSheet = true
                 } label: {
                     Image(systemName: "plus")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(FavoritesTheme.accent)
                 }
             }
         }
-        .task { await loadData() }
-        .refreshable { await loadData() }
+        .navigationDestination(item: $selectedRestaurant) { destination in
+            RestaurantDetailView(
+                restaurant: destination.restaurant,
+                restaurantId: destination.restaurantId
+            )
+        }
+        .task {
+            await loadData()
+        }
+        .refreshable {
+            await loadData()
+        }
         .sheet(isPresented: $showAddSheet) {
-            AddToGroupSheet(groupId: group.id) {
+            AddToGroupSheet(group: group) {
                 Task { await loadData() }
             }
+            .presentationDetents([.large])
         }
+        .onReceive(NotificationCenter.default.publisher(for: .restaurantStateDidChange)) { notification in
+            handleRestaurantStateChange(notification)
+        }
+        .favoritesMinimalBackButton()
+        .favoritesPageChrome()
     }
 
-    private func restaurantRow(_ restaurant: Restaurant) -> some View {
-        HStack(spacing: DS.Spacing.md) {
-            // 店铺图片
-            AsyncImage(url: URL(string: restaurant.photo_url ?? "")) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                RoundedRectangle(cornerRadius: DS.Radius.sm)
-                    .fill(DS.Color.surfaceAlt)
-                    .overlay(Image(systemName: "fork.knife").foregroundColor(.gray))
+    private var loadingRow: some View {
+        FavoritesCard {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .tint(FavoritesTheme.accent)
+                    .padding(.vertical, DS.Spacing.xxl)
+                Spacer()
             }
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
 
-            VStack(alignment: .leading, spacing: 2) {
-                Text(restaurant.name)
-                    .font(.subheadline.bold())
-                    .lineLimit(1)
-                if let address = restaurant.address, !address.isEmpty {
-                    Text(address)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+    private var emptyRow: some View {
+        FavoritesEmptyStateCard(
+            icon: "folder",
+            title: "分组里还没有店铺",
+            subtitle: "点击右上角加号，把收藏里的店铺加入这个分组。"
+        )
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, 8)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private func restaurantRow(_ item: GroupRestaurant) -> some View {
+        FavoritesCard {
+            if let restaurant = item.restaurants {
+                FavoritesRestaurantRow(
+                    restaurant: restaurant,
+                    configuration: FavoritesRestaurantRowConfiguration(
+                        addressText: restaurant.address,
+                        badgeText: restaurant.category,
+                        badgeTint: FavoritesTheme.purple,
+                        trailing: .chevron
+                    )
+                )
+                .onTapGesture {
+                    selectedRestaurant = RestaurantDestination(
+                        restaurant: restaurant,
+                        restaurantId: item.restaurant_id
+                    )
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                    Button("移除", role: .destructive) {
+                        Task { await removeFromGroup(item) }
+                    }
                 }
             }
-            Spacer()
         }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, restaurants.first?.id == item.id ? 8 : 0)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
     }
 
     private func loadData() async {
@@ -124,68 +151,54 @@ struct GroupDetailView: View {
             print("[分组详情] 移除失败: \(error)")
         }
     }
+
+    private func handleRestaurantStateChange(_ notification: Notification) {
+        guard let change = RestaurantStateChange(notification) else { return }
+        if change.isDeleted {
+            restaurants.removeAll { $0.restaurant_id == change.restaurantId }
+        }
+    }
 }
 
-// MARK: - 添加店铺到分组的 Sheet
-// 从用户已收藏的店铺中选择添加
 struct AddToGroupSheet: View {
-    let groupId: String
+    let group: RestaurantGroup
     let onAdded: () -> Void
 
-    @EnvironmentObject var authState: AuthState
+    @EnvironmentObject private var authState: AuthState
     @Environment(\.dismiss) private var dismiss
 
     @State private var favorites: [Favorite] = []
+    @State private var existingRestaurantIds: Set<String> = []
     @State private var isLoading = true
+
+    private var orderedFavorites: [Favorite] {
+        favorites.sorted { left, right in
+            let leftAdded = existingRestaurantIds.contains(left.restaurant_id)
+            let rightAdded = existingRestaurantIds.contains(right.restaurant_id)
+            if leftAdded == rightAdded {
+                return (left.restaurants?.name ?? "") < (right.restaurants?.name ?? "")
+            }
+            return !leftAdded && rightAdded
+        }
+    }
 
     var body: some View {
         NavigationStack {
             List {
-                if isLoading {
-                    ProgressView()
-                        .frame(maxWidth: .infinity)
-                        .listRowSeparator(.hidden)
-                } else if favorites.isEmpty {
-                    Text("暂无收藏的店铺")
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .listRowSeparator(.hidden)
-                } else {
-                    ForEach(favorites) { fav in
-                        if let restaurant = fav.restaurants {
-                            Button {
-                                Task { await addToGroup(fav.restaurant_id) }
-                            } label: {
-                                HStack(spacing: DS.Spacing.md) {
-                                    AsyncImage(url: URL(string: restaurant.photo_url ?? "")) { image in
-                                        image.resizable().scaledToFill()
-                                    } placeholder: {
-                                        RoundedRectangle(cornerRadius: DS.Radius.sm)
-                                            .fill(DS.Color.surfaceAlt)
-                                    }
-                                    .frame(width: 40, height: 40)
-                                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
+                FavoritesSectionHeader("可加入的收藏店铺", trailing: "\(favorites.count) 家")
 
-                                    VStack(alignment: .leading) {
-                                        Text(restaurant.name)
-                                            .font(.subheadline)
-                                            .foregroundColor(.primary)
-                                        if let city = restaurant.city {
-                                            Text(city)
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
-                                    }
-                                    Spacer()
-                                    Image(systemName: "plus.circle")
-                                        .foregroundColor(DS.Color.brand)
-                                }
-                            }
-                        }
+                if isLoading {
+                    loadingRow
+                } else if favorites.isEmpty {
+                    emptyRow
+                } else {
+                    ForEach(orderedFavorites) { favorite in
+                        row(for: favorite)
                     }
                 }
             }
-            .navigationTitle("选择店铺")
+            .listStyle(.plain)
+            .navigationTitle("添加到分组")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -193,20 +206,107 @@ struct AddToGroupSheet: View {
                 }
             }
             .task {
-                isLoading = true
-                favorites = (try? await APIService.shared.getFavorites(userId: authState.userId)) ?? []
-                isLoading = false
+                await loadData()
+            }
+            .favoritesPageChrome()
+        }
+    }
+
+    private var loadingRow: some View {
+        FavoritesCard {
+            HStack {
+                Spacer()
+                ProgressView()
+                    .tint(FavoritesTheme.accent)
+                    .padding(.vertical, DS.Spacing.xxl)
+                Spacer()
             }
         }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private var emptyRow: some View {
+        FavoritesEmptyStateCard(
+            icon: "bookmark.slash",
+            title: "还没有可添加的收藏店铺",
+            subtitle: "先去收藏页把店铺收藏起来，再回来分组。"
+        )
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private func row(for favorite: Favorite) -> some View {
+        let alreadyAdded = existingRestaurantIds.contains(favorite.restaurant_id)
+
+        return FavoritesCard {
+            if let restaurant = favorite.restaurants {
+                HStack(spacing: DS.Spacing.md) {
+                    FavoritesRestaurantRow(
+                        restaurant: restaurant,
+                        configuration: FavoritesRestaurantRowConfiguration(
+                            noteText: favorite.note,
+                            addressText: restaurant.address,
+                            badgeText: alreadyAdded ? "已添加" : restaurant.category,
+                            badgeTint: alreadyAdded ? FavoritesTheme.purple : FavoritesTheme.accent,
+                            trailing: .none
+                        )
+                    )
+
+                    Image(systemName: alreadyAdded ? "checkmark.circle.fill" : "plus.circle.fill")
+                        .font(.system(size: 22, weight: .semibold))
+                        .foregroundStyle(alreadyAdded ? FavoritesTheme.purple : FavoritesTheme.accent)
+                        .padding(.trailing, DS.Spacing.lg)
+                }
+                .contentShape(Rectangle())
+                .opacity(alreadyAdded ? 0.72 : 1)
+                .onTapGesture {
+                    guard !alreadyAdded else { return }
+                    Task { await addToGroup(favorite.restaurant_id) }
+                }
+            }
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.bottom, 12)
+        .listRowInsets(.init(top: 0, leading: 0, bottom: 0, trailing: 0))
+        .listRowBackground(Color.clear)
+        .listRowSeparator(.hidden)
+    }
+
+    private func loadData() async {
+        isLoading = true
+        do {
+            async let favoritesTask = APIService.shared.getFavorites(userId: authState.userId)
+            async let groupRestaurantsTask = APIService.shared.getGroupRestaurants(
+                groupId: group.id,
+                userId: authState.userId
+            )
+
+            let loadedFavorites = try await favoritesTask
+            let groupRestaurants = try await groupRestaurantsTask
+
+            favorites = loadedFavorites
+            existingRestaurantIds = Set(groupRestaurants.map(\.restaurant_id))
+        } catch {
+            print("[添加到分组] 加载失败: \(error)")
+        }
+        isLoading = false
     }
 
     private func addToGroup(_ restaurantId: String) async {
         do {
             try await APIService.shared.addToGroup(
                 userId: authState.userId,
-                groupId: groupId,
+                groupId: group.id,
                 restaurantId: restaurantId
             )
+            existingRestaurantIds.insert(restaurantId)
             onAdded()
             dismiss()
         } catch {

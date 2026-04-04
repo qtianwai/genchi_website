@@ -19,6 +19,10 @@ class LocationManager: NSObject, ObservableObject {
     @Published var heading: CLLocationDirection? = nil
 
     private let locationManager = CLLocationManager()
+    private let simulatorPreviewCoordinate = CLLocationCoordinate2D(
+        latitude: 31.321631,
+        longitude: 121.591371
+    )
 
     override init() {
         super.init()
@@ -26,15 +30,22 @@ class LocationManager: NSObject, ObservableObject {
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
         locationManager.headingFilter = 5
         authorizationStatus = locationManager.authorizationStatus
+        applySimulatorPreviewLocationIfNeeded(incrementCount: false)
     }
 
     // 请求定位权限
     func requestPermission() {
+        if applySimulatorPreviewLocationIfNeeded() {
+            return
+        }
         locationManager.requestWhenInUseAuthorization()
     }
 
     // 开始定位
     func startUpdatingLocation() {
+        if applySimulatorPreviewLocationIfNeeded() {
+            return
+        }
         locationManager.startUpdatingLocation()
         if CLLocationManager.headingAvailable() {
             locationManager.startUpdatingHeading()
@@ -45,6 +56,21 @@ class LocationManager: NSObject, ObservableObject {
     func stopUpdatingLocation() {
         locationManager.stopUpdatingLocation()
         locationManager.stopUpdatingHeading()
+    }
+
+    @discardableResult
+    private func applySimulatorPreviewLocationIfNeeded(incrementCount: Bool = true) -> Bool {
+#if targetEnvironment(simulator)
+        userLocation = simulatorPreviewCoordinate
+        authorizationStatus = .authorizedWhenInUse
+        errorMessage = nil
+        if incrementCount {
+            locationUpdateCount += 1
+        }
+        return true
+#else
+        return false
+#endif
     }
 }
 

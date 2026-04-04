@@ -601,6 +601,143 @@ class APIService {
             responseType: AuthorStats.self
         )
     }
+
+    // ─────────────────────────────────────────
+    // v6.0 个人专属美食地图
+    // ─────────────────────────────────────────
+
+    // 获取他人地图基本信息（昵称、店铺总数、是否公开）
+    func getUserMapInfo(targetUserId: String) async throws -> UserMapInfo {
+        return try await get(
+            path: "/api/map/\(targetUserId)/info",
+            params: [:],
+            responseType: UserMapInfo.self
+        )
+    }
+
+    // 获取他人地图的店铺列表（分页、支持附近筛选）
+    func getUserMapRestaurants(
+        targetUserId: String,
+        page: Int = 1,
+        lat: Double? = nil,
+        lng: Double? = nil,
+        radiusKm: Double = 10
+    ) async throws -> UserMapRestaurantsResponse {
+        var params: [String: String] = [
+            "page": String(page),
+            "page_size": "50"
+        ]
+        if let lat = lat, let lng = lng {
+            params["lat"] = String(lat)
+            params["lng"] = String(lng)
+            params["radius_km"] = String(radiusKm)
+        }
+        return try await get(
+            path: "/api/map/\(targetUserId)/restaurants",
+            params: params,
+            responseType: UserMapRestaurantsResponse.self
+        )
+    }
+
+    // 更新自己地图的隐私设置（公开/私密）
+    func updateMapPrivacy(userId: String, isPublic: Bool) async throws {
+        struct Body: Codable {
+            let user_id: String
+            let is_public: Bool
+        }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/map/privacy",
+            body: Body(user_id: userId, is_public: isPublic),
+            responseType: Response.self
+        )
+    }
+
+    // 获取我的订阅列表
+    func getMapSubscriptions(userId: String) async throws -> [MapSubscription] {
+        struct Response: Codable { let subscriptions: [MapSubscription] }
+        let resp = try await get(
+            path: "/api/map-subscriptions",
+            params: ["user_id": userId],
+            responseType: Response.self
+        )
+        return resp.subscriptions
+    }
+
+    // 订阅他人地图
+    func subscribeUserMap(subscriberId: String, targetUserId: String) async throws {
+        struct Body: Codable {
+            let subscriber_id: String
+            let target_user_id: String
+        }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/map-subscriptions",
+            body: Body(subscriber_id: subscriberId, target_user_id: targetUserId),
+            responseType: Response.self
+        )
+    }
+
+    // 取消订阅
+    func unsubscribeUserMap(subscriberId: String, targetUserId: String) async throws {
+        var components = URLComponents(string: "\(BASE_URL)/api/map-subscriptions/\(targetUserId)")!
+        components.queryItems = [URLQueryItem(name: "subscriber_id", value: subscriberId)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("取消订阅失败")
+        }
+    }
+
+    // 切换订阅开关（是否在自己地图上显示该用户点位）
+    func toggleMapSubscription(subscriberId: String, targetUserId: String, isEnabled: Bool) async throws {
+        struct Body: Codable {
+            let subscriber_id: String
+            let is_enabled: Bool
+        }
+        struct Response: Codable { let status: String }
+        _ = try await patch(
+            path: "/api/map-subscriptions/\(targetUserId)",
+            body: Body(subscriber_id: subscriberId, is_enabled: isEnabled),
+            responseType: Response.self
+        )
+    }
+
+    // 通用 PATCH 请求
+    private func patch<T: Codable, R: Codable>(
+        path: String,
+        body: T,
+        responseType: R.Type
+    ) async throws -> R {
+        guard let url = URL(string: "\(BASE_URL)\(path)") else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PATCH"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(body)
+        request.timeoutInterval = 60
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("请求失败，状态码: \(httpResponse.statusCode)")
+        }
+
+        return try JSONDecoder().decode(R.self, from: data)
+    }
 }
 
 // 自定义错误类型

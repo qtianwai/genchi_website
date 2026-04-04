@@ -37,147 +37,185 @@ struct ParseLinkSheet: View {
         case singleOnly  // 仅添加本店铺
     }
 
+    private var normalizedLinkText: String {
+        linkText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: DS.Spacing.xl) {
-                    // ── 说明文字 ──
-                    VStack(spacing: DS.Spacing.sm) {
-                        Image(systemName: "link.badge.plus")
-                            .font(.system(size: 40))
-                            .foregroundColor(DS.Color.brand)
-                        Text("粘贴抖音链接")
-                            .font(.title2).fontWeight(.bold)
-                        Text("从抖音复制博主视频链接，粘贴到下方\nAI 将自动识别推荐的店铺")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, DS.Spacing.xl)
+        NavigationStack {
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
 
-                    // ── 链接输入框 ──
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            TextField("粘贴抖音链接...", text: $linkText, axis: .vertical)
-                                .lineLimit(3)
-                                .padding(12)
-                            if !linkText.isEmpty {
-                                Button(action: { linkText = "" }) {
-                                    Image(systemName: "xmark.circle.fill")
-                                        .foregroundColor(.gray)
-                                }
-                                .padding(.trailing, 12)
-                            }
-                        }
-                        .background(Color(.systemGray6))
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
-
-                        // 快速粘贴按钮（从剪贴板读取）
-                        Button(action: pasteFromClipboard) {
-                            Label("从剪贴板粘贴", systemImage: "doc.on.clipboard")
-                                .font(.caption)
-                                .foregroundColor(DS.Color.brand)
-                        }
-                    }
-                    .padding(.horizontal, DS.Spacing.xl)
-
-                    // ── 入库范围选择 ──
-                    VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-                        Text("添加方式")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        ScopeOptionRow(
-                            icon: "person.crop.circle.badge.plus",
-                            title: "关注博主全部推荐",
-                            subtitle: "解析博主所有探店视频，自动关注博主",
-                            isSelected: selectedScope == .followAll
-                        ) { selectedScope = .followAll }
-
-                        ScopeOptionRow(
-                            icon: "fork.knife.circle",
-                            title: "仅添加本店铺",
-                            subtitle: "只添加这条视频的店铺，不关注博主",
-                            isSelected: selectedScope == .singleOnly
-                        ) { selectedScope = .singleOnly }
-                    }
-                    .padding(.horizontal, DS.Spacing.xl)
-
-                    // ── 错误提示 ──
-                    if let error = errorMessage {
-                        HStack {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.red)
-                            Text(error)
-                                .font(.caption)
-                                .foregroundColor(.red)
-                        }
-                        .padding(.horizontal, DS.Spacing.xl)
-                    }
-
-                    // ── 后台解析完成通知 ──
-                    if let completedMsg = bgCompletedMessage {
-                        HStack {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(DS.Color.success)
-                            Text(completedMsg)
-                                .font(.caption)
-                                .foregroundColor(DS.Color.success)
-                            Spacer()
-                            Button(action: { bgCompletedMessage = nil; onSuccess() }) {
-                                Text("刷新地图")
-                                    .font(.caption)
-                                    .fontWeight(.semibold)
+                ScrollView {
+                    VStack(spacing: DS.Spacing.xl) {
+                        VStack(spacing: DS.Spacing.sm) {
+                            ZStack {
+                                Circle()
+                                    .fill(DS.Color.brand.opacity(0.12))
+                                    .frame(width: 68, height: 68)
+                                Image(systemName: "link.badge.plus")
+                                    .font(.system(size: 30, weight: .semibold))
                                     .foregroundColor(DS.Color.brand)
                             }
+
+                            Text("从抖音添加")
+                                .font(.title2.bold())
+                            Text("复制一条抖音视频链接，系统会帮你识别里面提到的店铺")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
                         }
-                        .padding(DS.Spacing.md)
-                        .background(DS.Color.success.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
-                        .padding(.horizontal, DS.Spacing.xl)
-                    }
+                        .padding(.top, 8)
 
-                    // ── 后台解析进度指示器 ──
-                    if showBgProgress {
-                        BgProgressView(statusMessage: bgStatusMessage)
-                            .padding(.horizontal, DS.Spacing.xl)
-                    }
+                        VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                            sectionHeader(
+                                title: "贴上视频链接",
+                                subtitle: "支持直接粘贴，也可以一键读取剪贴板"
+                            )
 
-                    // ── 解析结果 ──
-                    if let result = result {
-                        ParseResultView(result: result, onManualAdd: {
-                            showManualAddSheet = true
-                        })
-                        .padding(.horizontal, DS.Spacing.xl)
-                    }
+                            HStack(alignment: .top, spacing: DS.Spacing.sm) {
+                                TextField("把抖音链接粘贴到这里", text: $linkText, axis: .vertical)
+                                    .lineLimit(4)
+                                    .textInputAutocapitalization(.never)
+                                    .disableAutocorrection(true)
 
-                    Spacer(minLength: 30)
-
-                    // ── 解析按钮 ──
-                    Button(action: parseLink) {
-                        HStack {
-                            if isLoading {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .scaleEffect(0.8)
+                                if !linkText.isEmpty {
+                                    Button(action: { linkText = "" }) {
+                                        Image(systemName: "xmark.circle.fill")
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
                             }
-                            Text(buttonText)
-                                .fontWeight(.semibold)
+                            .padding(14)
+                            .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .stroke(DS.Color.separator.opacity(0.14), lineWidth: 0.8)
+                            }
+
+                            Button(action: pasteFromClipboard) {
+                                Label("从剪贴板带入", systemImage: "doc.on.clipboard")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(DS.Color.brand)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(DS.Color.brand.opacity(0.10), in: Capsule())
+                            }
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(buttonBackground)
-                        .foregroundColor(.white)
-                        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.lg))
+                        .padding(16)
+                        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+                        }
+                        .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
+
+                        VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                            sectionHeader(
+                                title: "保存范围",
+                                subtitle: "决定是顺带关注这位推荐人，还是只留下当前店铺"
+                            )
+
+                            ScopeOptionRow(
+                                icon: "person.crop.circle.badge.plus",
+                                title: "一起收下这位推荐人",
+                                subtitle: "除了当前店铺，也同步带入这位推荐人的更多探店内容",
+                                isSelected: selectedScope == .followAll
+                            ) { selectedScope = .followAll }
+
+                            ScopeOptionRow(
+                                icon: "fork.knife.circle",
+                                title: "只保存这家店",
+                                subtitle: "只导入当前视频识别出的店铺，不额外关注推荐人",
+                                isSelected: selectedScope == .singleOnly
+                            ) { selectedScope = .singleOnly }
+                        }
+                        .padding(16)
+                        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+                        }
+                        .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
+
+                        if let error = errorMessage {
+                            HStack(spacing: DS.Spacing.sm) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text(error)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(12)
+                            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+
+                        if let completedMsg = bgCompletedMessage {
+                            HStack(spacing: DS.Spacing.sm) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(DS.Color.success)
+                                Text(completedMsg)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Button(action: {
+                                    bgCompletedMessage = nil
+                                    onSuccess()
+                                }) {
+                                    Text("刷新地图")
+                                        .font(.system(size: 13, weight: .semibold))
+                                        .foregroundColor(DS.Color.brand)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 8)
+                                        .background(DS.Color.brand.opacity(0.10), in: Capsule())
+                                }
+                            }
+                            .padding(12)
+                            .background(Color.green.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        }
+
+                        if showBgProgress {
+                            BgProgressView(statusMessage: bgStatusMessage)
+                        }
+
+                        if let result = result {
+                            ParseResultView(result: result, onManualAdd: {
+                                showManualAddSheet = true
+                            })
+                        }
+
+                        Button(action: parseLink) {
+                            HStack(spacing: 8) {
+                                if isLoading {
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                        .scaleEffect(0.8)
+                                        .tint(.white)
+                                } else {
+                                    Image(systemName: parseCompleted ? "arrow.clockwise" : "sparkles")
+                                }
+
+                                Text(buttonText)
+                                    .fontWeight(.semibold)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 14)
+                            .background(buttonBackground, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .foregroundColor(.white)
+                        }
+                        .disabled(normalizedLinkText.isEmpty || isLoading)
                     }
-                    .disabled(linkText.isEmpty || isLoading)
-                    .padding(.horizontal, DS.Spacing.xl)
-                    .padding(.bottom, 30)
+                    .padding(20)
+                    .padding(.bottom, 24)
                 }
             }
+            .navigationTitle("从抖音添加")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button("关闭") {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") {
                         bgProgressTimer?.invalidate()
                         dismiss()
                     }
@@ -211,14 +249,26 @@ struct ParseLinkSheet: View {
         }
     }
 
+    @ViewBuilder
+    private func sectionHeader(title: String, subtitle: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.headline)
+                .foregroundColor(.primary)
+            Text(subtitle)
+                .font(.caption)
+                .foregroundColor(.secondary)
+        }
+    }
+
     // 按钮文本
     var buttonText: String {
         if isLoading {
-            return "正在解析..."
+            return "识别中..."
         } else if parseCompleted {
-            return "重新解析"
+            return "重新识别"
         } else {
-            return "开始解析"
+            return "开始识别"
         }
     }
 
@@ -346,8 +396,11 @@ struct BgProgressView: View {
             Spacer()
         }
         .padding(DS.Spacing.md)
-        .background(DS.Color.brand.opacity(0.08))
-        .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(DS.Color.brand.opacity(0.12), lineWidth: 0.8)
+        }
         .transition(.opacity.combined(with: .move(edge: .top)))
     }
 }
@@ -492,6 +545,13 @@ struct ParseResultView: View {
                 .padding(.top, 8)
             }
         }
+        .padding(16)
+        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+        }
+        .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
     }
 
     private var _statusText: String {
@@ -541,12 +601,15 @@ struct ScopeOptionRow: View {
                     .font(.title3)
             }
             .padding(DS.Spacing.md)
-            .background(isSelected ? DS.Color.brand.opacity(0.06) : Color(.systemGray6))
+            .background(isSelected ? DS.Color.brand.opacity(0.08) : Color(.systemBackground))
             .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
-            .overlay(
+            .overlay {
                 RoundedRectangle(cornerRadius: DS.Radius.md)
-                    .stroke(isSelected ? DS.Color.brand.opacity(0.4) : Color.clear, lineWidth: 1)
-            )
+                    .stroke(
+                        isSelected ? DS.Color.brand.opacity(0.35) : DS.Color.separator.opacity(0.12),
+                        lineWidth: 0.9
+                    )
+            }
         }
         .buttonStyle(.plain)
     }

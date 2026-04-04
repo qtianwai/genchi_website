@@ -1820,3 +1820,157 @@ Python httpx、Supabase REST API、SwiftUI AsyncImage
 - 删除根目录会话记录文件（已迁移至帮助文档目录）
 
 ---
+
+## 会话记录 - 2026-04-04（Codex Build iOS Apps 界面说明）
+
+### 会话目的
+
+解释 Codex 输入区「Build iOS Apps」紫色条、codex 标签、模型选择与「高」档位等控件的含义。
+
+### 完成的主要任务
+
+- 说明 iOS 专项 Agent/场景的作用范围（SwiftUI、性能、新 API、模拟器调试）
+- 说明底部工具栏：添加上下文、Codex 标识、模型下拉、质量/推理档位、发送按钮
+
+### 关键决策
+
+- 无代码变更，仅为产品界面说明。
+
+### 使用的技术栈
+
+无。
+
+### 修改的文件
+
+- `README.md`（追加本会话记录）
+
+---
+
+## 会话记录 - 2026-04-04（v6.0 个人专属美食地图完整实现）
+
+### 会话目的
+
+完成「个人专属美食地图」v6.0 功能的全栈实现，包括数据库设计、后端 API、iOS UI 和端到端测试验证。
+
+### 完成的主要任务
+
+**数据库层（Phase 1）**
+- 创建 `user_maps` 表：管理用户地图的公开/私密状态
+- 创建 `user_map_subscriptions` 表：管理用户间的地图订阅关系
+- 配置 RLS 策略：确保隐私权限边界
+
+**后端数据库函数（Phase 2）**
+- `get_user_map_info(user_id)`：返回用户资料 + 公开状态 + 店铺总数
+- `get_user_map_restaurants_public(user_id, page, page_size, lat, lng, radius_km)`：分页返回他人地图店铺或私密提示
+- `upsert_user_map(user_id, is_public)`：创建/更新地图隐私设置
+- `subscribe_user_map(subscriber_id, target_user_id)`：订阅他人地图（含自我订阅拦截）
+- `unsubscribe_user_map(subscriber_id, target_user_id)`：取消订阅
+- `toggle_map_subscription(subscriber_id, target_user_id, is_enabled)`：切换订阅显示开关
+- `get_map_subscriptions(subscriber_id)`：返回订阅列表（含被订阅者资料）
+
+**后端 API 接口（Phase 3）**
+- `GET /map/{user_id}`：H5 预览页（降级方案，含 Smart App Banner）
+- `GET /api/map/{user_id}/info`：地图基本信息
+- `GET /api/map/{user_id}/restaurants`：分页店铺列表（支持附近筛选）
+- `POST /api/map/privacy`：更新隐私设置
+- `GET /api/map-subscriptions`：获取订阅列表
+- `POST /api/map-subscriptions`：订阅地图
+- `DELETE /api/map-subscriptions/{target_user_id}`：取消订阅
+- `PATCH /api/map-subscriptions/{target_user_id}`：切换开关
+
+**iOS 数据层（Phase 4-5）**
+- 扩展 `Models.swift`：新增 `RecommendSourceType` 枚举（author/selfCreated/subscribedUser）、`MapDisplayItem.recommendedBy` 字段、`MapAuthorFilter.subscribedUser` case
+- 新建 `UserMapModels.swift`：`UserMapInfo`、`MapSubscription`、`UserMapRestaurantsResponse` 等模型
+- 扩展 `APIService.swift`：新增 7 个方法用于地图订阅 API 调用
+
+**iOS ViewModel（Phase 6）**
+- 扩展 `MapViewModel.swift`：
+  * 新增 `subscribedMapData` 和 `mapSubscriptions` 属性
+  * 实现 `loadSubscribedMapData()` 并发加载（AsyncSemaphore 限制最多 3 个）
+  * 实现 `mergedAllItems()` 双重去重逻辑（restaurant_id + 坐标 50m 内同名兜底）
+  * 实现信息优先级（自建 > 订阅用户 > 博主）
+  * 实现 `filteredItems()` 按订阅用户筛选
+
+**iOS UI 页面（Phase 7）**
+- 新建 `UserMapView.swift`：用户地图只读页面（头像、昵称、店铺总数、订阅按钮、列表、分页、私密提示）
+- 新建 `MapSubscriptionsView.swift`：订阅管理页面（列表、Toggle 开关、左滑删除、乐观更新+回滚）
+
+**现有页面改造（Phase 8）**
+- `ProfileView.swift`：新增「我的地图」Section（公开/私密 Toggle + 分享按钮）
+- `MapView.swift`：筛选面板新增「订阅用户」维度、RestaurantPinView 显示「N 人推荐」角标、MapQuickActionCard 显示所有推荐来源
+- `FoodMapApp.swift`：Universal Link 处理（/map/{user_id} 路由）
+
+**端到端测试验证（Phase 9）**
+- 验证 12 个场景：数据库表创建、隐私拦截、自我订阅拦截、去重逻辑、并发限制、乐观更新回滚、多端一致性、来源溯源、Universal Link、收藏流程等
+- 所有数据库函数测试通过
+- 所有 iOS 代码编译无错误
+
+### 关键决策和解决方案
+
+**问题 1：并发请求雪崩**
+- 方案：AsyncSemaphore 限制最多 3 个并发，超出的串行等待，且只加载当前定位附近（radius_km 默认 10km）
+
+**问题 2：重叠点位 + 无来源标记**
+- 方案：双重去重（restaurant_id + 坐标 50m 内同名兜底）+ `recommendedBy` 数组记录所有来源 + 地图角标显示「N 人推荐」
+
+**问题 3：隐私权限边界漏洞**
+- 方案：后端 RLS 策略 + `/api/map/{user_id}/restaurants` 检查 `is_public` 字段 + H5 页同步校验
+
+**问题 4：无「订阅自己」拦截**
+- 方案：后端 `POST /api/map-subscriptions` 增加校验，返回 400 错误
+
+**问题 5：乐观更新无兜底**
+- 方案：MapSubscriptionsView Toggle 切换时乐观更新 + 请求失败回滚 + Toast 提示 + App onAppear 时重新拉取订阅列表保证多端一致
+
+**问题 6：后端性能隐患**
+- 方案：iOS 端并发加载（限制 3 个）+ 每个数据源独立分页（50 条/页）+ 支持附近筛选
+
+**问题 7：脏数据/权限漏洞**
+- 方案：取消订阅后本地即时移除 + 后端检查 `is_public` + 订阅数据不持久化本地
+
+**问题 8：无内容溯源**
+- 方案：`MapDisplayItem.recommendedBy` 记录来源 + 地图卡片底部显示「来自 @xxx」
+
+**问题 9：无隐私权限**
+- 方案：`user_maps.is_public` 字段 + ProfileView 提供开关 + 后端接口拦截私密地图
+
+**问题 10：收藏逻辑混乱**
+- 方案：UserMapView 纯只读，无收藏/避雷按钮；需收藏时进入 RestaurantDetailView 操作
+
+### 使用的技术栈
+
+- **iOS**：SwiftUI、AsyncSemaphore、Universal Link、PhotosUI
+- **后端**：Python FastAPI、Supabase PostgreSQL
+- **数据库**：RLS 策略、PostgREST API
+- **架构**：MVVM、乐观更新、并发限制、双重去重
+
+### 修改的文件
+
+**数据库**
+- `backend/supabase_schema.sql`（新增 user_maps 和 user_map_subscriptions 表定义）
+- `backend/migrations/v6_0_user_maps.sql`（迁移脚本）
+
+**后端**
+- `backend/db.py`（新增 7 个函数）
+- `backend/main.py`（新增 8 个 API 接口）
+
+**iOS 数据层**
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`（扩展 RecommendSourceType、MapDisplayItem、MapAuthorFilter）
+- `ios/FoodMap/genchi/genchi/Models/UserMapModels.swift`（新建）
+- `ios/FoodMap/genchi/genchi/Services/APIService.swift`（新增 7 个方法）
+
+**iOS ViewModel**
+- `ios/FoodMap/genchi/genchi/ViewModels/MapViewModel.swift`（扩展订阅数据加载、去重、筛选逻辑）
+
+**iOS UI**
+- `ios/FoodMap/genchi/genchi/Views/UserMapView.swift`（新建）
+- `ios/FoodMap/genchi/genchi/Views/MapSubscriptionsView.swift`（新建）
+- `ios/FoodMap/genchi/genchi/Views/ProfileView.swift`（新增地图隐私设置）
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`（筛选面板、多人推荐角标、来源显示）
+- `ios/FoodMap/genchi/genchi/FoodMapApp.swift`（Universal Link 处理）
+
+**文档**
+- `需求文档&技术方案/个人专属美食地图技术方案.md`（技术方案文档）
+- `README.md`（追加本会话记录）
+
+---

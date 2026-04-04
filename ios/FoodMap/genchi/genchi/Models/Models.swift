@@ -119,7 +119,7 @@ struct Favorite: Identifiable, Codable {
     let id: String
     let user_id: String
     let restaurant_id: String
-    let note: String?                  // 收藏理由（v5.0 新增）
+    var note: String?                  // 收藏理由（v5.0 新增）
     let restaurants: Restaurant?       // join 查询的店铺详情
 }
 
@@ -325,7 +325,7 @@ struct AuthorStats: Codable {
 // ─────────────────────────────────────────
 // 用户自定义分组模型（v5.0 新增）
 // ─────────────────────────────────────────
-struct RestaurantGroup: Identifiable, Codable {
+struct RestaurantGroup: Identifiable, Codable, Hashable {
     let id: String
     let user_id: String
     let name: String
@@ -341,4 +341,85 @@ struct GroupRestaurant: Identifiable, Codable {
     let user_id: String
     let created_at: String?
     let restaurants: Restaurant?  // join 查询的店铺详情
+}
+
+// ─────────────────────────────────────────
+// v6.0 个人专属美食地图 - 数据模型
+// ─────────────────────────────────────────
+
+// 推荐来源类型（一个店铺可能来自多个来源）
+enum RecommendSourceType: Hashable {
+    case author(Author)                                    // 博主推荐
+    case selfCreated                                       // 自建推荐
+    case subscribedUser(userId: String, nickname: String, avatarUrl: String?)  // 订阅用户推荐
+}
+
+// 地图标注项（扩展版，包含所有推荐来源）
+struct MapDisplayItem: Identifiable, Hashable {
+    let id: String                          // restaurant_id
+    let restaurant_id: String
+    let name: String
+    let address: String?
+    let city: String?
+    let category: String?
+    let latitude: Double?
+    let longitude: Double?
+    let photo_url: String?
+    let avg_price: Int?
+    let verified: Bool?
+
+    // v6.0 新增：所有推荐来源
+    var recommendedBy: [RecommendSourceType] = []
+
+    // 计算属性：转换为 CoreLocation 坐标
+    var coordinate: CLLocationCoordinate2D? {
+        guard let lat = latitude, let lng = longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+// 用户地图基本信息
+struct UserMapInfo: Codable {
+    let user_id: String
+    let nickname: String
+    let avatar_url: String?
+    let is_public: Bool
+    let restaurant_count: Int
+}
+
+// 地图订阅关系
+struct MapSubscription: Codable, Identifiable {
+    let id: String
+    let target_user_id: String
+    let nickname: String
+    let avatar_url: String?
+    var is_enabled: Bool
+    let created_at: String?
+}
+
+// 他人地图的店铺项
+struct UserMapRestaurantItem: Codable, Identifiable {
+    let id: String
+    let restaurant_id: String
+    let name: String
+    let address: String?
+    let city: String?
+    let category: String?
+    let latitude: Double?
+    let longitude: Double?
+    let photo_url: String?
+
+    // 计算属性：转换为 CoreLocation 坐标
+    var coordinate: CLLocationCoordinate2D? {
+        guard let lat = latitude, let lng = longitude else { return nil }
+        return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+    }
+}
+
+// 他人地图店铺列表响应
+struct UserMapRestaurantsResponse: Codable {
+    let is_private: Bool?
+    let restaurants: [UserMapRestaurantItem]
+    let total: Int
+    let has_more: Bool
 }

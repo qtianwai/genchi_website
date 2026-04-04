@@ -1,6 +1,6 @@
-// 用户自建推荐店铺表单（v4.0 新增）
+// 用户自建推荐店铺表单
 // 两步流程：Step 1 搜索高德候选 → Step 2 确认入库
-// 入口：MainTabView 底部「+」按钮 → 选择「手动添加店铺」
+// 入口：地图页右上角「添加」按钮 → 选择「手动添加店铺」
 
 import SwiftUI
 
@@ -31,151 +31,169 @@ struct UserAddRestaurantSheet: View {
                   "贵阳", "南昌", "太原", "石家庄", "南宁", "乌鲁木齐", "兰州", "海口"]
 
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(spacing: 24) {
+        NavigationStack {
+            ZStack {
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
 
-                    // ── 顶部说明 ──
-                    VStack(spacing: 8) {
-                        Image(systemName: "person.crop.circle.badge.plus")
-                            .font(.system(size: 40))
-                            .foregroundColor(.purple)
-                        Text("添加我的推荐")
-                            .font(.title2.bold())
-                        Text("不依赖博主，直接添加你知道的好店")
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 8)
+                ScrollView {
+                    VStack(spacing: 24) {
 
-                    // ── Step 1：搜索表单 ──
-                    VStack(alignment: .leading, spacing: 16) {
-                        Text("搜索店铺")
-                            .font(.headline)
-                            .foregroundColor(.primary)
-
-                        // 店铺名称输入
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("店铺名称")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            TextField("输入店铺名称", text: $restaurantName)
-                                .textFieldStyle(.roundedBorder)
-                                .submitLabel(.search)
-                                .onSubmit { Task { await searchRestaurants() } }
-                        }
-
-                        // 城市选择
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("所在城市")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Picker("城市", selection: $selectedCity) {
-                                ForEach(cities, id: \.self) { city in
-                                    Text(city).tag(city)
-                                }
-                            }
-                            .pickerStyle(.menu)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(Color(.systemGray6))
-                            .cornerRadius(8)
-                        }
-
-                        // 搜索按钮
-                        Button(action: { Task { await searchRestaurants() } }) {
-                            HStack {
-                                if isSearching {
-                                    ProgressView()
-                                        .progressViewStyle(.circular)
-                                        .scaleEffect(0.8)
-                                        .tint(.white)
-                                } else {
-                                    Image(systemName: "magnifyingglass")
-                                }
-                                Text(isSearching ? "搜索中..." : "搜索")
-                                    .fontWeight(.semibold)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(restaurantName.count >= 2 ? Color.purple : Color.gray.opacity(0.4))
-                            .foregroundColor(.white)
-                            .cornerRadius(12)
-                        }
-                        .disabled(restaurantName.count < 2 || isSearching)
-                    }
-                    .padding(16)
-                    .background(Color(.systemGray6).opacity(0.5))
-                    .cornerRadius(16)
-
-                    // ── 错误提示 ──
-                    if let error = searchError {
-                        HStack(spacing: 8) {
-                            Image(systemName: "exclamationmark.triangle.fill")
-                                .foregroundColor(.orange)
-                            Text(error)
+                        // ── 顶部说明 ──
+                        VStack(spacing: 8) {
+                            Image(systemName: "person.crop.circle.badge.plus")
+                                .font(.system(size: 40))
+                                .foregroundColor(DS.Color.brand)
+                            Text("搜索店铺添加")
+                                .font(.title2.bold())
+                            Text("直接搜店名和城市，把你想去的店补进地图")
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
+                                .multilineTextAlignment(.center)
                         }
-                        .padding(12)
-                        .background(Color.orange.opacity(0.08))
-                        .cornerRadius(10)
-                    }
+                        .padding(.top, 8)
 
-                    // ── Step 2：候选列表 ──
-                    if hasSearched {
-                        VStack(alignment: .leading, spacing: 12) {
-                            if candidates.isEmpty {
-                                VStack(spacing: 8) {
-                                    Image(systemName: "mappin.slash")
-                                        .font(.system(size: 32))
-                                        .foregroundColor(.gray.opacity(0.5))
-                                    Text("未找到相关店铺")
-                                        .font(.subheadline)
-                                        .foregroundColor(.secondary)
-                                    Text("请检查店铺名称和城市是否正确")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                        // ── Step 1：搜索表单 ──
+                        VStack(alignment: .leading, spacing: 16) {
+                            Text("查找店铺")
+                                .font(.headline)
+                                .foregroundColor(.primary)
+
+                            // 店铺名称输入
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("店铺名称")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                TextField("输入店铺名称，例如 沪溪河", text: $restaurantName)
+                                    .padding(.horizontal, 12)
+                                    .frame(height: 46)
+                                    .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                            .stroke(DS.Color.separator.opacity(0.15), lineWidth: 0.8)
+                                    }
+                                    .submitLabel(.search)
+                                    .onSubmit { Task { await searchRestaurants() } }
+                            }
+
+                            // 城市选择
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("所在城市")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Picker("城市", selection: $selectedCity) {
+                                    ForEach(cities, id: \.self) { city in
+                                        Text(city).tag(city)
+                                    }
+                                }
+                                .pickerStyle(.menu)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 12)
+                                .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(DS.Color.separator.opacity(0.15), lineWidth: 0.8)
+                                }
+                            }
+
+                            // 搜索按钮
+                            Button(action: { Task { await searchRestaurants() } }) {
+                                HStack {
+                                    if isSearching {
+                                        ProgressView()
+                                            .progressViewStyle(.circular)
+                                            .scaleEffect(0.8)
+                                            .tint(.white)
+                                    } else {
+                                        Image(systemName: "magnifyingglass")
+                                    }
+                                    Text(isSearching ? "查找中..." : "查找店铺")
+                                        .fontWeight(.semibold)
                                 }
                                 .frame(maxWidth: .infinity)
-                                .padding(24)
-                            } else {
-                                Text("选择店铺（共 \(candidates.count) 条结果）")
-                                    .font(.headline)
+                                .padding(.vertical, 13)
+                                .background(restaurantName.count >= 2 ? DS.Color.brand : Color.gray.opacity(0.4))
+                                .foregroundColor(.white)
+                                .cornerRadius(14)
+                            }
+                            .disabled(restaurantName.count < 2 || isSearching)
+                        }
+                        .padding(16)
+                        .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                                .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+                        }
+                        .shadow(color: .black.opacity(0.04), radius: 10, y: 4)
 
-                                ForEach(candidates) { candidate in
-                                    CandidateRow(
-                                        candidate: candidate,
-                                        isSubmitting: isSubmitting,
-                                        onSelect: { Task { await addRestaurant(candidate) } }
-                                    )
+                        // ── 错误提示 ──
+                        if let error = searchError {
+                            HStack(spacing: 8) {
+                                Image(systemName: "exclamationmark.triangle.fill")
+                                    .foregroundColor(.orange)
+                                Text(error)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(12)
+                            .background(Color.orange.opacity(0.08))
+                            .cornerRadius(10)
+                        }
+
+                        // ── Step 2：候选列表 ──
+                        if hasSearched {
+                            VStack(alignment: .leading, spacing: 12) {
+                                if candidates.isEmpty {
+                                    VStack(spacing: 8) {
+                                        Image(systemName: "mappin.slash")
+                                            .font(.system(size: 32))
+                                            .foregroundColor(.gray.opacity(0.5))
+                                        Text("暂时没找到这家店")
+                                            .font(.subheadline)
+                                            .foregroundColor(.secondary)
+                                        Text("可以换个店名写法，或确认一下城市")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                    .padding(24)
+                                } else {
+                                    Text("选择一家最接近的店（共 \(candidates.count) 条）")
+                                        .font(.headline)
+
+                                    ForEach(candidates) { candidate in
+                                        CandidateRow(
+                                            candidate: candidate,
+                                            isSubmitting: isSubmitting,
+                                            onSelect: { Task { await addRestaurant(candidate) } }
+                                        )
+                                    }
                                 }
                             }
                         }
-                    }
 
-                    // ── 成功提示 ──
-                    if let msg = successMessage {
-                        HStack(spacing: 8) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text(msg)
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
+                        // ── 成功提示 ──
+                        if let msg = successMessage {
+                            HStack(spacing: 8) {
+                                Image(systemName: "checkmark.circle.fill")
+                                    .foregroundColor(.green)
+                                Text(msg)
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(12)
+                            .background(Color.green.opacity(0.08))
+                            .cornerRadius(10)
                         }
-                        .padding(12)
-                        .background(Color.green.opacity(0.08))
-                        .cornerRadius(10)
                     }
+                    .padding(20)
                 }
-                .padding(20)
             }
-            .navigationTitle("手动添加店铺")
+            .navigationTitle("搜索店铺添加")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
                 }
             }
@@ -233,11 +251,11 @@ struct CandidateRow: View {
                 // 左侧图标
                 ZStack {
                     Circle()
-                        .fill(Color.purple.opacity(0.1))
+                        .fill(DS.Color.brand.opacity(0.10))
                         .frame(width: 40, height: 40)
                     Image(systemName: "fork.knife")
                         .font(.system(size: 16))
-                        .foregroundColor(.purple)
+                        .foregroundColor(DS.Color.brand)
                 }
 
                 // 店铺信息
@@ -253,10 +271,10 @@ struct CandidateRow: View {
                     if !candidate.category_mapped.isEmpty {
                         Text(candidate.category_mapped)
                             .font(.caption2)
-                            .foregroundColor(.purple)
+                            .foregroundColor(DS.Color.brand)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.purple.opacity(0.1))
+                            .background(DS.Color.brand.opacity(0.10))
                             .cornerRadius(4)
                     }
                 }
@@ -270,7 +288,7 @@ struct CandidateRow: View {
                 } else {
                     Image(systemName: "plus.circle.fill")
                         .font(.system(size: 22))
-                        .foregroundColor(.purple)
+                        .foregroundColor(DS.Color.brand)
                 }
             }
             .padding(12)

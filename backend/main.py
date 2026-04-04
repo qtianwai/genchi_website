@@ -46,6 +46,10 @@ from db import (
     get_user_groups, create_user_group, delete_user_group,
     add_restaurant_to_group, remove_restaurant_from_group, get_group_restaurants,
     get_author_stats,
+    # 新增：个人专属美食地图相关（v6.0）
+    get_user_map_info, get_user_map_restaurants_public,
+    upsert_user_map, subscribe_user_map, unsubscribe_user_map,
+    toggle_map_subscription, get_map_subscriptions,
 )
 
 load_dotenv()
@@ -1748,6 +1752,28 @@ class UpdateProfileRequest(BaseModel):
     nickname: str  # 1-20 字符
 
 
+# ─────────────────────────────────────────
+# v6.0 个人专属美食地图 - 数据模型
+# ─────────────────────────────────────────
+
+class UpdateMapPrivacyRequest(BaseModel):
+    """更新地图隐私设置请求"""
+    user_id: str
+    is_public: bool
+
+
+class SubscribeMapRequest(BaseModel):
+    """订阅地图请求"""
+    subscriber_id: str
+    target_user_id: str
+
+
+class ToggleMapSubscriptionRequest(BaseModel):
+    """切换订阅开关请求"""
+    subscriber_id: str
+    is_enabled: bool
+
+
 @app.get("/api/profile/{user_id}")
 async def get_profile(user_id: str):
     """
@@ -1806,6 +1832,218 @@ async def upload_avatar(
     # 写入 user_profiles
     profile = upsert_user_profile(user_id, avatar_url=avatar_url)
     return {"status": "ok", "avatar_url": avatar_url, "profile": profile}
+
+
+# ─────────────────────────────────────────
+# v6.0 个人专属美食地图 - API 接口
+# ─────────────────────────────────────────
+
+@app.get("/map/{user_id}")
+async def get_user_map_html(user_id: str):
+    """
+    H5 预览页（降级方案）。
+    未安装 App 时显示此页面，已安装时 Universal Link 跳转 App。
+    返回 HTML 页面，包含 Smart App Banner 和店铺列表文字版。
+    私密地图返回「该地图已设为私密」提示页。
+    """
+    try:
+        map_info = get_user_map_info(user_id)
+        if not map_info or not map_info.get("is_public"):
+            # 私密地图返回提示页
+            return """
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>该地图已设为私密</title>
+                <style>
+                    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; text-align: center; padding: 40px 20px; }
+                    .container { max-width: 600px; margin: 0 auto; }
+                    h1 { color: #333; }
+                    p { color: #666; }
+                </style>
+            </head>
+            <body>
+                <div class="container">
+                    <h1>该地图已设为私密</h1>
+                    <p>用户已将此地图设为私密，您无法查看其内容。</p>
+                </div>
+            </body>
+            </html>
+            """
+
+        # 获取店铺列表
+        restaurants_data = get_user_map_restaurants_public(user_id, page=1, page_size=50)
+        restaurants = restaurants_data.get("restaurants", [])
+
+        # 构建店铺列表 HTML
+        restaurant_html = ""
+        for r in restaurants:
+            restaurant_html += f"""
+            <div style="border-bottom: 1px solid #eee; padding: 15px 0;">
+                <h3 style="margin: 0 0 5px 0; color: #333;">{r.get('name', '未知店铺')}</h3>
+                <p style="margin: 5px 0; color: #666; font-size: 14px;">{r.get('address', '地址未知')}</p>
+                <p style="margin: 5px 0; color: #999; font-size: 12px;">分类: {r.get('category', '未分类')}</p>
+            </div>
+            """
+
+        return f"""
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <meta name="apple-itunes-app" content="app-id=6738123456">
+            <title>{map_info.get('nickname', '美食探索者')}的美食地图</title>
+            <style>
+                body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; padding: 20px; background: #f5f5f5; }}
+                .header {{ text-align: center; padding: 20px 0; background: white; border-radius: 8px; margin-bottom: 20px; }}
+                .avatar {{ width: 80px; height: 80px; border-radius: 50%; margin: 0 auto 10px; background: #ddd; }}
+                .nickname {{ font-size: 18px; font-weight: bold; color: #333; margin: 10px 0; }}
+                .count {{ color: #999; font-size: 14px; }}
+                .restaurants {{ background: white; border-radius: 8px; padding: 20px; }}
+                .restaurant-item {{ border-bottom: 1px solid #eee; padding: 15px 0; }}
+                .restaurant-item:last-child {{ border-bottom: none; }}
+                .restaurant-name {{ font-size: 16px; font-weight: bold; color: #333; margin: 0 0 5px 0; }}
+                .restaurant-address {{ color: #666; font-size: 14px; margin: 5px 0; }}
+                .restaurant-category {{ color: #999; font-size: 12px; margin: 5px 0; }}
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <div class="avatar"></div>
+                <div class="nickname">{map_info.get('nickname', '美食探索者')}</div>
+                <div class="count">共 {map_info.get('restaurant_count', 0)} 家店铺</div>
+            </div>
+            <div class="restaurants">
+                {restaurant_html if restaurant_html else '<p style="text-align: center; color: #999;">这张地图还没有店铺</p>'}
+            </div>
+        </body>
+        </html>
+        """
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/map/{user_id}/info")
+async def get_map_info(user_id: str):
+    """
+    获取他人地图基本信息。
+    返回：user_id, nickname, avatar_url, is_public, restaurant_count
+    私密地图返回 { is_private: true }
+    """
+    try:
+        map_info = get_user_map_info(user_id)
+        if not map_info or not map_info.get("is_public"):
+            return {"is_private": True}
+        return map_info
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/map/{user_id}/restaurants")
+async def get_map_restaurants(
+    user_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    lat: float = None,
+    lng: float = None,
+    radius_km: float = 10
+):
+    """
+    分页获取他人地图的店铺列表。
+    参数：page（页码，默认1）, page_size（每页数量，默认50）, lat/lng（可选，用于附近筛选）, radius_km（搜索半径，默认10km）
+    返回：is_private, restaurants[], total, has_more
+    私密地图返回 { is_private: true, restaurants: [] }
+    """
+    try:
+        result = get_user_map_restaurants_public(
+            user_id,
+            page=page,
+            page_size=page_size,
+            lat=lat,
+            lng=lng,
+            radius_km=radius_km
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/map/privacy")
+async def update_map_privacy(req: UpdateMapPrivacyRequest):
+    """
+    更新自己地图的公开/私密设置。
+    参数：user_id, is_public
+    返回：{ status: "ok" }
+    """
+    try:
+        upsert_user_map(req.user_id, req.is_public)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/map-subscriptions")
+async def get_subscriptions(user_id: str):
+    """
+    获取我的订阅列表。
+    返回：subscriptions[] 包含 id, target_user_id, nickname, avatar_url, is_enabled, created_at
+    """
+    try:
+        subscriptions = get_map_subscriptions(user_id)
+        return {"subscriptions": subscriptions}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/map-subscriptions")
+async def subscribe_map(req: SubscribeMapRequest):
+    """
+    订阅他人地图。
+    参数：subscriber_id, target_user_id
+    返回：{ status: "ok" }
+    校验：subscriber_id ≠ target_user_id，target_user_id 的地图必须公开
+    """
+    try:
+        if req.subscriber_id == req.target_user_id:
+            raise HTTPException(status_code=400, detail="不能订阅自己的地图")
+
+        subscribe_user_map(req.subscriber_id, req.target_user_id)
+        return {"status": "ok"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/map-subscriptions/{target_user_id}")
+async def unsubscribe_map(target_user_id: str, subscriber_id: str):
+    """
+    取消订阅。
+    参数：target_user_id（路径参数）, subscriber_id（查询参数）
+    返回：{ status: "ok" }
+    """
+    try:
+        unsubscribe_user_map(subscriber_id, target_user_id)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.patch("/api/map-subscriptions/{target_user_id}")
+async def toggle_subscription(target_user_id: str, req: ToggleMapSubscriptionRequest):
+    """
+    切换订阅开关（是否在自己地图上显示该用户点位）。
+    参数：target_user_id（路径参数）, subscriber_id, is_enabled（请求体）
+    返回：{ status: "ok" }
+    """
+    try:
+        toggle_map_subscription(req.subscriber_id, target_user_id, req.is_enabled)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────

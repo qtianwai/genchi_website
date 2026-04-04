@@ -1078,3 +1078,201 @@ def upsert_user_profile(user_id: str, nickname: str = None, avatar_url: str = No
         data, on_conflict="user_id"
     ).execute()
     return result.data[0] if result.data else {}
+
+
+# ─────────────────────────────────────────
+# v6.0 用户地图相关操作
+# ─────────────────────────────────────────
+
+def get_user_map_info(user_id: str) -> dict:
+    """
+    获取用户地图基本信息
+    返回：{ user_id, nickname, avatar_url, is_public, restaurant_count }
+    """
+    # 获取用户 profile
+    profile = get_user_profile(user_id)
+    if not profile:
+        return {"is_public": True, "restaurant_count": 0}
+
+    # 获取地图隐私设置
+    map_result = supabase.table("user_maps").select("is_public").eq("user_id", user_id).execute()
+    is_public = map_result.data[0]["is_public"] if map_result.data else True
+
+    # 计算店铺总数（博主推荐 + 自建）
+    author_count = supabase.table("author_restaurants").select("restaurant_id", count="exact").in_(
+        "author_id",
+        [f["author_id"] for f in get_user_followed_authors(user_id)]
+    ).execute().count or 0
+
+    user_count = supabase.table("user_created_restaurants").select("*", count="exact").eq(
+        "user_id", user_id
+    ).execute().count or 0
+
+    return {
+        "user_id": user_id,
+        "nickname": profile.get("nickname", "美食探索者"),
+        "avatar_url": profile.get("avatar_url"),
+        "is_public": is_public,
+        "restaurant_count": author_count + user_count
+    }
+
+
+def get_user_map_restaurants_public(
+    user_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    lat: float = None,
+    lng: float = None,
+    radius_km: float = 10
+) -> dict:
+    """
+    分页获取他人地图的店铺列表
+    私密地图返回 { is_private: true, restaurants: [] }
+    """
+    # 检查地图是否公开
+    map_result = supabase.table("user_maps").select("is_public").eq("user_id", user_id).execute()
+    if not map_result.data or not map_result.data[0]["is_public"]:
+        return {"is_private": True, "restaurants": [], "total": 0, "has_more": False}
+
+    # 获取博主推荐的店铺
+    author_ids = [f["author_id"] for f in get_user_followed_authors(user_id)]
+    author_restaurants = []
+    if author_ids:
+        result = supabase.table("author_restaurants").select(
+            "restaurant_id, restaurants(id, name, address, city, category, latitude, longitude, photo_url)"
+        ).in_("author_id", author_ids).execute()
+        author_restaurants = result.data or []
+
+    # 获取用户自建店铺
+    user_restaurants = supabase.table("user_created_restaurants").select(
+        "restaurant_id, restaurants(id, name, address, city, category, latitude, longitude, photo_url)"
+    ).eq("user_id", user_id).execute().data or []
+
+    # 合并并去重
+    seen_ids = set()
+    all_restaurants = []
+    for item in author_restaurants + user_restaurants:
+        rest = item.get("restaurants")
+        if rest and rest["id"] not in seen_ids:
+            seen_ids.add(rest["id"])
+            all_restaurants.append({
+                "id": rest["id"],
+                "restaurant_id": rest["id"],
+                "name": rest.get("name"),
+                "address": rest.get("address"),
+                "city": rest.get("city"),
+                "category": rest.get("category"),
+                "latitude": rest.get("latitude"),
+                "longitude": rest.get("longitude"),
+                "photo_url": rest.get("photo_url")
+            })
+
+    # 附近筛选（可选）
+    if lat is not None and lng is not None:
+        from math import radians, cos, sin, asin, sqrt
+        def haversine(lon1, lat1, lon2, lat2):
+            lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+            dlon = lon2 - lon1
+            dlat = lat2 - lat1
+            a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+            c = 2 * asin(sqrt(a))
+            r = 6371
+            return c * r
+
+        all_restaurants = [
+            r for r in all_restaurants
+            if r.get("latitude") and r.get("longitude") and
+            haversine(lng, lat, r["longitude"], r["latitude"]) <= radius_km
+        ]
+
+    # 分页
+    total = len(all_restaurants)
+    start = (page - 1) * page_size
+    end = start + page_size
+    paginated = all_restaurants[start:end]
+
+    return {
+        "is_private": False,
+        "restaurants": paginated,
+        "total": total,
+        "has_more": end < total
+    }
+
+
+def upsert_user_map(user_id: str, is_public: bool) -> dict:
+    """创建或更新用户地图隐私设置"""
+    data = {"user_id": user_id, "is_public": is_public}
+    result = supabase.table("user_maps").upsert(
+        data, on_conflict="user_id"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def subscribe_user_map(subscriber_id: str, target_user_id: str) -> dict:
+    """
+    订阅他人地图
+    校验：subscriber_id ≠ target_user_id，target_user_id 的地图必须公开
+    """
+    if subscriber_id == target_user_id:
+        raise ValueError("不能订阅自己的地图")
+
+    # 检查目标地图是否公开
+    map_result = supabase.table("user_maps").select("is_public").eq("user_id", target_user_id).execute()
+    if not map_result.data or not map_result.data[0]["is_public"]:
+        raise ValueError("该地图已设为私密，无法订阅")
+
+    data = {
+        "subscriber_id": subscriber_id,
+        "target_user_id": target_user_id,
+        "is_enabled": True
+    }
+    result = supabase.table("user_map_subscriptions").upsert(
+        data, on_conflict="subscriber_id,target_user_id"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def unsubscribe_user_map(subscriber_id: str, target_user_id: str) -> dict:
+    """取消订阅"""
+    result = supabase.table("user_map_subscriptions").delete().eq(
+        "subscriber_id", subscriber_id
+    ).eq("target_user_id", target_user_id).execute()
+    return {"status": "ok"}
+
+
+def toggle_map_subscription(subscriber_id: str, target_user_id: str, is_enabled: bool) -> dict:
+    """切换订阅开关（是否在自己地图上显示该用户点位）"""
+    result = supabase.table("user_map_subscriptions").update(
+        {"is_enabled": is_enabled}
+    ).eq("subscriber_id", subscriber_id).eq("target_user_id", target_user_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_map_subscriptions(subscriber_id: str) -> list[dict]:
+    """获取用户的订阅列表（含被订阅者 profile）"""
+    # 先查询订阅列表
+    result = supabase.table("user_map_subscriptions").select(
+        "*"
+    ).eq("subscriber_id", subscriber_id).execute()
+
+    subscriptions = []
+    for item in result.data or []:
+        target_user_id = item["target_user_id"]
+
+        # 分别查询被订阅者的 profile
+        profile_result = supabase.table("user_profiles").select(
+            "user_id, nickname, avatar_url"
+        ).eq("user_id", target_user_id).execute()
+
+        profile = profile_result.data[0] if profile_result.data else {}
+
+        subscriptions.append({
+            "id": item["id"],
+            "target_user_id": target_user_id,
+            "nickname": profile.get("nickname", "美食探索者"),
+            "avatar_url": profile.get("avatar_url"),
+            "is_enabled": item["is_enabled"],
+            "created_at": item["created_at"]
+        })
+
+    return subscriptions

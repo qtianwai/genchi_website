@@ -15,6 +15,7 @@ enum MapAuthorFilter: Hashable {
     case all
     case mine
     case author(String)
+    case subscribedUser(String)  // v6.0 新增：按订阅用户筛选
 }
 
 enum MapGroupFilter: Hashable {
@@ -58,13 +59,11 @@ struct MapFilterState {
     var author: MapAuthorFilter = .all
     var group: MapGroupFilter = .all
     var distance: MapDistanceFilter = .all
-    var categories: Set<String> = []
 
     var hasActiveFilters: Bool {
         if author != .all { return true }
         if group != .all { return true }
-        if distance != .all { return true }
-        return !categories.isEmpty
+        return distance != .all
     }
 
     var activeCount: Int {
@@ -72,7 +71,6 @@ struct MapFilterState {
         if author != .all { count += 1 }
         if group != .all { count += 1 }
         if distance != .all { count += 1 }
-        if !categories.isEmpty { count += 1 }
         return count
     }
 }
@@ -80,6 +78,13 @@ struct MapFilterState {
 enum MapItemSource {
     case author
     case userCreated
+}
+
+// v6.0 新增：推荐来源类型
+enum RecommendSourceType: Hashable {
+    case author(Author)
+    case selfCreated
+    case subscribedUser(userId: String, nickname: String, avatarUrl: String?)
 }
 
 struct MapDisplayItem: Identifiable {
@@ -94,6 +99,7 @@ struct MapDisplayItem: Identifiable {
     let isAvoided: Bool
     let isFavorited: Bool
     let groupIds: [String]
+    var recommendedBy: [RecommendSourceType] = []  // v6.0 新增：所有推荐来源
 
     var category: String {
         (restaurant.category ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -115,6 +121,10 @@ class MapViewModel: ObservableObject {
     @Published var mapRestaurants: [MapRestaurant] = []
     @Published var userRestaurants: [UserCreatedRestaurant] = []
     @Published var userGroups: [RestaurantGroup] = []
+
+    // v6.0 新增：订阅地图数据
+    @Published var subscribedMapData: [String: [UserMapRestaurantItem]] = [:]  // key: targetUserId
+    @Published var mapSubscriptions: [MapSubscription] = []
 
     @Published var filter = MapFilterState()
     @Published var searchText = ""
@@ -154,49 +164,8 @@ class MapViewModel: ObservableObject {
 
     // MARK: - Derived Data
     var allItems: [MapDisplayItem] {
-        var items: [MapDisplayItem] = []
-
-        for item in mapRestaurants {
-            guard let restaurant = item.restaurants,
-                  let coordinate = restaurant.coordinate else { continue }
-            items.append(
-                MapDisplayItem(
-                    id: "author:\(item.id)",
-                    source: .author,
-                    sourceRecordId: item.id,
-                    restaurantId: item.restaurant_id,
-                    restaurant: restaurant,
-                    author: item.authors,
-                    coordinate: coordinate,
-                    isUserCreated: false,
-                    isAvoided: item.is_avoided ?? false,
-                    isFavorited: item.is_favorited ?? false,
-                    groupIds: item.group_ids ?? []
-                )
-            )
-        }
-
-        for item in userRestaurants {
-            guard let restaurant = item.restaurants,
-                  let coordinate = restaurant.coordinate else { continue }
-            items.append(
-                MapDisplayItem(
-                    id: "user:\(item.id)",
-                    source: .userCreated,
-                    sourceRecordId: item.id,
-                    restaurantId: item.restaurant_id,
-                    restaurant: restaurant,
-                    author: nil,
-                    coordinate: coordinate,
-                    isUserCreated: true,
-                    isAvoided: item.is_avoided ?? false,
-                    isFavorited: item.is_favorited ?? false,
-                    groupIds: item.group_ids ?? []
-                )
-            )
-        }
-
-        return items
+        // v6.0 改进：使用 mergedAllItems 实现双重去重和来源追踪
+        return mergedAllItems()
     }
 
     var availableAuthors: [Author] {
@@ -205,15 +174,6 @@ class MapViewModel: ObservableObject {
             .compactMap { $0.authors }
             .filter { seen.insert($0.id).inserted }
             .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
-    }
-
-    var availableCategories: [String] {
-        let categories = allItems
-            .compactMap { item -> String? in
-                let value = item.category
-                return value.isEmpty ? nil : value
-            }
-        return Array(Set(categories)).sorted()
     }
 
     // MARK: - Filtering / Search
@@ -231,6 +191,15 @@ class MapViewModel: ObservableObject {
             items = items.filter { $0.isUserCreated }
         case .author(let authorId):
             items = items.filter { $0.author?.id == authorId }
+        case .subscribedUser(let userId):  // v6.0 新增：按订阅用户筛选
+            items = items.filter { item in
+                item.recommendedBy.contains { source in
+                    if case .subscribedUser(let sourceUserId, _, _) = source {
+                        return sourceUserId == userId
+                    }
+                    return false
+                }
+            }
         }
 
         // Group filter
@@ -252,11 +221,6 @@ class MapViewModel: ObservableObject {
                 let point = CLLocation(latitude: item.coordinate.latitude, longitude: item.coordinate.longitude)
                 return point.distance(from: center) <= radius * 1000
             }
-        }
-
-        // Category filter
-        if !filter.categories.isEmpty {
-            items = items.filter { filter.categories.contains($0.category) }
         }
 
         // Search filter (联动筛选结果)
@@ -502,5 +466,234 @@ class MapViewModel: ObservableObject {
     func stopAutoRefresh() {
         refreshTimer?.invalidate()
         refreshTimer = nil
+    }
+
+    // ─────────────────────────────────────────
+    // v6.0 订阅地图数据加载（并发限制 + 双重去重）
+    // ─────────────────────────────────────────
+
+    /// 加载订阅地图数据（最多并发3个，支持附近筛选）
+    func loadSubscribedMapData(userId: String, userLocation: CLLocationCoordinate2D?) async {
+        let enabledSubs = mapSubscriptions.filter { $0.is_enabled }
+        guard !enabledSubs.isEmpty else { return }
+
+        // 并发限制：最多同时加载3个
+        let semaphore = AsyncSemaphore(value: 3)
+        await withTaskGroup(of: Void.self) { group in
+            for sub in enabledSubs {
+                group.addTask {
+                    await semaphore.wait()
+                    defer { semaphore.signal() }
+
+                    do {
+                        let data = try await APIService.shared.getUserMapRestaurants(
+                            targetUserId: sub.target_user_id,
+                            page: 1,
+                            lat: userLocation?.latitude,
+                            lng: userLocation?.longitude,
+                            radiusKm: 10
+                        )
+
+                        await MainActor.run {
+                            self.subscribedMapData[sub.target_user_id] = data.restaurants
+                        }
+                    } catch {
+                        print("[订阅地图] 加载 \(sub.target_user_id) 失败: \(error)")
+                    }
+                }
+            }
+        }
+    }
+
+    /// 刷新订阅列表（App onAppear时调用，保证多端一致）
+    func refreshSubscriptions(userId: String) async {
+        do {
+            let subs = try await APIService.shared.getMapSubscriptions(userId: userId)
+            await MainActor.run {
+                self.mapSubscriptions = subs
+            }
+        } catch {
+            print("[订阅列表] 刷新失败: \(error)")
+        }
+    }
+
+    /// 订阅用户地图
+    func subscribeMap(subscriberId: String, targetUserId: String) async throws {
+        try await APIService.shared.subscribeUserMap(subscriberId: subscriberId, targetUserId: targetUserId)
+        // 订阅成功后，刷新订阅列表
+        await refreshSubscriptions(userId: subscriberId)
+    }
+
+    /// 取消订阅
+    func unsubscribeMap(subscriberId: String, targetUserId: String) async throws {
+        try await APIService.shared.unsubscribeUserMap(subscriberId: subscriberId, targetUserId: targetUserId)
+        // 取消订阅后，移除本地数据并刷新列表
+        await MainActor.run {
+            self.subscribedMapData.removeValue(forKey: targetUserId)
+        }
+        await refreshSubscriptions(userId: subscriberId)
+    }
+
+    /// 切换订阅开关
+    func toggleSubscription(subscriberId: String, targetUserId: String, isEnabled: Bool) async throws {
+        try await APIService.shared.toggleMapSubscription(
+            subscriberId: subscriberId,
+            targetUserId: targetUserId,
+            isEnabled: isEnabled
+        )
+        // 切换成功后，更新本地订阅列表
+        await MainActor.run {
+            if let idx = self.mapSubscriptions.firstIndex(where: { $0.target_user_id == targetUserId }) {
+                self.mapSubscriptions[idx].is_enabled = isEnabled
+            }
+        }
+    }
+
+    // ─────────────────────────────────────────
+    // 双重去重 + 信息优先级
+    // ─────────────────────────────────────────
+
+    /// 生成坐标网格键（用于50m内同名店铺兜底合并）
+    /// 精度约111m，使用0.0005精度约50m
+    private func nearbyKey(coordinate: CLLocationCoordinate2D, name: String) -> String {
+        let lat = (coordinate.latitude * 2000).rounded() / 2000
+        let lng = (coordinate.longitude * 2000).rounded() / 2000
+        return "\(name)_\(lat)_\(lng)"
+    }
+
+    /// 合并所有数据源（博主 + 自建 + 订阅用户），执行双重去重和优先级排序
+    func mergedAllItems(hiddenRestaurantIds: Set<String> = []) -> [MapDisplayItem] {
+        var itemsByRestaurantId: [String: MapDisplayItem] = [:]
+        var itemsByCoord: [String: MapDisplayItem] = [:]
+
+        // 1. 添加自建推荐（优先级最高）
+        for item in userRestaurants {
+            guard let restaurant = item.restaurants,
+                  let coordinate = restaurant.coordinate,
+                  !hiddenRestaurantIds.contains(item.restaurant_id) else { continue }
+
+            var displayItem = MapDisplayItem(
+                id: "user:\(item.id)",
+                source: .userCreated,
+                sourceRecordId: item.id,
+                restaurantId: item.restaurant_id,
+                restaurant: restaurant,
+                author: nil,
+                coordinate: coordinate,
+                isUserCreated: true,
+                isAvoided: item.is_avoided ?? false,
+                isFavorited: item.is_favorited ?? false,
+                groupIds: item.group_ids ?? []
+            )
+            displayItem.recommendedBy = [.selfCreated]
+
+            itemsByRestaurantId[item.restaurant_id] = displayItem
+            let key = nearbyKey(coordinate: coordinate, name: restaurant.name)
+            itemsByCoord[key] = displayItem
+        }
+
+        // 2. 添加博主推荐（优先级中）
+        for item in mapRestaurants {
+            guard let restaurant = item.restaurants,
+                  let coordinate = restaurant.coordinate,
+                  let author = item.authors,
+                  !hiddenRestaurantIds.contains(item.restaurant_id) else { continue }
+
+            let key = nearbyKey(coordinate: coordinate, name: restaurant.name)
+
+            if let existing = itemsByRestaurantId[item.restaurant_id] {
+                // 已存在，追加来源
+                existing.recommendedBy.append(.author(author))
+            } else if let existing = itemsByCoord[key] {
+                // 坐标兜底匹配，追加来源
+                existing.recommendedBy.append(.author(author))
+            } else {
+                // 新增
+                var displayItem = MapDisplayItem(
+                    id: "author:\(item.id)",
+                    source: .author,
+                    sourceRecordId: item.id,
+                    restaurantId: item.restaurant_id,
+                    restaurant: restaurant,
+                    author: author,
+                    coordinate: coordinate,
+                    isUserCreated: false,
+                    isAvoided: item.is_avoided ?? false,
+                    isFavorited: item.is_favorited ?? false,
+                    groupIds: item.group_ids ?? []
+                )
+                displayItem.recommendedBy = [.author(author)]
+
+                itemsByRestaurantId[item.restaurant_id] = displayItem
+                itemsByCoord[key] = displayItem
+            }
+        }
+
+        // 3. 添加订阅用户推荐（优先级最低）
+        for (targetUserId, restaurants) in subscribedMapData {
+            // 从订阅列表中获取用户昵称和头像
+            guard let subscription = mapSubscriptions.first(where: { $0.target_user_id == targetUserId }) else {
+                continue
+            }
+
+            for restaurant in restaurants {
+                guard let lat = restaurant.latitude,
+                      let lng = restaurant.longitude,
+                      !hiddenRestaurantIds.contains(restaurant.restaurant_id) else { continue }
+
+                let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+                let key = nearbyKey(coordinate: coordinate, name: restaurant.name)
+
+                // 构建 Restaurant 对象
+                let restaurantObj = Restaurant(
+                    id: restaurant.id,
+                    name: restaurant.name,
+                    address: restaurant.address,
+                    city: restaurant.city,
+                    latitude: lat,
+                    longitude: lng,
+                    amap_id: nil,
+                    category: restaurant.category,
+                    verified: nil,
+                    avg_price: nil,
+                    photo_url: restaurant.photo_url
+                )
+
+                if let existing = itemsByRestaurantId[restaurant.restaurant_id] {
+                    // 已存在，追加来源
+                    existing.recommendedBy.append(
+                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)
+                    )
+                } else if let existing = itemsByCoord[key] {
+                    // 坐标兜底匹配，追加来源
+                    existing.recommendedBy.append(
+                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)
+                    )
+                } else {
+                    // 新增
+                    var displayItem = MapDisplayItem(
+                        id: "sub:\(targetUserId):\(restaurant.id)",
+                        source: .userCreated,
+                        sourceRecordId: restaurant.id,
+                        restaurantId: restaurant.restaurant_id,
+                        restaurant: restaurantObj,
+                        author: nil,
+                        coordinate: coordinate,
+                        isUserCreated: false,
+                        isAvoided: false,
+                        isFavorited: false,
+                        groupIds: []
+                    )
+                    displayItem.recommendedBy = [
+                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)
+                    ]
+
+                    itemsByRestaurantId[restaurant.restaurant_id] = displayItem
+                    itemsByCoord[key] = displayItem
+                }
+            }
+        }
+
+        return Array(itemsByRestaurantId.values)
     }
 }
