@@ -1789,3 +1789,34 @@ Python httpx、Supabase REST API、SwiftUI AsyncImage
 - `README.md`（追加本会话记录）
 
 ---
+
+## 会话记录 - 2026-04-04（代码提交与自动部署）
+
+### 会话目的
+
+提交所有代码变更至 GitHub，触发 Railway 自动部署。
+
+### 完成的主要任务
+
+- 执行 `git add -A` 暂存所有变更
+- 提交 commit：`chore: update project files and documentation`
+- 推送至 GitHub main 分支
+- Railway 自动部署完成
+
+### 关键决策
+
+- 一次性提交所有待提交文件（包括 iOS 代码、文档、产品原型等）
+
+### 使用的技术栈
+
+- Git（版本控制）
+- GitHub（代码托管）
+- Railway（自动部署）
+
+### 修改的文件
+
+- 15 个文件变更，包括 README.md、iOS 代码、文档、产品原型等
+- 新增 docs/ 目录和产品原型图片
+- 删除根目录会话记录文件（已迁移至帮助文档目录）
+
+---
