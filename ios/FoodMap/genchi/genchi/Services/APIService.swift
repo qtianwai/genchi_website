@@ -129,6 +129,17 @@ class APIService {
         )
     }
 
+    // 获取博主推荐的所有店铺
+    func getAuthorRestaurants(authorId: String) async throws -> [MapRestaurant] {
+        struct Response: Codable { let restaurants: [MapRestaurant] }
+        let resp = try await get(
+            path: "/api/authors/\(authorId)/restaurants",
+            params: [:],
+            responseType: Response.self
+        )
+        return resp.restaurants
+    }
+
     // ─────────────────────────────────────────
     // 收藏
     // ─────────────────────────────────────────
@@ -427,6 +438,168 @@ class APIService {
             }
             throw APIError.serverError("删除失败，状态码: \(httpResponse.statusCode)")
         }
+    }
+
+    // ─────────────────────────────────────────
+    // 避雷店铺（v5.0 新增）
+    // ─────────────────────────────────────────
+
+    // 避雷店铺
+    func avoidRestaurant(userId: String, restaurantId: String) async throws {
+        struct Body: Codable { let user_id: String; let restaurant_id: String }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/restaurants/avoid",
+            body: Body(user_id: userId, restaurant_id: restaurantId),
+            responseType: Response.self
+        )
+    }
+
+    // 取消避雷
+    func unavoidRestaurant(userId: String, restaurantId: String) async throws {
+        struct Body: Codable { let user_id: String; let restaurant_id: String }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/restaurants/unavoid",
+            body: Body(user_id: userId, restaurant_id: restaurantId),
+            responseType: Response.self
+        )
+    }
+
+    // 获取避雷列表
+    func getAvoidedRestaurants(userId: String) async throws -> [AvoidedRestaurant] {
+        struct Response: Codable { let restaurants: [AvoidedRestaurant] }
+        let resp = try await get(
+            path: "/api/restaurants/avoided",
+            params: ["user_id": userId],
+            responseType: Response.self
+        )
+        return resp.restaurants
+    }
+
+    // ─────────────────────────────────────────
+    // 删除店铺（v5.0 新增，全局隐藏）
+    // ─────────────────────────────────────────
+
+    func deleteRestaurantForUser(userId: String, restaurantId: String) async throws {
+        struct Body: Codable { let user_id: String; let restaurant_id: String }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/restaurants/delete",
+            body: Body(user_id: userId, restaurant_id: restaurantId),
+            responseType: Response.self
+        )
+    }
+
+    // ─────────────────────────────────────────
+    // 收藏理由（v5.0 新增）
+    // ─────────────────────────────────────────
+
+    func updateFavoriteNote(userId: String, restaurantId: String, note: String) async throws {
+        struct Body: Codable { let user_id: String; let restaurant_id: String; let note: String }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/favorites/update-note",
+            body: Body(user_id: userId, restaurant_id: restaurantId, note: note),
+            responseType: Response.self
+        )
+    }
+
+    // ─────────────────────────────────────────
+    // 用户自定义分组（v5.0 新增）
+    // ─────────────────────────────────────────
+
+    // 获取用户分组列表
+    func getGroups(userId: String) async throws -> [RestaurantGroup] {
+        struct Response: Codable { let groups: [RestaurantGroup] }
+        let resp = try await get(
+            path: "/api/groups",
+            params: ["user_id": userId],
+            responseType: Response.self
+        )
+        return resp.groups
+    }
+
+    // 创建分组
+    func createGroup(userId: String, name: String) async throws -> RestaurantGroup {
+        struct Body: Codable { let user_id: String; let name: String }
+        struct Response: Codable { let status: String; let group: RestaurantGroup }
+        let resp = try await post(
+            path: "/api/groups",
+            body: Body(user_id: userId, name: name),
+            responseType: Response.self
+        )
+        return resp.group
+    }
+
+    // 删除分组
+    func deleteGroup(userId: String, groupId: String) async throws {
+        var components = URLComponents(string: "\(BASE_URL)/api/groups/\(groupId)")!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("删除分组失败")
+        }
+    }
+
+    // 添加店铺到分组
+    func addToGroup(userId: String, groupId: String, restaurantId: String) async throws {
+        struct Body: Codable { let user_id: String; let group_id: String; let restaurant_id: String }
+        struct Response: Codable { let status: String }
+        _ = try await post(
+            path: "/api/groups/\(groupId)/restaurants",
+            body: Body(user_id: userId, group_id: groupId, restaurant_id: restaurantId),
+            responseType: Response.self
+        )
+    }
+
+    // 从分组移除店铺
+    func removeFromGroup(userId: String, groupId: String, restaurantId: String) async throws {
+        var components = URLComponents(string: "\(BASE_URL)/api/groups/\(groupId)/restaurants/\(restaurantId)")!
+        components.queryItems = [URLQueryItem(name: "user_id", value: userId)]
+        guard let url = components.url else { throw URLError(.badURL) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse,
+           httpResponse.statusCode != 200 {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("移除失败")
+        }
+    }
+
+    // 获取分组内店铺列表
+    func getGroupRestaurants(groupId: String, userId: String) async throws -> [GroupRestaurant] {
+        struct Response: Codable { let restaurants: [GroupRestaurant] }
+        let resp = try await get(
+            path: "/api/groups/\(groupId)/restaurants",
+            params: ["user_id": userId],
+            responseType: Response.self
+        )
+        return resp.restaurants
+    }
+
+    // ─────────────────────────────────────────
+    // 博主统计（v5.0 新增）
+    // ─────────────────────────────────────────
+
+    func getAuthorStats(authorId: String) async throws -> AuthorStats {
+        return try await get(
+            path: "/api/authors/\(authorId)/stats",
+            params: [:],
+            responseType: AuthorStats.self
+        )
     }
 }
 

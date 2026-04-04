@@ -61,10 +61,10 @@ def upsert_restaurant(restaurant_data: dict) -> dict:
 
 
 def get_restaurants_by_author(author_id: str) -> list[dict]:
-    """获取某个博主推荐的所有店铺（含店铺详情）"""
+    """获取某个博主推荐的所有店铺（含店铺详情和博主信息）"""
     result = (
         supabase.table("author_restaurants")
-        .select("*, restaurants(*)")
+        .select("*, restaurants(*), authors(*)")
         .eq("author_id", author_id)
         .execute()
     )
@@ -760,13 +760,232 @@ def remove_user_restaurant(user_id: str, restaurant_id: str) -> bool:
     return True
 
 
+# ─────────────────────────────────────────
+# 避雷店铺相关操作（v5.0 新增）
+# ─────────────────────────────────────────
+
+def avoid_restaurant(user_id: str, restaurant_id: str) -> dict:
+    """避雷店铺"""
+    result = supabase.table("user_blocked_restaurants").upsert(
+        {"user_id": user_id, "restaurant_id": restaurant_id},
+        on_conflict="user_id,restaurant_id"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def unavoid_restaurant(user_id: str, restaurant_id: str) -> bool:
+    """取消避雷"""
+    supabase.table("user_blocked_restaurants").delete().eq(
+        "user_id", user_id
+    ).eq("restaurant_id", restaurant_id).execute()
+    return True
+
+
+def get_avoided_restaurants(user_id: str) -> list[dict]:
+    """获取用户避雷的所有店铺"""
+    result = (
+        supabase.table("user_blocked_restaurants")
+        .select("*, restaurants(*)")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_avoided_restaurant_ids(user_id: str) -> list[str]:
+    """获取用户避雷的店铺 ID 列表（轻量查询，用于地图标记）"""
+    result = (
+        supabase.table("user_blocked_restaurants")
+        .select("restaurant_id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return [r["restaurant_id"] for r in (result.data or [])]
+
+
+# ─────────────────────────────────────────
+# 删除店铺相关操作（v5.0 新增，全局隐藏）
+# ─────────────────────────────────────────
+
+def delete_restaurant_for_user(user_id: str, restaurant_id: str) -> dict:
+    """用户删除店铺（全局隐藏，不影响其他用户）"""
+    result = supabase.table("user_deleted_restaurants").upsert(
+        {"user_id": user_id, "restaurant_id": restaurant_id},
+        on_conflict="user_id,restaurant_id"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_deleted_restaurant_ids(user_id: str) -> list[str]:
+    """获取用户已删除的店铺 ID 列表（用于地图过滤）"""
+    result = (
+        supabase.table("user_deleted_restaurants")
+        .select("restaurant_id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return [r["restaurant_id"] for r in (result.data or [])]
+
+
+# ─────────────────────────────────────────
+# 收藏理由相关操作（v5.0 新增）
+# ─────────────────────────────────────────
+
+def update_favorite_note(user_id: str, restaurant_id: str, note: str) -> dict:
+    """更新收藏理由（user_favorites 表的 note 字段）"""
+    result = (
+        supabase.table("user_favorites")
+        .update({"note": note})
+        .eq("user_id", user_id)
+        .eq("restaurant_id", restaurant_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+# ─────────────────────────────────────────
+# 用户自定义分组相关操作（v5.0 新增）
+# ─────────────────────────────────────────
+
+def get_user_groups(user_id: str) -> list[dict]:
+    """获取用户的所有自定义分组（含每组店铺数量）"""
+    # 先查分组
+    groups_result = (
+        supabase.table("user_restaurant_groups")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=False)
+        .execute()
+    )
+    groups = groups_result.data or []
+
+    # 查每组的店铺数量
+    for group in groups:
+        count_result = (
+            supabase.table("user_group_restaurants")
+            .select("id", count="exact")
+            .eq("group_id", group["id"])
+            .execute()
+        )
+        group["restaurant_count"] = count_result.count or 0
+
+    return groups
+
+
+def create_user_group(user_id: str, name: str) -> dict:
+    """创建用户自定义分组"""
+    result = supabase.table("user_restaurant_groups").insert({
+        "user_id": user_id,
+        "name": name,
+    }).execute()
+    return result.data[0] if result.data else {}
+
+
+def delete_user_group(user_id: str, group_id: str) -> bool:
+    """删除用户自定义分组（级联删除分组内的店铺关联）"""
+    supabase.table("user_restaurant_groups").delete().eq(
+        "id", group_id
+    ).eq("user_id", user_id).execute()
+    return True
+
+
+def add_restaurant_to_group(user_id: str, group_id: str, restaurant_id: str) -> dict:
+    """添加店铺到分组"""
+    result = supabase.table("user_group_restaurants").upsert(
+        {"group_id": group_id, "restaurant_id": restaurant_id, "user_id": user_id},
+        on_conflict="group_id,restaurant_id"
+    ).execute()
+    return result.data[0] if result.data else {}
+
+
+def remove_restaurant_from_group(user_id: str, group_id: str, restaurant_id: str) -> bool:
+    """从分组中移除店铺"""
+    supabase.table("user_group_restaurants").delete().eq(
+        "group_id", group_id
+    ).eq("restaurant_id", restaurant_id).eq("user_id", user_id).execute()
+    return True
+
+
+def get_group_restaurants(group_id: str, user_id: str) -> list[dict]:
+    """获取分组内的所有店铺"""
+    result = (
+        supabase.table("user_group_restaurants")
+        .select("*, restaurants(*)")
+        .eq("group_id", group_id)
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+# ─────────────────────────────────────────
+# 博主统计相关操作（v5.0 新增）
+# ─────────────────────────────────────────
+
+def get_author_stats(author_id: str) -> dict:
+    """
+    获取博主统计数据：
+    - restaurant_count: 该博主推荐的餐厅总数
+    - follower_count: 平台中关注该博主的用户总数
+    - city_count: 该博主推荐店铺涉及的城市总数
+    """
+    # 餐厅数
+    r_result = (
+        supabase.table("author_restaurants")
+        .select("restaurant_id", count="exact")
+        .eq("author_id", author_id)
+        .execute()
+    )
+    restaurant_count = r_result.count or 0
+
+    # 粉丝数（平台内关注该博主的用户数）
+    f_result = (
+        supabase.table("user_follows")
+        .select("user_id", count="exact")
+        .eq("author_id", author_id)
+        .execute()
+    )
+    follower_count = f_result.count or 0
+
+    # 城市数（去重统计该博主推荐店铺的城市）
+    city_result = (
+        supabase.table("author_restaurants")
+        .select("restaurants(city)")
+        .eq("author_id", author_id)
+        .execute()
+    )
+    cities = set()
+    for row in (city_result.data or []):
+        r = row.get("restaurants")
+        if r and r.get("city"):
+            cities.add(r["city"])
+    city_count = len(cities)
+
+    return {
+        "restaurant_count": restaurant_count,
+        "follower_count": follower_count,
+        "city_count": city_count,
+    }
+
+
 def get_map_restaurants_for_user(user_id: str) -> dict:
     """
     获取用户地图上应该显示的所有店铺，包含两类：
     1. author_restaurants：用户关注的博主推荐的店铺
     2. user_created_restaurants：用户自建的推荐店铺
+
+    v5.0 新增：
+    - 过滤用户已删除的店铺（不在地图上显示）
+    - 标记用户已避雷的店铺（is_avoided = true）
+
     返回 {"restaurants": [...], "user_restaurants": [...]}
     """
+    # 获取用户已删除和已避雷的店铺 ID
+    deleted_ids = get_deleted_restaurant_ids(user_id)
+    avoided_ids = set(get_avoided_restaurant_ids(user_id))
+
     # 博主推荐：用户关注的博主 → 这些博主推荐的所有店铺
     follows = get_user_followed_authors(user_id)
     author_data = []
@@ -778,10 +997,24 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
             .in_("author_id", author_ids)
             .execute()
         )
-        author_data = result.data or []
+        raw_data = result.data or []
+        # 过滤已删除店铺，标记已避雷店铺
+        for item in raw_data:
+            rid = item.get("restaurant_id")
+            if rid in deleted_ids:
+                continue
+            item["is_avoided"] = rid in avoided_ids
+            author_data.append(item)
 
     # 用户自建推荐
-    user_data = get_user_created_restaurants(user_id)
+    raw_user_data = get_user_created_restaurants(user_id)
+    user_data = []
+    for item in raw_user_data:
+        rid = item.get("restaurant_id")
+        if rid in deleted_ids:
+            continue
+        item["is_avoided"] = rid in avoided_ids
+        user_data.append(item)
 
     return {"restaurants": author_data, "user_restaurants": user_data}
 

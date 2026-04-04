@@ -130,24 +130,62 @@ struct CandidateRowView: View {
     let candidate: RestaurantCandidate
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(candidate.name)
-                .font(.subheadline)
-                .fontWeight(.medium)
-            Text(candidate.address)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-            HStack(spacing: 4) {
-                Text(candidate.city)
-                    .font(.caption2)
+        HStack(spacing: 10) {
+            // 店铺缩略图（有图时显示，无图时显示占位图标）
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.orange.opacity(0.1))
+                    .frame(width: 48, height: 48)
+                if let photoUrl = candidate.photo_url, !photoUrl.isEmpty {
+                    AsyncImage(url: URL(string: photoUrl)) { phase in
+                        switch phase {
+                        case .success(let img):
+                            img.resizable().scaledToFill()
+                        default:
+                            Image(systemName: "fork.knife")
+                                .foregroundColor(.orange)
+                        }
+                    }
+                    .frame(width: 48, height: 48)
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Image(systemName: "fork.knife")
+                        .foregroundColor(.orange)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(candidate.name)
+                    .font(.subheadline)
+                    .fontWeight(.medium)
+                Text(candidate.address)
+                    .font(.caption)
                     .foregroundColor(.secondary)
-                Text("·")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                Text(candidate.category_mapped)
-                    .font(.caption2)
-                    .foregroundColor(.orange)
+                    .lineLimit(1)
+                HStack(spacing: 4) {
+                    Text(candidate.city)
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("·")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text(candidate.category_mapped)
+                        .font(.caption2)
+                        .foregroundColor(.orange)
+                    // 均价标签
+                    if let price = candidate.avg_price {
+                        Text("·")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                        HStack(spacing: 2) {
+                            Image(systemName: "yensign.circle")
+                                .font(.system(size: 8))
+                            Text("人均 ¥\(price)")
+                                .font(.caption2)
+                        }
+                        .foregroundColor(.orange)
+                    }
+                }
             }
         }
         .padding(.vertical, 4)

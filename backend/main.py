@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, extract_video_id_from_url, poll_comment_replies_for_confidence
 from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies, filter_food_video_titles
 from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies
-from amap_service import batch_search_restaurants, search_restaurant_for_review
+from amap_service import batch_search_restaurants, search_restaurant_for_review, get_poi_detail
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
     get_author_by_douyin_id, upsert_author,
@@ -39,6 +39,13 @@ from db import (
     get_user_created_restaurants, add_user_restaurant, remove_user_restaurant,
     # 新增：用户 profile 相关
     get_user_profile, upsert_user_profile,
+    # 新增：避雷、删除、分组、收藏理由、博主统计（v5.0）
+    avoid_restaurant, unavoid_restaurant, get_avoided_restaurants,
+    delete_restaurant_for_user,
+    update_favorite_note,
+    get_user_groups, create_user_group, delete_user_group,
+    add_restaurant_to_group, remove_restaurant_from_group, get_group_restaurants,
+    get_author_stats,
 )
 
 load_dotenv()
@@ -118,6 +125,29 @@ class ManualAddRestaurantRequest(BaseModel):
 
 class WechatLoginRequest(BaseModel):
     code: str               # 微信授权后返回的 code
+
+# v5.0 新增：避雷、删除、分组、收藏理由相关请求模型
+class AvoidRestaurantRequest(BaseModel):
+    user_id: str
+    restaurant_id: str
+
+class DeleteRestaurantRequest(BaseModel):
+    user_id: str
+    restaurant_id: str
+
+class UpdateFavoriteNoteRequest(BaseModel):
+    user_id: str
+    restaurant_id: str
+    note: str
+
+class CreateGroupRequest(BaseModel):
+    user_id: str
+    name: str
+
+class AddToGroupRequest(BaseModel):
+    user_id: str
+    group_id: str
+    restaurant_id: str
 
 
 # ─────────────────────────────────────────
@@ -1255,6 +1285,157 @@ async def remove_from_favorites(req: FavoriteRequest):
 
 
 # ─────────────────────────────────────────
+# 收藏理由接口（v5.0 新增）
+# ─────────────────────────────────────────
+
+@app.post("/api/favorites/update-note")
+async def update_note(req: UpdateFavoriteNoteRequest):
+    """更新收藏理由（一个店铺只维护一条用户的收藏理由）"""
+    try:
+        result = update_favorite_note(req.user_id, req.restaurant_id, req.note)
+        if not result:
+            raise HTTPException(status_code=404, detail="未找到该收藏记录，请先收藏店铺")
+        return {"status": "ok", "message": "收藏理由已更新"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# 避雷店铺接口（v5.0 新增，前端文案统一用"避雷"）
+# ─────────────────────────────────────────
+
+@app.post("/api/restaurants/avoid")
+async def avoid(req: AvoidRestaurantRequest):
+    """避雷店铺"""
+    try:
+        result = avoid_restaurant(req.user_id, req.restaurant_id)
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/restaurants/unavoid")
+async def unavoid(req: AvoidRestaurantRequest):
+    """取消避雷"""
+    try:
+        unavoid_restaurant(req.user_id, req.restaurant_id)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/restaurants/avoided")
+async def get_avoided(user_id: str):
+    """获取用户避雷的店铺列表"""
+    try:
+        data = get_avoided_restaurants(user_id)
+        return {"restaurants": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# 删除店铺接口（v5.0 新增，全局隐藏）
+# ─────────────────────────────────────────
+
+@app.post("/api/restaurants/delete")
+async def delete_restaurant(req: DeleteRestaurantRequest):
+    """删除店铺（对当前用户全局隐藏，不影响其他用户）"""
+    try:
+        result = delete_restaurant_for_user(req.user_id, req.restaurant_id)
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# 用户自定义分组接口（v5.0 新增）
+# ─────────────────────────────────────────
+
+@app.get("/api/groups")
+async def list_groups(user_id: str):
+    """获取用户的所有自定义分组"""
+    try:
+        groups = get_user_groups(user_id)
+        return {"groups": groups}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/groups")
+async def create_group(req: CreateGroupRequest):
+    """创建自定义分组"""
+    try:
+        name = req.name.strip()
+        if not name or len(name) > 20:
+            raise HTTPException(status_code=400, detail="分组名称长度需在 1-20 字符之间")
+        group = create_user_group(req.user_id, name)
+        return {"status": "ok", "group": group}
+    except HTTPException:
+        raise
+    except Exception as e:
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+            raise HTTPException(status_code=400, detail="已存在同名分组")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/groups/{group_id}")
+async def remove_group(group_id: str, user_id: str):
+    """删除自定义分组（级联删除分组内的店铺关联）"""
+    try:
+        delete_user_group(user_id, group_id)
+        return {"status": "ok", "message": "分组已删除"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/groups/{group_id}/restaurants")
+async def add_to_group(group_id: str, req: AddToGroupRequest):
+    """添加店铺到分组"""
+    try:
+        result = add_restaurant_to_group(req.user_id, group_id, req.restaurant_id)
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/groups/{group_id}/restaurants/{restaurant_id}")
+async def remove_from_group(group_id: str, restaurant_id: str, user_id: str):
+    """从分组中移除店铺"""
+    try:
+        remove_restaurant_from_group(user_id, group_id, restaurant_id)
+        return {"status": "ok", "message": "已从分组中移除"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/groups/{group_id}/restaurants")
+async def list_group_restaurants(group_id: str, user_id: str):
+    """获取分组内的所有店铺"""
+    try:
+        data = get_group_restaurants(group_id, user_id)
+        return {"restaurants": data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# 博主统计接口（v5.0 新增）
+# ─────────────────────────────────────────
+
+@app.get("/api/authors/{author_id}/stats")
+async def author_stats(author_id: str):
+    """获取博主统计数据（餐厅数、粉丝数、城市数）"""
+    try:
+        stats = get_author_stats(author_id)
+        return stats
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
 # 手动添加店铺接口
 # ─────────────────────────────────────────
 
@@ -1510,6 +1691,52 @@ async def review_skip(
     """跳过该条复核记录，更新 review_status = 'skipped'"""
     admin_skip(req.cache_id, admin_user_id)
     return {"status": "ok", "message": "已跳过"}
+
+
+@app.post("/api/admin/backfill-restaurant-data")
+async def backfill_restaurant_data(admin_user_id: str = Depends(require_admin)):
+    """
+    管理员接口：回填数据库中 avg_price / photo_url 为 null 的店铺数据。
+    通过高德 POI 详情接口（/v3/place/detail）按 amap_id 精准查询，
+    将返回的均价和图片 URL 写回 restaurants 表。
+    """
+    # 查询所有 avg_price 为 null 且有 amap_id 的店铺
+    resp = supabase.table("restaurants") \
+        .select("id, name, amap_id, city") \
+        .is_("avg_price", "null") \
+        .not_.is_("amap_id", "null") \
+        .execute()
+    rows = resp.data or []
+
+    updated = 0
+    failed = []
+
+    for row in rows:
+        amap_id = row.get("amap_id")
+        if not amap_id:
+            continue
+        detail = await get_poi_detail(amap_id)
+        if detail is None:
+            failed.append({"id": row["id"], "name": row["name"], "reason": "高德接口无返回"})
+            continue
+        # 只更新有实际值的字段，避免覆盖已有数据
+        update_data = {}
+        if detail.get("avg_price") is not None:
+            update_data["avg_price"] = detail["avg_price"]
+        if detail.get("photo_url"):
+            update_data["photo_url"] = detail["photo_url"]
+        if update_data:
+            supabase.table("restaurants").update(update_data).eq("id", row["id"]).execute()
+            updated += 1
+        else:
+            failed.append({"id": row["id"], "name": row["name"], "reason": "高德无均价/图片数据"})
+
+    return {
+        "status": "ok",
+        "total": len(rows),
+        "updated": updated,
+        "failed": failed,
+    }
 
 
 # ─────────────────────────────────────────

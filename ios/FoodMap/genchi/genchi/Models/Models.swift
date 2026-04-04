@@ -47,6 +47,7 @@ struct MapRestaurant: Identifiable, Codable {
     let restaurant_id: String
     let restaurants: Restaurant?    // 店铺详情（join 查询）
     let authors: Author?            // 博主详情（join 查询）
+    let is_avoided: Bool?           // 是否被用户避雷（v5.0 新增）
 
     // Identifiable 协议需要
     var mapId: String { id }
@@ -116,7 +117,8 @@ struct Favorite: Identifiable, Codable {
     let id: String
     let user_id: String
     let restaurant_id: String
-    let restaurants: Restaurant?    // join 查询的店铺详情
+    let note: String?                  // 收藏理由（v5.0 新增）
+    let restaurants: Restaurant?       // join 查询的店铺详情
 }
 
 // ─────────────────────────────────────────
@@ -195,6 +197,8 @@ struct ReviewItem: Identifiable, Codable {
     let restaurant_lng: Double?
     let restaurant_amap_id: String?
     let restaurant_category: String?
+    let restaurant_avg_price: Int?    // 人均消费（v5.0 新增）
+    let restaurant_photo_url: String? // 店铺封面图 URL（v5.0 新增）
     let created_at: String?
     let reviewed_at: String?    // 复核时间（已复核记录有值）
     // 关联数据
@@ -236,6 +240,8 @@ struct RestaurantCandidate: Identifiable, Codable {
     let longitude: Double
     let category_raw: String    // 高德原始分类，如"餐饮服务;火锅店;火锅店"
     let category_mapped: String // 后端映射后的分类，如"火锅"
+    let avg_price: Int?         // 人均消费（元），来自高德 biz_ext.avgprice（v5.0 新增）
+    let photo_url: String?      // 店铺封面图 URL，来自高德 photos[0].url（v5.0 新增）
 
     // Identifiable 使用 amap_id
     var id: String { amap_id }
@@ -258,6 +264,7 @@ struct UserCreatedRestaurant: Identifiable, Codable {
     let note: String?            // 用户备注（预留）
     let created_at: String?
     let restaurants: Restaurant? // join 查询的店铺详情
+    let is_avoided: Bool?        // 是否被用户避雷（v5.0 新增，地图数据接口返回）
 }
 
 // 用户自建推荐搜索候选（复用 RestaurantCandidate，字段相同）
@@ -289,4 +296,45 @@ struct UserProfile: Codable {
     let user_id: String
     let nickname: String
     let avatar_url: String?  // nil 表示未上传，使用默认占位符
+}
+
+// ─────────────────────────────────────────
+// 避雷店铺模型（v5.0 新增）
+// ─────────────────────────────────────────
+struct AvoidedRestaurant: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let restaurant_id: String
+    let created_at: String?
+    let restaurants: Restaurant?   // join 查询的店铺详情
+}
+
+// ─────────────────────────────────────────
+// 博主统计数据（v5.0 新增）
+// ─────────────────────────────────────────
+struct AuthorStats: Codable {
+    let restaurant_count: Int   // 该博主推荐的餐厅总数
+    let follower_count: Int     // 平台中关注该博主的用户总数
+    let city_count: Int         // 该博主推荐店铺涉及的城市总数
+}
+
+// ─────────────────────────────────────────
+// 用户自定义分组模型（v5.0 新增）
+// ─────────────────────────────────────────
+struct RestaurantGroup: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let name: String
+    let created_at: String?
+    var restaurant_count: Int?  // 分组内店铺数量（后端 join 查询）
+}
+
+// 分组内店铺关联记录
+struct GroupRestaurant: Identifiable, Codable {
+    let id: String
+    let group_id: String
+    let restaurant_id: String
+    let user_id: String
+    let created_at: String?
+    let restaurants: Restaurant?  // join 查询的店铺详情
 }

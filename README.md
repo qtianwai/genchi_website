@@ -21,17 +21,23 @@
 │   └── .env                    # 环境变量（不提交 git）
 └── ios/FoodMap/genchi/genchi/  # SwiftUI iOS App（Xcode 项目位于 ios/FoodMap/genchi/）
     ├── FoodMapApp.swift         # App 入口
+    ├── DesignSystem.swift       # 统一设计 token（间距/圆角/阴影/颜色）
     ├── Models/Models.swift      # 数据模型
     ├── Services/
     │   ├── APIService.swift     # 后端 API 调用
     │   └── AuthState.swift      # 用户认证状态
     └── Views/
-        ├── MainTabView.swift    # Tab 导航
-        ├── MapView.swift        # 地图主页面
+        ├── MainTabView.swift    # Tab 导航（v5.0：地图、+、收藏、我的）
+        ├── MapView.swift        # 地图主页面（v5.0：右上角添加+筛选按钮）
         ├── ParseLinkSheet.swift # 粘贴链接弹窗
-        ├── ManualAddRestaurantSheet.swift # 手动添加店铺
-        ├── AuthorsView.swift    # 博主列表
-        ├── FavoritesView.swift  # 收藏列表
+        ├── UserAddRestaurantSheet.swift # 手动添加店铺
+        ├── FavoritesView.swift  # 收藏页（v5.0：合并博主+收藏）
+        ├── AuthorDetailView.swift   # 博主详情页（v5.0 新增）
+        ├── RestaurantDetailView.swift # 店铺详情全屏页（v5.0 新增）
+        ├── RestaurantListView.swift   # 店铺列表分组管理页（v5.0 新增）
+        ├── GroupDetailView.swift      # 分组详情页（v5.0 新增）
+        ├── AuthorsView.swift    # 博主列表（v5.0 已从 Tab 移除）
+        ├── ProfileView.swift    # 个人中心
         └── LoginView.swift      # 登录页面
 ```
 
@@ -134,15 +140,40 @@ python main.py
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | POST | `/api/parse-link` | 解析抖音链接，提取店铺 |
-| GET | `/api/map/restaurants?user_id=` | 获取地图店铺数据 |
+| GET | `/api/map/restaurants?user_id=` | 获取地图店铺数据（v5.0：过滤已删除，标记避雷） |
 | GET | `/api/authors/following?user_id=` | 获取关注的博主 |
 | POST | `/api/authors/follow` | 关注博主 |
 | POST | `/api/authors/unfollow` | 取消关注 |
+| GET | `/api/authors/{id}/stats` | 获取博主统计（v5.0 新增） |
+| GET | `/api/authors/{id}/restaurants` | 获取博主推荐的店铺 |
 | GET | `/api/favorites?user_id=` | 获取收藏列表 |
 | POST | `/api/favorites/add` | 收藏店铺 |
 | POST | `/api/favorites/remove` | 取消收藏 |
+| POST | `/api/favorites/update-note` | 更新收藏理由（v5.0 新增） |
+| POST | `/api/restaurants/avoid` | 避雷店铺（v5.0 新增） |
+| POST | `/api/restaurants/unavoid` | 取消避雷（v5.0 新增） |
+| GET | `/api/restaurants/avoided?user_id=` | 获取避雷列表（v5.0 新增） |
+| POST | `/api/restaurants/delete` | 删除店铺（v5.0 新增） |
+| GET | `/api/groups?user_id=` | 获取用户分组（v5.0 新增） |
+| POST | `/api/groups` | 创建分组（v5.0 新增） |
+| DELETE | `/api/groups/{id}` | 删除分组（v5.0 新增） |
+| POST | `/api/groups/{id}/restaurants` | 添加店铺到分组（v5.0 新增） |
+| DELETE | `/api/groups/{id}/restaurants/{rid}` | 从分组移除店铺（v5.0 新增） |
+| GET | `/api/groups/{id}/restaurants` | 获取分组内店铺（v5.0 新增） |
 
 ---
+
+### 2026-04-04 收藏模块功能调整与完善（v5.0）
+- 主要目的：合并博主 Tab 与收藏 Tab 为统一入口，新增博主详情页、店铺详情全屏页、店铺列表分组管理页，引入避雷/删除/分组/收藏理由等精细化操作
+- 完成的主要任务：
+  - 后端：db.py 新增避雷/删除/分组/收藏理由/博主统计数据库操作函数；main.py 新增 12 个 API 路由；修改 /api/map/restaurants 过滤已删除店铺、标记避雷
+  - iOS 数据层：Models.swift 新增 AvoidedRestaurant/AuthorStats/RestaurantGroup/GroupRestaurant 模型，Favorite 新增 note 字段，MapRestaurant 新增 is_avoided 字段；APIService.swift 新增 15+ 个 API 方法
+  - iOS 新页面：AuthorDetailView（博主详情）、RestaurantDetailView（店铺详情全屏）、RestaurantListView（店铺列表分组管理）、GroupDetailView（分组详情）
+  - iOS 改造：FavoritesView 完全重写（合并博主列表+收藏店铺，左滑操作，卡片留言/导航图标）；MapView 添加按钮移至右上角、筛选栏默认隐藏、标注点击跳转全屏详情；MainTabView 删除博主 Tab
+  - 文档：supabase_schema.sql 新增 4 张表定义；实施计划文档
+- 关键决策：前端"拉黑"概念全部改为"避雷"；收藏理由入口放在卡片留言图标上而非左滑菜单；"我的推荐"筛选 chip 使用用户真实头像
+- 使用的技术栈：SwiftUI、MapKit、FastAPI、Supabase PostgreSQL
+- 修改了哪些文件：`backend/db.py`、`backend/main.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Views/MainTabView.swift`、`ios/.../Views/MapView.swift`、`ios/.../Views/FavoritesView.swift`、新增 `ios/.../Views/AuthorDetailView.swift`、`ios/.../Views/RestaurantDetailView.swift`、`ios/.../Views/RestaurantListView.swift`、`ios/.../Views/GroupDetailView.swift`、`需求文档&技术方案/收藏模块功能调整与完善实施计划.md`
 
 ### 2026-04-03 移动端 UI 视觉重构
 - 主要目的：在不改动核心功能的前提下，优化 iOS 移动端界面的视觉层次、排版布局、留白、卡片样式和筛选区体验
@@ -1646,3 +1677,116 @@ SwiftUI AsyncImage、iOS 16+
 - `ios/FoodMap/genchi/genchi/Models/Models.swift`
 - `ios/FoodMap/genchi/genchi/Views/MapView.swift`
 - `ios/FoodMap/genchi/genchi/Views/FavoritesView.swift`
+
+---
+
+## 会话记录 - 2026-04-04
+
+### 会话目的
+检查店铺均价和图片接口支持情况，回填数据库现有数据，并同步更新复核模块的展示。
+
+### 完成的主要任务
+- `backend/amap_service.py` 新增 `get_poi_detail(amap_id)` 函数，通过高德 POI 详情接口精准查询均价和图片
+- `backend/main.py` 新增管理员回填接口 `POST /api/admin/backfill-restaurant-data`，导入 `get_poi_detail`
+- 执行回填脚本，数据库 28 条店铺图片全部回填成功（均价高德未返回，属数据覆盖问题）
+- `Models.swift` `RestaurantCandidate` 新增 `avg_price: Int?` 和 `photo_url: String?` 字段
+- `Models.swift` `ReviewItem` 新增 `restaurant_avg_price: Int?` 和 `restaurant_photo_url: String?` 快照字段
+- `RestaurantSearchView.swift` `CandidateRowView` 升级为图文横排布局，新增缩略图（48×48）和均价标签
+- `ReviewDetailView.swift` 店铺信息区域新增封面图（56×56）和均价胶囊标签
+
+### 关键决策
+- 回填采用高德 POI 详情接口（`/v3/place/detail`）按 amap_id 精准查询，比重新搜索更准确
+- 复核候选列表和复核详情均同步展示均价和图片，与地图卡片、收藏列表保持一致的视觉风格
+
+### 使用的技术栈
+Python httpx、Supabase REST API、SwiftUI AsyncImage
+
+### 修改的文件
+- `backend/amap_service.py`
+- `backend/main.py`
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/RestaurantSearchView.swift`
+- `ios/FoodMap/genchi/genchi/Views/Admin/ReviewDetailView.swift`
+
+---
+
+## 会话记录 - 2026-04-04（产品介绍文档创建）
+
+### 会话目的
+
+参考产品原始想法文档结构，创建面向用户的产品介绍文档，以及配套的维护规则文档。
+
+### 完成的主要任务
+
+1. **创建 `产品介绍.md`**：参考原始想法文档结构，从用户视角描述产品价值和核心功能，涵盖：
+   - 产品定位：一句话说清产品是什么
+   - 核心功能：5 大功能板块（解析视频、地图展示、关注博主、收藏店铺、导航到店）
+   - 使用场景：3 个典型使用情境
+   - 产品特色：4 个核心亮点
+   - 常见问题：FAQ
+
+2. **创建 `产品介绍维护规则.md`**：建立文档维护规则，包括：
+   - 维护时机表：明确哪些变更必须/视情况更新文档
+   - 更新原则：保持结构稳定、语言简洁直观
+   - 更新检查清单：5 项确认内容
+   - 文档结构说明：明确各章节定位
+
+### 关键决策
+
+- 产品介绍文档采用通俗易懂的语言，面向普通用户，避免技术术语
+- 维护规则强调"不调整文档结构，在现有结构上修正补充"的原则
+- 产品介绍与产品功能清单分工明确：介绍面向用户，清单面向开发团队
+
+### 修改的文件
+
+- `需求文档&技术方案/产品介绍.md`（新建）
+- `需求文档&技术方案/产品介绍维护规则.md`（新建）
+- `CLAUDE.md`（新增产品介绍维护规则章节）
+
+---
+
+## 会话记录 - 2026-04-04（Agent 时间线颜色含义说明）
+
+### 会话目的
+
+说明 Cursor / Agent 活动流左侧圆点不同颜色所代表的状态含义。
+
+### 完成的主要任务
+
+- 根据界面常见约定，解释绿色（成功）、红/橙色（失败）、灰色（说明/非工具结果）、加号/加载（进行中）的含义。
+
+### 关键决策
+
+- 说明为通用 UI 语义归纳；若官方更新图例，以产品内提示为准。
+
+### 使用的技术栈
+
+无（纯说明）。
+
+### 修改的文件
+
+- `README.md`（追加本会话记录）
+
+---
+
+## 会话记录 - 2026-04-04（Accept plan 选项 2 说明）
+
+### 会话目的
+
+解释「Accept this plan?」弹窗中选项 2「Yes, and manually approve edits」的含义。
+
+### 完成的主要任务
+
+- 说明选项 2 表示同意执行计划，但需用户对每次编辑手动批准后再应用；并与选项 1（自动接受）、选项 3（继续规划）对比。
+
+### 关键决策
+
+- 无技术实现，仅为产品交互说明。
+
+### 使用的技术栈
+
+无。
+
+### 修改的文件
+
+- `README.md`（追加本会话记录）

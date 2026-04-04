@@ -1,5 +1,6 @@
 // 地图主页面
 // 显示博主推荐店铺的地图，支持按博主筛选，点击标注查看详情
+// v5.0：添加按钮移至右上角，筛选栏默认隐藏，标注点击跳转全屏详情页
 
 import SwiftUI
 import MapKit
@@ -15,113 +16,197 @@ struct MapView: View {
     @State private var selectedRestaurant: MapRestaurant? = nil
     // 当前选中的用户自建推荐店铺（v4.0 新增）
     @State private var selectedUserRestaurant: UserCreatedRestaurant? = nil
+    // v5.0：筛选栏显隐状态（默认隐藏）
+    @State private var showFilter = false
+    // v5.0：添加菜单
+    @State private var showAddMenu = false
+    @State private var showParseSheet = false
+    @State private var showUserAddSheet = false
+    // v5.0：导航到店铺详情
+    @State private var navigateToDetail = false
+    @State private var detailRestaurant: Restaurant? = nil
+    @State private var detailRestaurantId: String? = nil
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            // ── 地图主体（iOS 17+ 新 API）──
-            Map(position: $viewModel.mapCameraPosition) {
-                // 用户位置蓝点
-                UserAnnotation()
-                // 博主推荐店铺标注
-                ForEach(viewModel.filteredRestaurants) { item in
-                    Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
-                        MapPinView(
-                            avatarURL: item.authors?.avatar_url,
-                            isSelected: selectedRestaurant?.id == item.id
-                        )
-                        .onTapGesture {
-                            withAnimation(.spring()) {
-                                selectedRestaurant = item
-                                selectedUserRestaurant = nil
+        NavigationStack {
+            ZStack {
+                // ── 地图主体（iOS 17+ 新 API）──
+                Map(position: $viewModel.mapCameraPosition) {
+                    UserAnnotation()
+                    // 博主推荐店铺标注
+                    ForEach(viewModel.filteredRestaurants) { item in
+                        Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
+                            MapPinView(
+                                avatarURL: item.authors?.avatar_url,
+                                isSelected: selectedRestaurant?.id == item.id
+                            )
+                            .onTapGesture {
+                                withAnimation(.spring()) {
+                                    selectedRestaurant = item
+                                    selectedUserRestaurant = nil
+                                }
+                            }
+                        }
+                    }
+                    // 用户自建推荐店铺标注
+                    ForEach(viewModel.filteredUserRestaurants) { item in
+                        Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
+                            UserPinView(
+                                isSelected: selectedUserRestaurant?.id == item.id,
+                                avatarURL: authState.avatarURL
+                            )
+                            .onTapGesture {
+                                withAnimation(.spring()) {
+                                    selectedUserRestaurant = item
+                                    selectedRestaurant = nil
+                                }
                             }
                         }
                     }
                 }
-                // 用户自建推荐店铺标注（v4.0 新增）
-                ForEach(viewModel.filteredUserRestaurants) { item in
-                    Annotation("", coordinate: item.restaurants?.coordinate ?? CLLocationCoordinate2D()) {
-                        UserPinView(
-                            isSelected: selectedUserRestaurant?.id == item.id,
-                            avatarURL: authState.avatarURL
-                        )
-                        .onTapGesture {
-                            withAnimation(.spring()) {
-                                selectedUserRestaurant = item
-                                selectedRestaurant = nil
+                .ignoresSafeArea()
+
+                // ── 右上角按钮组 ──
+                VStack {
+                    HStack {
+                        Spacer()
+                        VStack(spacing: DS.Spacing.sm) {
+                            // 添加店铺按钮（橙色圆形）
+                            Button { showAddMenu = true } label: {
+                                Image(systemName: "plus")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .frame(width: 44, height: 44)
+                                    .background(DS.Color.brand)
+                                    .clipShape(Circle())
+                                    .shadow(color: DS.Shadow.cardColor, radius: DS.Shadow.cardRadius, y: DS.Shadow.cardY)
+                            }
+                            // 筛选展开/收起按钮
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.25)) { showFilter.toggle() }
+                            } label: {
+                                Image(systemName: showFilter
+                                    ? "line.3.horizontal.decrease.circle.fill"
+                                    : "line.3.horizontal.decrease.circle")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.primary)
+                                    .frame(width: 44, height: 44)
+                                    .background(.ultraThinMaterial)
+                                    .clipShape(Circle())
+                                    .shadow(color: DS.Shadow.chipColor, radius: DS.Shadow.chipRadius, y: DS.Shadow.chipY)
                             }
                         }
+                        .padding(.trailing, DS.Spacing.lg)
+                    }
+                    .padding(.top, 60) // safe area 顶部留白
+
+                    // ── 筛选栏（默认隐藏，点击展开时从顶部滑入）──
+                    if showFilter {
+                        AuthorFilterBar(
+                            restaurants: viewModel.mapRestaurants,
+                            userRestaurantCount: viewModel.userRestaurants.count,
+                            selectedAuthorId: $viewModel.selectedAuthorId,
+                            userAvatarURL: authState.avatarURL
+                        )
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                        .padding(.top, DS.Spacing.sm)
+                    }
+
+                    Spacer()
+
+                    // ── 底部店铺详情卡片（点击标注后显示，点击卡片跳转全屏详情）──
+                    if let selected = selectedRestaurant,
+                       let restaurant = selected.restaurants {
+                        Button {
+                            detailRestaurant = restaurant
+                            detailRestaurantId = selected.restaurant_id
+                            navigateToDetail = true
+                        } label: {
+                            RestaurantCard(
+                                restaurant: restaurant,
+                                author: selected.authors,
+                                userId: authState.userId
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .id(restaurant.id)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.horizontal, DS.Spacing.lg)
+                        .padding(.bottom, 90)
+                    }
+
+                    if let selected = selectedUserRestaurant,
+                       let restaurant = selected.restaurants {
+                        Button {
+                            detailRestaurant = restaurant
+                            detailRestaurantId = selected.restaurant_id
+                            navigateToDetail = true
+                        } label: {
+                            RestaurantCard(
+                                restaurant: restaurant,
+                                author: nil,
+                                userId: authState.userId,
+                                isUserCreated: true
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .id(restaurant.id)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .padding(.horizontal, DS.Spacing.lg)
+                        .padding(.bottom, 90)
                     }
                 }
             }
-            .ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                // ── 顶部博主筛选栏 ──
-                AuthorFilterBar(
-                    restaurants: viewModel.mapRestaurants,
-                    userRestaurantCount: viewModel.userRestaurants.count,
-                    selectedAuthorId: $viewModel.selectedAuthorId
-                )
-                .padding(.top, 8)
-
-                Spacer()
-
-                // ── 底部店铺详情卡片（点击博主推荐标注后显示）──
-                if let selected = selectedRestaurant,
-                   let restaurant = selected.restaurants {
-                    RestaurantCard(
-                        restaurant: restaurant,
-                        author: selected.authors,
-                        userId: authState.userId
-                    )
-                    .id(restaurant.id)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 90)
-                }
-
-                // ── 底部店铺详情卡片（点击用户自建标注后显示）──
-                if let selected = selectedUserRestaurant,
-                   let restaurant = selected.restaurants {
-                    RestaurantCard(
-                        restaurant: restaurant,
-                        author: nil,
-                        userId: authState.userId,
-                        isUserCreated: true
-                    )
-                    .id(restaurant.id)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 90)
+            .task {
+                await viewModel.loadMapData(userId: authState.userId)
+                locationManager.requestPermission()
+            }
+            .onAppear {
+                viewModel.startAutoRefresh(userId: authState.userId)
+            }
+            .onDisappear {
+                viewModel.stopAutoRefresh()
+            }
+            .onTapGesture {
+                withAnimation {
+                    selectedRestaurant = nil
+                    selectedUserRestaurant = nil
                 }
             }
-
-        }
-        .task {
-            await viewModel.loadMapData(userId: authState.userId)
-            locationManager.requestPermission()
-        }
-        .onAppear {
-            viewModel.startAutoRefresh(userId: authState.userId)
-        }
-        .onDisappear {
-            viewModel.stopAutoRefresh()
-        }
-        // 点击地图空白处关闭详情卡片
-        .onTapGesture {
-            withAnimation {
-                selectedRestaurant = nil
-                selectedUserRestaurant = nil
+            .onChange(of: locationManager.locationUpdateCount) { oldValue, newValue in
+                if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
+                    viewModel.centerMapOnUserLocation(location)
+                }
             }
-        }
-        .onChange(of: locationManager.locationUpdateCount) { oldValue, newValue in
-            if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
-                viewModel.centerMapOnUserLocation(location)
+            .onChange(of: refreshTrigger) { _, _ in
+                Task { await viewModel.loadMapData(userId: authState.userId) }
             }
-        }
-        // 监听外部刷新触发器（MainTabView 添加成功后通知）
-        .onChange(of: refreshTrigger) { _, _ in
-            Task { await viewModel.loadMapData(userId: authState.userId) }
+            // 添加菜单
+            .confirmationDialog("添加店铺", isPresented: $showAddMenu, titleVisibility: .visible) {
+                Button("解析抖音链接") { showParseSheet = true }
+                Button("手动添加店铺") { showUserAddSheet = true }
+                Button("取消", role: .cancel) {}
+            } message: {
+                Text("选择添加方式")
+            }
+            .sheet(isPresented: $showParseSheet) {
+                ParseLinkSheet(onSuccess: {
+                    refreshTrigger += 1
+                })
+                .environmentObject(authState)
+            }
+            .sheet(isPresented: $showUserAddSheet) {
+                UserAddRestaurantSheet(onSuccess: {
+                    refreshTrigger += 1
+                })
+                .environmentObject(authState)
+            }
+            // 导航到店铺详情全屏页
+            .navigationDestination(isPresented: $navigateToDetail) {
+                if let restaurant = detailRestaurant, let rid = detailRestaurantId {
+                    RestaurantDetailView(restaurant: restaurant, restaurantId: rid)
+                }
+            }
         }
     }
 }
@@ -220,6 +305,7 @@ struct AuthorFilterBar: View {
     let restaurants: [MapRestaurant]
     let userRestaurantCount: Int   // 用户自建推荐数量（v4.0 新增）
     @Binding var selectedAuthorId: String?
+    var userAvatarURL: String? = nil  // v5.0：用户真实头像 URL，用于"我的推荐" chip
 
     // 从店铺列表中提取不重复的博主
     var authors: [Author] {
@@ -239,11 +325,11 @@ struct AuthorFilterBar: View {
                     selectedAuthorId = nil
                 }
 
-                // "我的推荐" 筛选 chip（有自建推荐时显示）
+                // "我的推荐" 筛选 chip（有自建推荐时显示，使用用户真实头像）
                 if userRestaurantCount > 0 {
                     FilterChip(
                         label: "我的推荐",
-                        avatarURL: nil,
+                        avatarURL: userAvatarURL,
                         isSelected: selectedAuthorId == "my",
                         accentColor: .purple
                     ) {

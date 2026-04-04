@@ -313,6 +313,38 @@ async def search_restaurant_for_review(name: str, city: str) -> list[dict]:
     return candidates
 
 
+async def get_poi_detail(amap_id: str) -> dict | None:
+    """
+    通过高德 POI 详情接口，根据 amap_id 直接查询店铺详情（含均价和图片）。
+    比重新搜索更精准，用于回填已入库店铺的 avg_price 和 photo_url。
+    """
+    params = {
+        "key": AMAP_API_KEY,
+        "id": amap_id,
+        "extensions": "all",
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.get("https://restapi.amap.com/v3/place/detail", params=params)
+            data = resp.json()
+            if data.get("status") != "1":
+                print(f"[高德详情] 接口返回错误: {data.get('info')}")
+                return None
+            pois = data.get("pois", []) or []
+            if not pois:
+                return None
+            poi = pois[0]
+            biz_ext = poi.get("biz_ext", {}) or {}
+            avg_price_raw = biz_ext.get("avgprice", "")
+            avg_price = int(avg_price_raw) if avg_price_raw and avg_price_raw.isdigit() else None
+            photos = poi.get("photos", []) or []
+            photo_url = photos[0].get("url", "") if photos else ""
+            return {"avg_price": avg_price, "photo_url": photo_url}
+        except Exception as e:
+            print(f"[高德详情] 请求失败: {e}")
+            return None
+
+
 async def batch_search_restaurants(restaurants: list[dict]) -> list[dict]:
     """
     批量搜索店铺地址

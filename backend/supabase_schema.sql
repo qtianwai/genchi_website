@@ -97,6 +97,7 @@ create table if not exists user_favorites (
   id              uuid primary key default uuid_generate_v4(),
   user_id         uuid not null,
   restaurant_id   uuid not null references restaurants(id) on delete cascade,
+  note            text,                    -- 收藏理由（v5.0 新增）
   created_at      timestamptz default now(),
   unique(user_id, restaurant_id)
 );
@@ -332,3 +333,85 @@ create policy "profile 公开可读" on user_profiles
   for select using (true);
 create policy "用户只能修改自己的 profile" on user_profiles
   for all using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
+-- 12. 用户避雷店铺表（v5.0 新增）
+-- 前端文案统一用"避雷"，表名保留 blocked 兼容
+-- ─────────────────────────────────────────
+create table if not exists user_blocked_restaurants (
+  id              uuid primary key default uuid_generate_v4(),
+  user_id         uuid not null,
+  restaurant_id   uuid not null references restaurants(id) on delete cascade,
+  created_at      timestamptz default now(),
+  unique(user_id, restaurant_id)
+);
+
+create index if not exists idx_ubr_user on user_blocked_restaurants(user_id);
+
+alter table user_blocked_restaurants enable row level security;
+create policy "用户只能操作自己的避雷记录" on user_blocked_restaurants
+  for all using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
+-- 13. 用户删除店铺表（v5.0 新增，全局隐藏）
+-- 用户删除后该店铺不再出现在地图和列表中，不影响其他用户
+-- ─────────────────────────────────────────
+create table if not exists user_deleted_restaurants (
+  id              uuid primary key default uuid_generate_v4(),
+  user_id         uuid not null,
+  restaurant_id   uuid not null references restaurants(id) on delete cascade,
+  created_at      timestamptz default now(),
+  unique(user_id, restaurant_id)
+);
+
+create index if not exists idx_udr_user on user_deleted_restaurants(user_id);
+
+alter table user_deleted_restaurants enable row level security;
+create policy "用户只能操作自己的删除记录" on user_deleted_restaurants
+  for all using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
+-- 14. 用户自定义分组表（v5.0 新增）
+-- ─────────────────────────────────────────
+create table if not exists user_restaurant_groups (
+  id          uuid primary key default uuid_generate_v4(),
+  user_id     uuid not null,
+  name        text not null,
+  created_at  timestamptz default now(),
+  unique(user_id, name)
+);
+
+create index if not exists idx_urg_user on user_restaurant_groups(user_id);
+
+alter table user_restaurant_groups enable row level security;
+create policy "用户只能操作自己的分组" on user_restaurant_groups
+  for all using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
+-- 15. 分组-店铺关联表（v5.0 新增）
+-- ─────────────────────────────────────────
+create table if not exists user_group_restaurants (
+  id              uuid primary key default uuid_generate_v4(),
+  group_id        uuid not null references user_restaurant_groups(id) on delete cascade,
+  restaurant_id   uuid not null references restaurants(id) on delete cascade,
+  user_id         uuid not null,
+  created_at      timestamptz default now(),
+  unique(group_id, restaurant_id)
+);
+
+create index if not exists idx_ugr_group on user_group_restaurants(group_id);
+
+alter table user_group_restaurants enable row level security;
+create policy "用户只能操作自己的分组店铺" on user_group_restaurants
+  for all using (auth.uid() = user_id);
+
+
+-- ─────────────────────────────────────────
+-- v5.0 迁移脚本：user_favorites 新增收藏理由字段
+-- 若在已有数据库上增量执行，运行以下 ALTER 语句：
+-- ─────────────────────────────────────────
+-- ALTER TABLE user_favorites ADD COLUMN IF NOT EXISTS note text;

@@ -1,5 +1,7 @@
-// 收藏页面
-// v4.0：新增分段控制器，切换「我的收藏」和「我的推荐」两个分区
+// 收藏页面（v5.0 完全重写）
+// 合并原【博主】Tab 和【收藏】Tab 为统一入口
+// 上半部分：关注的博主列表（含自己）
+// 下半部分：收藏的店铺列表（左滑操作 + 卡片图标）
 
 import SwiftUI
 import CoreLocation
@@ -7,244 +9,386 @@ import CoreLocation
 struct FavoritesView: View {
     @EnvironmentObject var authState: AuthState
 
-    // 分段控制器选中项：0 = 我的收藏，1 = 我的推荐
-    @State private var selectedTab = 0
-
-    // 收藏数据
+    // 数据
+    @State private var authors: [Author] = []
     @State private var favorites: [Favorite] = []
-    @State private var isLoadingFavorites = false
+    @State private var isLoading = true
 
-    // 用户自建推荐数据（v4.0 新增）
-    @State private var userRestaurants: [UserCreatedRestaurant] = []
-    @State private var isLoadingUserRestaurants = false
+    // 搜索
+    @State private var showSearch = false
+    @State private var searchText = ""
+
+    // 收藏理由编辑
+    @State private var showNoteEditor = false
+    @State private var editingFav: Favorite?
+    @State private var editingNote = ""
 
     var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // ── 分段控制器 ──
-                Picker("", selection: $selectedTab) {
-                    Text("我的收藏").tag(0)
-                    Text("我的推荐").tag(1)
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 10)
-                .background(Color(.systemGroupedBackground))
-
-                // ── 内容区域 ──
-                if selectedTab == 0 {
-                    favoritesContent
-                } else {
-                    userRestaurantsContent
-                }
-            }
-            .navigationTitle(selectedTab == 0 ? "我的收藏" : "我的推荐")
-            .task {
-                await loadFavorites()
-                await loadUserRestaurants()
-            }
-            .refreshable {
-                if selectedTab == 0 {
-                    await loadFavorites()
-                } else {
-                    await loadUserRestaurants()
-                }
-            }
-        }
-    }
-
-    // ── 我的收藏内容 ──
-    @ViewBuilder
-    var favoritesContent: some View {
-        if isLoadingFavorites {
-            Spacer()
-            ProgressView("加载中...")
-            Spacer()
-        } else if favorites.isEmpty {
-            emptyView(
-                icon: "heart.slash",
-                title: "还没有收藏任何店铺",
-                subtitle: "在地图上点击店铺，点击心形图标即可收藏"
-            )
-        } else {
+        NavigationStack {
             List {
-                ForEach(favorites) { fav in
-                    if let restaurant = fav.restaurants {
-                        FavoriteRow(restaurant: restaurant, accentColor: DS.Color.brand) {
-                            removeFavorite(fav)
+                // 搜索栏（展开时显示）
+                if showSearch {
+                    searchBar
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
+                }
+
+                // 关注的博主区域
+                Section("关注的博主") {
+                    // 自己（第一行，点击进入店铺列表页）
+                    NavigationLink {
+                        RestaurantListView()
+                    } label: {
+                        authorRow(
+                            avatarURL: authState.avatarURL,
+                            name: authState.nickname,
+                            subtitle: "我",
+                            isMe: true
+                        )
+                    }
+
+                    // 已关注博主列表
+                    ForEach(filteredAuthors) { author in
+                        NavigationLink {
+                            AuthorDetailView(author: author)
+                        } label: {
+                            authorRow(
+                                avatarURL: author.avatar_url,
+                                name: author.name,
+                                subtitle: "抖音达人",
+                                isMe: false
+                            )
                         }
+                    }
+
+                    if authors.isEmpty && !isLoading {
+                        Text("还没有关注任何博主")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                // 收藏的店铺区域
+                Section {
+                    if filteredFavorites.isEmpty && !isLoading {
+                        VStack(spacing: DS.Spacing.md) {
+                            Image(systemName: "bookmark.slash")
+                                .font(.largeTitle)
+                                .foregroundColor(.secondary.opacity(0.5))
+                            Text("还没有收藏任何店铺")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                            Text("在地图上点击店铺，即可收藏")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 30)
+                        .listRowSeparator(.hidden)
+                    } else {
+                        ForEach(filteredFavorites) { fav in
+                            if let restaurant = fav.restaurants {
+                                NavigationLink {
+                                    RestaurantDetailView(
+                                        restaurant: restaurant,
+                                        restaurantId: fav.restaurant_id
+                                    )
+                                } label: {
+                                    favoriteRestaurantRow(fav: fav, restaurant: restaurant)
+                                }
+                                // 左滑操作（List 内才生效）
+                                .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                                    Button(role: .destructive) {
+                                        Task { await deleteRestaurant(fav.restaurant_id) }
+                                    } label: {
+                                        Label("删除", systemImage: "trash")
+                                    }
+                                    Button {
+                                        Task { await avoidRestaurant(fav.restaurant_id) }
+                                    } label: {
+                                        Label("避雷", systemImage: "exclamationmark.shield")
+                                    }
+                                    .tint(.gray)
+                                    Button {
+                                        Task { await removeFavorite(fav) }
+                                    } label: {
+                                        Label("取消收藏", systemImage: "bookmark.slash")
+                                    }
+                                    .tint(.orange)
+                                }
+                            }
+                        }
+                    }
+                } header: {
+                    HStack {
+                        Text("收藏的店铺")
+                        Spacer()
+                        Text("\(filteredFavorites.count) 家")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
             }
-            .listStyle(.plain)
-        }
-    }
-
-    // ── 我的推荐内容（v4.0 新增）──
-    @ViewBuilder
-    var userRestaurantsContent: some View {
-        if isLoadingUserRestaurants {
-            Spacer()
-            ProgressView("加载中...")
-            Spacer()
-        } else if userRestaurants.isEmpty {
-            emptyView(
-                icon: "person.crop.circle.badge.plus",
-                title: "还没有添加推荐店铺",
-                subtitle: "点击底部「+」按钮，选择「手动添加店铺」来添加你知道的好店"
-            )
-        } else {
-            List {
-                ForEach(userRestaurants) { item in
-                    if let restaurant = item.restaurants {
-                        FavoriteRow(restaurant: restaurant, accentColor: .purple) {
-                            removeUserRestaurant(item)
-                        }
+            .listStyle(.insetGrouped)
+            .navigationTitle("收藏")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        withAnimation { showSearch.toggle() }
+                    } label: {
+                        Image(systemName: "magnifyingglass")
                     }
                 }
             }
-            .listStyle(.plain)
+            .overlay {
+                if isLoading {
+                    ProgressView()
+                }
+            }
+            .task { await loadData() }
+            .refreshable { await loadData() }
+            // 收藏理由编辑 Sheet
+            .sheet(isPresented: $showNoteEditor) {
+                noteEditorSheet
+            }
         }
     }
 
-    // ── 空状态视图 ──
-    func emptyView(icon: String, title: String, subtitle: String) -> some View {
-        VStack(spacing: DS.Spacing.lg) {
-            Spacer()
-            Image(systemName: icon)
-                .font(.system(size: 48))
-                .foregroundColor(.gray.opacity(0.5))
-            Text(title)
-                .font(.headline)
+    // MARK: - 搜索栏
+    private var searchBar: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
                 .foregroundColor(.secondary)
-            Text(subtitle)
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
-            Spacer()
+            TextField("搜索店铺或博主", text: $searchText)
+                .textFieldStyle(.plain)
+            if !searchText.isEmpty {
+                Button {
+                    searchText = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(DS.Spacing.sm)
+        .background(DS.Color.surfaceAlt)
+        .cornerRadius(DS.Radius.sm)
+    }
+
+    // 过滤后的博主列表
+    private var filteredAuthors: [Author] {
+        if searchText.isEmpty { return authors }
+        return authors.filter { $0.name.localizedCaseInsensitiveContains(searchText) }
+    }
+
+    // 过滤后的收藏列表
+    private var filteredFavorites: [Favorite] {
+        if searchText.isEmpty { return favorites }
+        return favorites.filter {
+            $0.restaurants?.name.localizedCaseInsensitiveContains(searchText) == true ||
+            $0.restaurants?.address?.localizedCaseInsensitiveContains(searchText) == true
         }
     }
 
-    // ── 数据加载 ──
-    func loadFavorites() async {
-        isLoadingFavorites = true
-        do {
-            favorites = try await APIService.shared.getFavorites(userId: authState.userId)
-        } catch {}
-        isLoadingFavorites = false
-    }
-
-    func loadUserRestaurants() async {
-        isLoadingUserRestaurants = true
-        do {
-            userRestaurants = try await APIService.shared.getUserRestaurants(userId: authState.userId)
-        } catch {}
-        isLoadingUserRestaurants = false
-    }
-
-    func removeFavorite(_ fav: Favorite) {
-        Task {
-            try? await APIService.shared.removeFavorite(userId: authState.userId, restaurantId: fav.restaurant_id)
-            favorites.removeAll { $0.id == fav.id }
-        }
-    }
-
-    func removeUserRestaurant(_ item: UserCreatedRestaurant) {
-        Task {
-            try? await APIService.shared.deleteUserRestaurant(userId: authState.userId, restaurantId: item.restaurant_id)
-            userRestaurants.removeAll { $0.id == item.id }
-        }
-    }
-}
-
-// ── 通用店铺行（收藏和我的推荐共用，accentColor 区分样式）──
-struct FavoriteRow: View {
-    let restaurant: Restaurant
-    var accentColor: Color = DS.Color.brand
-    let onRemove: () -> Void
-
-    var body: some View {
+    // MARK: - 博主行
+    private func authorRow(avatarURL: String?, name: String, subtitle: String, isMe: Bool) -> some View {
         HStack(spacing: DS.Spacing.md) {
-            // 店铺图片（有图时显示，无图时显示分类图标占位）
-            ZStack {
-                RoundedRectangle(cornerRadius: DS.Radius.md)
-                    .fill(accentColor.opacity(0.12))
-                    .frame(width: 56, height: 56)
-                if let photoUrl = restaurant.photo_url, !photoUrl.isEmpty {
-                    AsyncImage(url: URL(string: photoUrl)) { phase in
-                        switch phase {
-                        case .success(let img):
-                            img.resizable().scaledToFill()
-                        default:
-                            Image(systemName: "fork.knife")
-                                .foregroundColor(accentColor)
-                        }
-                    }
-                    .frame(width: 56, height: 56)
-                    .clipShape(RoundedRectangle(cornerRadius: DS.Radius.md))
-                } else {
-                    Image(systemName: "fork.knife")
-                        .foregroundColor(accentColor)
-                }
+            // 头像（44pt 圆形）
+            AsyncImage(url: URL(string: avatarURL ?? "")) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Circle().fill(isMe ? DS.Color.brand.opacity(0.15) : DS.Color.surfaceAlt)
+                    .overlay(
+                        Image(systemName: "person.fill")
+                            .foregroundColor(isMe ? DS.Color.brand : .gray)
+                            .font(.body)
+                    )
             }
+            .frame(width: 44, height: 44)
+            .clipShape(Circle())
 
+            VStack(alignment: .leading, spacing: 2) {
+                Text(name)
+                    .font(.subheadline.bold())
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, DS.Spacing.xs)
+    }
+
+    // MARK: - 收藏店铺行
+    private func favoriteRestaurantRow(fav: Favorite, restaurant: Restaurant) -> some View {
+        HStack(spacing: DS.Spacing.md) {
+            // 店铺图片（56pt 圆角）
+            AsyncImage(url: URL(string: restaurant.photo_url ?? "")) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                RoundedRectangle(cornerRadius: DS.Radius.sm)
+                    .fill(DS.Color.surfaceAlt)
+                    .overlay(Image(systemName: "fork.knife").foregroundColor(.gray))
+            }
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: DS.Radius.sm))
+
+            // 店铺信息
             VStack(alignment: .leading, spacing: DS.Spacing.xs) {
                 Text(restaurant.name)
-                    .font(.subheadline).fontWeight(.semibold)
-                if let address = restaurant.address {
+                    .font(.subheadline.bold())
+                    .lineLimit(1)
+                // 收藏理由（若有）
+                if let note = fav.note, !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                if let address = restaurant.address, !address.isEmpty {
                     Text(address)
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
-                // 分类 + 均价
-                HStack(spacing: DS.Spacing.sm) {
-                    if let category = restaurant.category {
-                        Text(category)
-                            .font(.caption2)
-                            .foregroundColor(accentColor)
-                    }
-                    if let price = restaurant.avg_price {
-                        HStack(spacing: 2) {
-                            Image(systemName: "yensign.circle")
-                                .font(.system(size: 9))
-                            Text("人均 ¥\(price)")
-                                .font(.caption2)
-                        }
-                        .foregroundColor(.orange)
-                    }
+                if let category = restaurant.category, !category.isEmpty {
+                    Text(category)
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(DS.Color.brand.opacity(0.1))
+                        .foregroundColor(DS.Color.brand)
+                        .cornerRadius(4)
                 }
             }
 
             Spacer()
 
-            // 导航按钮
-            if let coordinate = restaurant.coordinate {
-                Button(action: { openNavigation(coordinate: coordinate) }) {
-                    Image(systemName: "location.fill")
-                        .foregroundColor(.blue)
-                        .padding(DS.Spacing.sm)
-                        .background(Color.blue.opacity(0.1))
-                        .clipShape(Circle())
+            // 卡片右侧图标：留言（编辑收藏理由）+ 导航
+            VStack(spacing: DS.Spacing.md) {
+                Button {
+                    editingFav = fav
+                    editingNote = fav.note ?? ""
+                    showNoteEditor = true
+                } label: {
+                    Image(systemName: fav.note?.isEmpty == false ? "text.bubble.fill" : "text.bubble")
+                        .font(.subheadline)
+                        .foregroundColor(fav.note?.isEmpty == false ? DS.Color.brand : .gray)
                 }
                 .buttonStyle(.plain)
-            }
 
-            // 移除按钮（收藏用红心，我的推荐用紫色 minus）
-            Button(action: onRemove) {
-                Image(systemName: accentColor == DS.Color.brand ? "heart.fill" : "minus.circle.fill")
-                    .foregroundColor(accentColor == DS.Color.brand ? .red : .purple)
-                    .padding(8)
-                    .background((accentColor == DS.Color.brand ? Color.red : Color.purple).opacity(0.1))
-                    .clipShape(Circle())
+                if let coordinate = restaurant.coordinate {
+                    Button {
+                        openNavigation(coordinate: coordinate, name: restaurant.name)
+                    } label: {
+                        Image(systemName: "location.fill")
+                            .font(.subheadline)
+                            .foregroundColor(.blue)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
         }
-        .padding(.vertical, DS.Spacing.sm)
     }
 
-    func openNavigation(coordinate: CLLocationCoordinate2D) {
+    // MARK: - 收藏理由编辑 Sheet
+    private var noteEditorSheet: some View {
+        NavigationStack {
+            VStack(spacing: DS.Spacing.lg) {
+                Text("记录你喜欢这家店的理由")
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                TextEditor(text: $editingNote)
+                    .frame(minHeight: 120)
+                    .padding(DS.Spacing.sm)
+                    .background(DS.Color.surfaceAlt)
+                    .cornerRadius(DS.Radius.md)
+                Spacer()
+            }
+            .padding()
+            .navigationTitle("收藏理由")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showNoteEditor = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        Task {
+                            if let fav = editingFav {
+                                try? await APIService.shared.updateFavoriteNote(
+                                    userId: authState.userId,
+                                    restaurantId: fav.restaurant_id,
+                                    note: editingNote
+                                )
+                                // 更新本地数据
+                                if let idx = favorites.firstIndex(where: { $0.id == fav.id }) {
+                                    // 重新加载以获取更新后的数据
+                                    await loadFavorites()
+                                }
+                            }
+                            showNoteEditor = false
+                        }
+                    }
+                    .bold()
+                }
+            }
+        }
+        .presentationDetents([.medium])
+    }
+
+    // MARK: - 数据加载
+    private func loadData() async {
+        isLoading = true
+        async let authorsTask: () = loadAuthors()
+        async let favsTask: () = loadFavorites()
+        _ = await (authorsTask, favsTask)
+        isLoading = false
+    }
+
+    private func loadAuthors() async {
+        do {
+            authors = try await APIService.shared.getFollowingAuthors(userId: authState.userId)
+        } catch {
+            print("[收藏页] 加载博主失败: \(error)")
+        }
+    }
+
+    private func loadFavorites() async {
+        do {
+            favorites = try await APIService.shared.getFavorites(userId: authState.userId)
+        } catch {
+            print("[收藏页] 加载收藏失败: \(error)")
+        }
+    }
+
+    // MARK: - 操作
+    private func removeFavorite(_ fav: Favorite) async {
+        do {
+            try await APIService.shared.removeFavorite(userId: authState.userId, restaurantId: fav.restaurant_id)
+            favorites.removeAll { $0.id == fav.id }
+        } catch {
+            print("[收藏页] 取消收藏失败: \(error)")
+        }
+    }
+
+    private func avoidRestaurant(_ restaurantId: String) async {
+        do {
+            try await APIService.shared.avoidRestaurant(userId: authState.userId, restaurantId: restaurantId)
+        } catch {
+            print("[收藏页] 避雷失败: \(error)")
+        }
+    }
+
+    private func deleteRestaurant(_ restaurantId: String) async {
+        do {
+            try await APIService.shared.deleteRestaurantForUser(userId: authState.userId, restaurantId: restaurantId)
+            favorites.removeAll { $0.restaurant_id == restaurantId }
+        } catch {
+            print("[收藏页] 删除失败: \(error)")
+        }
+    }
+
+    private func openNavigation(coordinate: CLLocationCoordinate2D, name: String) {
         let url = URL(string: "maps://?daddr=\(coordinate.latitude),\(coordinate.longitude)&dirflg=d")!
         UIApplication.shared.open(url)
     }

@@ -72,17 +72,50 @@ struct ReviewDetailView: View {
                         Text(isFromReviewed ? "当前关联店铺" : "AI 识别结果")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                        VStack(alignment: .leading, spacing: 4) {
-                            Label(name, systemImage: "fork.knife")
-                            if let addr = item.restaurant_address {
-                                Label(addr, systemImage: "mappin")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                        VStack(alignment: .leading, spacing: 6) {
+                            // 店铺图片 + 名称横排
+                            HStack(spacing: 10) {
+                                // 店铺封面图
+                                if let photoUrl = item.restaurant_photo_url, !photoUrl.isEmpty {
+                                    AsyncImage(url: URL(string: photoUrl)) { phase in
+                                        switch phase {
+                                        case .success(let img):
+                                            img.resizable().scaledToFill()
+                                        default:
+                                            Color.gray.opacity(0.15)
+                                        }
+                                    }
+                                    .frame(width: 56, height: 56)
+                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                }
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Label(name, systemImage: "fork.knife")
+                                    if let addr = item.restaurant_address {
+                                        Label(addr, systemImage: "mappin")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    if let cat = item.restaurant_category {
+                                        Label(cat, systemImage: "tag")
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
                             }
-                            if let cat = item.restaurant_category {
-                                Label(cat, systemImage: "tag")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
+                            // 均价标签
+                            if let price = item.restaurant_avg_price {
+                                HStack(spacing: 2) {
+                                    Image(systemName: "yensign.circle")
+                                        .font(.caption)
+                                    Text("人均 ¥\(price)")
+                                        .font(.caption)
+                                        .fontWeight(.medium)
+                                }
+                                .foregroundColor(.orange)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.orange.opacity(0.1))
+                                .clipShape(Capsule())
                             }
                         }
                         .padding(10)
