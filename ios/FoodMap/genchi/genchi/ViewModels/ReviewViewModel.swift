@@ -30,6 +30,26 @@ class ReviewViewModel: ObservableObject {
     var totalCount: Int { selectedTab == .pending ? pendingTotal : reviewedTotal }
     var hasMore: Bool { items.count < totalCount }
 
+    // 初始加载：同时请求两个 Tab 的数据（拿到真实 total 用于显示角标）
+    func initialLoad(userId: String) async {
+        isLoading = true
+        errorMessage = nil
+        do {
+            async let pendingResp = APIService.shared.getReviewList(page: 1, tab: "pending", userId: userId)
+            async let reviewedResp = APIService.shared.getReviewList(page: 1, tab: "reviewed", userId: userId)
+            let (p, r) = try await (pendingResp, reviewedResp)
+            pendingItems = p.items
+            pendingTotal = p.total
+            pendingPage = 1
+            reviewedItems = r.items
+            reviewedTotal = r.total
+            reviewedPage = 1
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+        isLoading = false
+    }
+
     // 切换 Tab 时自动加载对应数据
     func switchTab(_ tab: ReviewTab, userId: String) async {
         selectedTab = tab

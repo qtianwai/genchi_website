@@ -78,8 +78,8 @@ struct ReviewListView: View {
             }
         }
         .task {
-            if viewModel.pendingItems.isEmpty {
-                await viewModel.loadItems(userId: authState.userId)
+            if viewModel.pendingItems.isEmpty && viewModel.reviewedItems.isEmpty {
+                await viewModel.initialLoad(userId: authState.userId)
             }
         }
     }
