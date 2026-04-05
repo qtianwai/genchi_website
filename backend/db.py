@@ -861,7 +861,7 @@ def admin_correct_restaurants_multi(
         "restaurant_lng": first["longitude"],
         "restaurant_amap_id": first["amap_id"],
         "restaurant_category": first["category"],
-        "corrected_restaurants": json.dumps(corrected_list),
+        "corrected_restaurants": corrected_list,
         "review_status": "corrected",
         "reviewed_by": admin_user_id,
         "reviewed_at": "now()",

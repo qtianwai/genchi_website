@@ -85,9 +85,11 @@ class ReviewViewModel: ObservableObject {
     }
 
     // 从待复核列表中移除已复核的记录（复核操作完成后调用）
+    // 同时将已复核 Tab 的计数 +1，保持两个 Tab 数字同步
     func removeFromPending(id: String) {
         pendingItems.removeAll { $0.id == id }
         pendingTotal = max(0, pendingTotal - 1)
+        reviewedTotal += 1
     }
 
     // 刷新已复核列表（二次调整后调用）
