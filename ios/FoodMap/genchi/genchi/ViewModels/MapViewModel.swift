@@ -130,6 +130,9 @@ struct MapDisplayItem: Identifiable {
     let isFavorited: Bool
     let groupIds: [String]
     var recommendedBy: [RecommendSourceType] = []  // v6.0 新增：所有推荐来源
+    // v7.1 新增：全平台聚合计数
+    let favoriteCount: Int
+    let avoidCount: Int
 
     var category: String {
         (restaurant.category ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -628,7 +631,9 @@ class MapViewModel: ObservableObject {
                 isUserCreated: true,
                 isAvoided: item.is_avoided ?? false,
                 isFavorited: item.is_favorited ?? false,
-                groupIds: item.group_ids ?? []
+                groupIds: item.group_ids ?? [],
+                favoriteCount: item.favorite_count ?? 0,
+                avoidCount: item.avoid_count ?? 0
             )
             displayItem.recommendedBy = [.selfCreated]
 
@@ -663,7 +668,9 @@ class MapViewModel: ObservableObject {
                     isUserCreated: false,
                     isAvoided: item.is_avoided ?? false,
                     isFavorited: item.is_favorited ?? false,
-                    groupIds: item.group_ids ?? []
+                    groupIds: item.group_ids ?? [],
+                    favoriteCount: item.favorite_count ?? 0,
+                    avoidCount: item.avoid_count ?? 0
                 )
                 displayItem.recommendedBy = [.author(author)]
 
@@ -729,7 +736,9 @@ class MapViewModel: ObservableObject {
                         isUserCreated: false,
                         isAvoided: false,
                         isFavorited: false,
-                        groupIds: []
+                        groupIds: [],
+                        favoriteCount: 0,
+                        avoidCount: 0
                     )
                     displayItem.recommendedBy = [
                         .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)

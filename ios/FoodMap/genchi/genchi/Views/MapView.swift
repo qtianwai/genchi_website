@@ -46,6 +46,10 @@ struct MapView: View {
     @AppStorage("map_last_clipboard_prompt_at") private var lastClipboardPromptAt = 0.0
     @AppStorage("map_recent_searches") private var searchHistoryStore = ""
 
+    // 距离筛选雷达动画
+    @State private var radarPhase: Double = 0
+    private var radarTimer: Timer? = nil
+
     private var windowSafeAreaInsets: UIEdgeInsets {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
@@ -95,9 +99,11 @@ struct MapView: View {
         .onAppear {
             viewModel.startAutoRefresh(userId: authState.userId)
             detectClipboardLink()
+            startRadarAnimation()
         }
         .onDisappear {
             viewModel.stopAutoRefresh()
+            stopRadarAnimation()
         }
         .onChange(of: locationManager.locationUpdateCount) { _, _ in
             if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
@@ -182,6 +188,19 @@ struct MapView: View {
             if let userLocation = locationManager.userLocation {
                 Annotation("", coordinate: userLocation) {
                     UserLocationPinView(heading: locationManager.heading)
+                }
+
+                // v7.1 新增：距离筛选雷达圈（以用户定位为中心）
+                if viewModel.filter.distance != .all,
+                   let radius = viewModel.filter.distance.kilometers {
+                    MapCircle(center: userLocation, radius: radius * 1000)
+                        .foregroundStyle(
+                            DS.Color.brand.opacity(0.10 + radarPhase * 0.04)
+                        )
+                        .stroke(
+                            DS.Color.brand.opacity(0.35 + radarPhase * 0.15),
+                            lineWidth: 1.5 + radarPhase * 0.5
+                        )
                 }
             }
 
@@ -389,9 +408,9 @@ struct MapView: View {
             showAddMenu = true
         } label: {
             Image(systemName: "plus")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.primary)
-                .frame(width: 46, height: 46)
+                .frame(width: 44, height: 44)
                 .background(DS.Color.surfaceAlt.opacity(0.95), in: Circle())
                 .overlay {
                     Circle()
@@ -761,16 +780,50 @@ struct MapView: View {
             UIApplication.shared.open(videoURL)
             return
         }
-        if let profileURL = douyinProfileURL(for: item.author?.douyin_uid) {
-            UIApplication.shared.open(profileURL)
-            return
+        // v7.1 改进：优先从 recommendedBy 中找博主兜底，再 fallback 到 item.author
+        if let uid = primaryDouyinAuthorUID(for: item) {
+            if let url = URL(string: "snssdk1128://aweme/detail/\(uid)") {
+                UIApplication.shared.open(url)
+                return
+            }
+            if let webURL = douyinProfileURL(for: uid) {
+                UIApplication.shared.open(webURL)
+                return
+            }
         }
         showToast("暂无可跳转的视频源")
+    }
+
+    /// 从推荐来源链中提取首个有 douyin_uid 的博主（与 MapQuickActionCard.primaryDouyinAuthor 保持一致）
+    private func primaryDouyinAuthorUID(for item: MapDisplayItem) -> String? {
+        for source in item.recommendedBy {
+            if case .author(let author) = source, let uid = author.douyin_uid, !uid.isEmpty {
+                return uid
+            }
+        }
+        return item.author?.douyin_uid
     }
 
     private func douyinProfileURL(for uid: String?) -> URL? {
         guard let uid, !uid.isEmpty else { return nil }
         return URL(string: "https://www.douyin.com/user/\(uid)")
+    }
+
+    // ─────────────────────────────────────────
+    // 距离筛选雷达动画（v7.1 新增）
+    // ─────────────────────────────────────────
+    private func startRadarAnimation() {
+        radarTimer = Timer.scheduledTimer(withTimeInterval: 0.05, repeats: true) { _ in
+            withAnimation(.linear(duration: 0.05)) {
+                radarPhase = (radarPhase + 0.04).truncatingRemainder(dividingBy: 1.0)
+            }
+        }
+        radarTimer?.tolerance = 0.01
+    }
+
+    private func stopRadarAnimation() {
+        radarTimer?.invalidate()
+        radarTimer = nil
     }
 
     private func copyText(_ text: String, label: String) {
@@ -853,7 +906,7 @@ struct MapToolCircleButton: View {
             Image(systemName: icon)
                 .font(.system(size: style == .strong ? 18 : 15, weight: .semibold))
                 .foregroundColor(style == .strong ? .white : .primary)
-                .frame(width: 46, height: 46)
+                .frame(width: 44, height: 44)
                 .background(
                     backgroundColor,
                     in: Circle()
@@ -1505,6 +1558,21 @@ struct MapQuickActionCard: View {
     let onCopyAuthor: (String) -> Void
     let onPreviewImage: () -> Void
 
+    // v7.1 新增：探店视频兜底用（支持推荐来源中首个有效博主）
+    private var primaryDouyinAuthor: Author? {
+        for source in item.recommendedBy {
+            if case .author(let author) = source {
+                return author
+            }
+        }
+        return item.author
+    }
+
+    // v7.1 新增：视频按钮是否展示（有视频 OR 有博主兜底）
+    private var shouldShowVideoButton: Bool {
+        !videos.isEmpty || primaryDouyinAuthor != nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.md) {
             HStack(alignment: .top, spacing: DS.Spacing.md) {
@@ -1577,50 +1645,67 @@ struct MapQuickActionCard: View {
                 .background(Color.red.opacity(0.08), in: RoundedRectangle(cornerRadius: DS.Radius.sm))
             }
 
-            VStack(spacing: DS.Spacing.sm) {
-                HStack(spacing: DS.Spacing.sm) {
-                    CardActionButton(
-                        title: item.isFavorited ? "取消收藏" : "收藏",
-                        icon: item.isFavorited ? "heart.slash" : "heart.fill",
-                        tint: .red,
-                        emphasis: .primary,
-                        action: onFavorite
-                    )
-                    CardActionButton(
-                        title: item.isAvoided ? "取消避雷" : "避雷",
-                        icon: "exclamationmark.triangle.fill",
-                        tint: .orange,
-                        emphasis: .primary,
-                        action: onAvoid
-                    )
-                    CardActionButton(
-                        title: "导航",
-                        icon: "arrow.triangle.turn.up.right.diamond.fill",
-                        tint: .blue,
-                        emphasis: .primary,
-                        action: onNavigate
-                    )
-                }
+            // ─────────────────────────────────────────
+            // v7.1 重构：操作区（导航高优 + 知乎式次级四键）
+            // ─────────────────────────────────────────
 
-                HStack(spacing: DS.Spacing.sm) {
-                    CardActionButton(
-                        title: isMarkedDeleted ? "取消删除" : "标记删除",
-                        icon: isMarkedDeleted ? "trash.slash" : "trash",
-                        tint: .gray,
-                        emphasis: .secondary,
-                        action: onToggleDelete
-                    )
-                    CardActionButton(
-                        title: "分享",
-                        icon: "square.and.arrow.up",
-                        tint: .gray,
-                        emphasis: .secondary,
-                        action: onSharePlaceholder
-                    )
-                    Color.clear
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
+            // 第一行：导航主按钮（占满宽，品牌色实心）
+            Button(action: onNavigate) {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.turn.up.right.diamond.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                    Text("导航到店铺")
+                        .font(.system(size: 15, weight: .semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
                 }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 50)
+                .background(DS.Color.brand, in: RoundedRectangle(cornerRadius: DS.Radius.md))
+            }
+            .buttonStyle(PressableScaleButtonStyle())
+
+            // 第二行：知乎式次级操作（收藏 避雷 标记删除 分享）
+            HStack(spacing: DS.Spacing.sm) {
+                // 收藏（红色，已收藏高亮填充）
+                CardActionButton(
+                    title: item.isFavorited ? "已收藏" : "收藏",
+                    icon: item.isFavorited ? "heart.fill" : "heart",
+                    tint: .red,
+                    emphasis: .secondaryWithCount,
+                    action: onFavorite,
+                    count: item.favoriteCount
+                )
+
+                // 避雷（橙色，已避雷高亮填充）
+                CardActionButton(
+                    title: item.isAvoided ? "已避雷" : "避雷",
+                    icon: item.isAvoided ? "exclamationmark.triangle.fill" : "exclamationmark.triangle",
+                    tint: .orange,
+                    emphasis: .secondaryWithCount,
+                    action: onAvoid,
+                    count: item.avoidCount
+                )
+
+                // 标记删除
+                CardActionButton(
+                    title: isMarkedDeleted ? "取消删除" : "标记删除",
+                    icon: isMarkedDeleted ? "trash.slash" : "trash",
+                    tint: .gray,
+                    emphasis: .secondaryWithCount,
+                    action: onToggleDelete
+                )
+
+                // 分享
+                CardActionButton(
+                    title: "分享",
+                    icon: "square.and.arrow.up",
+                    tint: .gray,
+                    emphasis: .secondaryWithCount,
+                    action: onSharePlaceholder
+                )
             }
         }
         .padding(DS.Spacing.lg)
@@ -1665,7 +1750,7 @@ struct MapQuickActionCard: View {
                     Button(action: onOpenSource) {
                         HStack(spacing: 4) {
                             Image(systemName: "play.circle.fill")
-                            Text("探店视频")
+                            Text(videos.isEmpty ? "抖音主页" : "探店视频")
                                 .lineLimit(1)
                         }
                         .font(.system(size: 12, weight: .semibold))
@@ -1753,10 +1838,6 @@ struct MapQuickActionCard: View {
 
         return item.author?.avatar_url
     }
-
-    private var shouldShowVideoButton: Bool {
-        !videos.isEmpty
-    }
 }
 
 struct MiniTag: View {
@@ -1778,6 +1859,7 @@ struct CardActionButton: View {
     enum Emphasis {
         case primary
         case secondary
+        case secondaryWithCount  // v7.1 新增：知乎式 上图标-中数字-下标题
     }
 
     let title: String
@@ -1786,8 +1868,47 @@ struct CardActionButton: View {
     let emphasis: Emphasis
     let action: () -> Void
 
+    // v7.1 新增：全平台统计数字（收藏/避雷）
+    var count: Int? = nil
+
     var body: some View {
         Button(action: action) {
+            content
+        }
+        .buttonStyle(PressableScaleButtonStyle())
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if emphasis == .secondaryWithCount {
+            // 知乎式竖排：图标 → 数字 → 标题
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 16, weight: .semibold))
+                if let count = count, count > 0 {
+                    Text(count > 999 ? "999+" : "\(count)")
+                        .font(.system(size: 12, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                } else {
+                    Text("--")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundColor(tint)
+            .frame(maxWidth: .infinity)
+            .frame(height: 60)
+            .background(DS.Color.surfaceAlt.opacity(0.45), in: RoundedRectangle(cornerRadius: DS.Radius.sm))
+            .overlay {
+                RoundedRectangle(cornerRadius: DS.Radius.sm)
+                    .stroke(DS.Color.separator.opacity(0.2), lineWidth: 0.7)
+            }
+        } else {
             VStack(spacing: 4) {
                 Image(systemName: icon)
                     .font(.system(size: 14, weight: .semibold))
@@ -1806,7 +1927,6 @@ struct CardActionButton: View {
                 }
             }
         }
-        .buttonStyle(PressableScaleButtonStyle())
     }
 
     private var backgroundColor: Color {
@@ -1814,6 +1934,8 @@ struct CardActionButton: View {
         case .primary:
             return tint.opacity(0.14)
         case .secondary:
+            return DS.Color.surfaceAlt.opacity(0.45)
+        case .secondaryWithCount:
             return DS.Color.surfaceAlt.opacity(0.45)
         }
     }

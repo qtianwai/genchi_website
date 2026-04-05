@@ -50,6 +50,9 @@ struct MapRestaurant: Identifiable, Codable {
     let is_avoided: Bool?           // 是否被用户避雷（v5.0 新增）
     let is_favorited: Bool?         // 是否已收藏（地图接口扩展）
     let group_ids: [String]?        // 所属分组 ID 列表（地图接口扩展）
+    // v7.1 新增：全平台聚合计数
+    let favorite_count: Int?         // 全平台收藏总数
+    let avoid_count: Int?           // 全平台避雷总数
 
     // Identifiable 协议需要
     var mapId: String { id }
@@ -273,6 +276,9 @@ struct UserCreatedRestaurant: Identifiable, Codable {
     let is_avoided: Bool?        // 是否被用户避雷（v5.0 新增，地图数据接口返回）
     let is_favorited: Bool?      // 是否已收藏（地图接口扩展）
     let group_ids: [String]?     // 所属分组 ID 列表（地图接口扩展）
+    // v7.1 新增：全平台聚合计数
+    let favorite_count: Int?         // 全平台收藏总数
+    let avoid_count: Int?           // 全平台避雷总数
 }
 
 // 用户自建推荐搜索候选（复用 RestaurantCandidate，字段相同）

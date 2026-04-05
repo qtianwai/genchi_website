@@ -1081,8 +1081,68 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
             continue
         item["is_avoided"] = rid in avoided_ids
         item["is_favorited"] = rid in favorited_ids
+            item["group_ids"] = group_map.get(rid, [])
+            author_data.append(item)
+
+    # 用户自建推荐
+    raw_user_data = get_user_created_restaurants(user_id)
+    user_data = []
+    for item in raw_user_data:
+        rid = item.get("restaurant_id")
+        if rid in deleted_ids:
+            continue
+        item["is_avoided"] = rid in avoided_ids
+        item["is_favorited"] = rid in favorited_ids
         item["group_ids"] = group_map.get(rid, [])
         user_data.append(item)
+
+    # v7.1 新增：批量聚合全平台收藏/避雷计数
+    # 收集所有 restaurant_id，两次 in_ 查询避免 N+1
+    all_restaurant_ids = (
+        [r["restaurant_id"] for r in author_data if r.get("restaurant_id")]
+        + [r["restaurant_id"] for r in user_data if r.get("restaurant_id")]
+    )
+    if all_restaurant_ids:
+        # 全平台收藏计数（所有用户的收藏总数）
+        fav_result = (
+            supabase.table("user_favorites")
+            .select("restaurant_id")
+            .in_("restaurant_id", all_restaurant_ids)
+            .execute()
+        )
+        fav_counts: dict[str, int] = {}
+        for row in (fav_result.data or []):
+            rid = row.get("restaurant_id")
+            fav_counts[rid] = fav_counts.get(rid, 0) + 1
+
+        # 全平台避雷计数（所有用户的避雷总数）
+        blk_result = (
+            supabase.table("user_blocked_restaurants")
+            .select("restaurant_id")
+            .in_("restaurant_id", all_restaurant_ids)
+            .execute()
+        )
+        blk_counts: dict[str, int] = {}
+        for row in (blk_result.data or []):
+            rid = row.get("restaurant_id")
+            blk_counts[rid] = blk_counts.get(rid, 0) + 1
+
+        # 写入 author_data 和 user_data
+        for item in author_data:
+            rid = item.get("restaurant_id")
+            item["favorite_count"] = fav_counts.get(rid, 0)
+            item["avoid_count"] = blk_counts.get(rid, 0)
+        for item in user_data:
+            rid = item.get("restaurant_id")
+            item["favorite_count"] = fav_counts.get(rid, 0)
+            item["avoid_count"] = blk_counts.get(rid, 0)
+    else:
+        for item in author_data:
+            item["favorite_count"] = 0
+            item["avoid_count"] = 0
+        for item in user_data:
+            item["favorite_count"] = 0
+            item["avoid_count"] = 0
 
     return {"restaurants": author_data, "user_restaurants": user_data}
 

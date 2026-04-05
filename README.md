@@ -2088,3 +2088,121 @@ Python FastAPI、Supabase PostgreSQL（JSONB）、JustOneAPI、httpx
 - `需求文档&技术方案/视频解析与数据入库技术方案.md`
 
 ---
+
+## 会话记录 - 2026-04-04：说明 Cursor「Cycle Agent Count」用途
+
+### 主要目的
+解答 Cursor 输入区「Cycle Agent Count（⇧⌘/）」及「2x」等标识的含义与使用场景。
+
+### 完成的任务
+- 说明该控件用于切换并行 Agent 数量，可对同一任务多路尝试并择优保留结果；与「多模型」思路类似；同一模型多次可视为 Best of N（随机性）
+- 提醒并行会成倍消耗 Token/额度
+
+### 关键决策和解决方案
+- 结合 Cursor 社区论坛（如 [What's the new Cycle Agent Count option?](https://forum.cursor.com/t/whats-the-new-cycle-agent-count-option/139448)）的公开说明归纳用途，避免与具体版本 UI 细节强行绑定
+
+### 技术栈
+无（产品使用说明，非本项目代码）
+
+### 修改的文件
+- `README.md`（追加本会话记录）
+
+---
+
+## 会话记录 - 2026-04-05：产品功能清单四表结构调整
+
+### 主要目的
+将产品功能清单由两张表拆分为四张表，区分功能开发与功能优化两个不同层级，并同步更新 CLAUDE.md 的维护规则。
+
+### 完成的任务
+1. 分析现有产品功能清单的内容结构，识别哪些属于功能开发，哪些属于功能优化
+2. 将文档拆分为四张表格：已完成功能（34项）、已完成优化（1项）、未完成功能（13项）、未完成优化（3项）
+3. 重新整理已完成功能（移除已归入优化表的地图交互优化）
+4. 重新整理未完成功能与未完成优化，将优化类任务分离
+5. 更新 CLAUDE.md 中的「产品功能清单维护规则」，增加四表结构说明和功能/优化项区分定义
+
+### 关键决策和解决方案
+- **分类原则**：功能 = 新增加的业务能力（通常涉及新页面、新交互、新数据模型），优化 = 对现有功能的增强（改善体验、提升性能、准确率等）
+- 已完成功能中，「地图交互优化」归入已完成优化表
+- 未完成功能中，「解析准确率持续优化」「自动更新解析闭环」「多平台内容接入」归入未完成优化表
+- CLAUDE.md 维护规则中明确区分功能与优化项的定义、更新时机和更新要求
+
+### 技术栈
+无（文档结构调整）
+
+### 修改的文件
+- `需求文档&技术方案/产品功能清单.md`
+- `CLAUDE.md`
+
+---
+
+## 会话记录 - 2026-04-05：地图UI改造（按钮对齐+雷达圈+卡片知乎式+探店视频修复）
+
+### 主要目的
+按用户需求完成 4 项地图 UI 与功能修复：顶部按钮尺寸对齐、距离筛选雷达可视化、底部卡片操作区改知乎式布局、修复「探店视频」不显示问题。
+
+### 完成的任务
+1. **顶部按钮统一**：将 `addButton`（46→44）、`locateButton` 的 `MapToolCircleButton`（46→44）与左侧筛选/搜索按钮（44）统一为 44×44，消除视觉不对称
+2. **距离雷达圈**：在 `mapLayer` 中添加 `MapCircle`，以用户定位为中心绘制筛选半径圈；用 `phase` 动画实现描边透明度/线宽脉冲的雷达感；雷达动画在 `MapView` 出现时启动、消失时停止
+3. **卡片操作区重构**：
+   - 导航改为单独一行满宽品牌色实心按钮（高优）
+   - 收藏/避雷/标记删除/分享四键改为知乎式竖排（图标→数字→标题），其中收藏/避雷显示全平台聚合计数
+   - `CardActionButton` 新增 `.secondaryWithCount` emphasis 样式
+4. **后端聚合计数**：`get_map_restaurants_for_user` 在返回前做两次批量 `in_` 聚合查询，将 `favorite_count`/`avoid_count` 注入每条 map item
+5. **iOS 模型扩展**：`MapRestaurant`、`UserCreatedRestaurant` 增加可选 `favorite_count`/`avoid_count` 字段；`MapDisplayItem` 增加非可选 `favoriteCount`/`avoidCount`；`mergedAllItems` 三处创建处透传计数
+6. **探店视频入口修复**：
+   - 卡片新增 `primaryDouyinAuthor` 计算属性（优先从 `recommendedBy` 中提取博主，再 fallback 到 `item.author`），保证合并来源时 `author` 不丢失
+   - `openVideoSource` 改为先取视频 URL，再尝试 `recommendedBy` 中博主的 App Scheme 跳转，最后 fallback 抖音 Web 主页
+   - `shouldShowVideoButton` 改为「有视频 OR 有博主兜底」，不再仅依赖 videos 非空
+   - 探店按钮文案：有视频时显示「探店视频」，无视频有博主时改为「抖音主页」
+7. **RPC SQL 版本化**：创建 `backend/rpc/get_videos_by_restaurant.sql`，将函数定义纳入版本控制；增加 `LEFT JOIN video_parse_cache` 补全分享链接；保留 `video_id IS NOT NULL` 条件但注释说明前端 fallback 逻辑
+
+### 关键决策和解决方案
+- **雷达圈层级**：使用 SwiftUI `MapCircle`（MapKit 原生），通过 `Map { }` 内容层直接绘制，与标注 Annotation 同级，不额外遮挡
+- **计数聚合**：在 `get_map_restaurants_for_user` 末尾批量执行两次 `in_` 查询，O(1) RPC 次数，店铺量大时服务端聚合避免 iOS N+1
+- **视频入口 fallback**：不依赖 `item.author` 单一来源，而是遍历整个 `recommendedBy` 链，确保合并后第一个博主仍可跳转；无视频时显示「抖音主页」而非隐藏按钮
+- **RPC 函数版本化**：将 Supabase 函数定义文件纳入 `backend/rpc/` 目录，避免与线上不一致导致排查困难
+
+### 技术栈
+- iOS：SwiftUI MapKit（`MapCircle`）、Swift `phase` 动画、`@State private var radarPhase`
+- 后端：Python/Supabase REST API（`in_` 聚合查询）、PostgreSQL `LEFT JOIN`
+
+### 修改的文件
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`（雷达圈 + 雷达动画 + 按钮尺寸 + 卡片重构 + primaryDouyinAuthor + openVideoSource）
+- `ios/FoodMap/genchi/genchi/ViewModels/MapViewModel.swift`（MapDisplayItem 新增字段 + mergedAllItems 三处透传）
+- `ios/FoodMap/genchi/genchi/Models/Models.swift`（MapRestaurant + UserCreatedRestaurant 新增字段）
+- `backend/db.py`（get_map_restaurants_for_user 新增批量聚合逻辑）
+- `backend/rpc/get_videos_by_restaurant.sql`（新增，RPC 函数版本化管理）
+- `README.md`（追加本会话总结）
+
+---
+
+## 会话记录
+
+### 会话目的
+将13个防遗忘待开发项录入产品功能清单文档，区分功能与优化项并分配优先级。
+
+### 完成的主要任务
+1. 分析13个待开发项，将其中11项录入产品功能清单
+2. 分类处理：功能类9项进入「未完成功能」，优化类4项进入「未完成优化」
+3. 对所有新增项分配优先级（P1-P4）
+4. 更新文档最后更新日期说明
+
+### 关键决策和解决方案
+- **分类标准**：功能=新增能力（独立功能入口），优化=对现有能力的增强
+- **大众点评评分**：归入未完成优化（P1），作为数据质量提升项
+- **地图聚合bug**：归入未完成优化（P1），标注为 Bug 修复
+- **iOS兼容性**：归入未完成功能（P4），质量保障类
+- **上线完善项**：归入未完成功能（P4），运营准备类
+- **提前导入达人信息**：归入未完成功能（P4），运营成本优化
+- **卡顿优化**：归入未完成优化（P2），性能优化类
+- **其余9项**：全部归入未完成功能（P3）
+
+### 技术栈
+无
+
+### 修改的文件
+- `需求文档&技术方案/产品功能清单.md`（新增13个待开发项，重新生成完整表格）
+
+### 会话时间
+2026-04-05
