@@ -59,20 +59,21 @@ struct MapRestaurant: Identifiable, Codable {
 }
 
 // ─────────────────────────────────────────
-// 解析链接的 API 响应（新版本）
-// 后端优先解析当前视频快速返回，博主其他视频在后台异步处理
+// 解析链接的 API 响应（v10.0 半异步版本）
+// 缓存命中直接返回结果；未命中返回 status="parsing" + video_cache_id，前端轮询
 // ─────────────────────────────────────────
 struct ParseLinkResponse: Codable {
-    let status: String           // "cached" / "parsed"
+    let status: String           // "cached" / "parsed" / "parsing"（v10.0 新增）
     // 缓存命中时用 restaurant（新格式，单个店铺）
     let restaurant: RestaurantResult?
     // cached 返回时还有 author_id（用于查询解析状态）
     let author_id: String?
-    let author: Author?          // parsed 返回时包含博主信息
+    let author: Author?          // parsed/parsing 返回时包含博主信息
     let restaurants: [RestaurantResult]?  // 向后兼容旧格式
     let message: String
     let is_background_running: Bool   // 是否有后台任务正在运行
     let background_progress: BackgroundProgress?
+    let video_cache_id: String?  // v10.0 新增：异步解析时用于轮询结果
 }
 
 // 单个餐厅结果（兼容新旧两种后端格式）
@@ -113,6 +114,44 @@ struct ParseStatusResponse: Codable {
     let started_at: String?
     let completed_at: String?
     let message: String
+}
+
+// ─────────────────────────────────────────
+// v10.0 新增：异步解析结果查询响应（前端轮询用）
+// ─────────────────────────────────────────
+struct ParseResultResponse: Codable {
+    let status: String           // "parsing" / "completed" / "failed"
+    let restaurant: RestaurantResult?
+    let message: String
+}
+
+// ─────────────────────────────────────────
+// v10.0 新增：用户勘误相关模型
+// ─────────────────────────────────────────
+
+// 勘误提交请求
+struct CorrectionRequest: Codable {
+    let user_id: String
+    let restaurant_id: String?
+    let video_cache_id: String?
+    let correction_type: String   // wrong_restaurant / wrong_address / closed / duplicate / other
+    let correction_detail: String?
+}
+
+// 勘误提交响应
+struct CorrectionResponse: Codable {
+    let status: String
+    let message: String
+}
+
+// 用户勘误记录（复核页面展示用）
+struct UserCorrection: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let correction_type: String
+    let correction_detail: String?
+    let status: String
+    let created_at: String?
 }
 
 // ─────────────────────────────────────────
@@ -225,6 +264,8 @@ struct ReviewItem: Identifiable, Codable {
     let authors: ReviewAuthorInfo?
     // v9.0 新增：多店铺修正记录（corrected_restaurants JSON 数组）
     let corrected_restaurants: [CorrectedRestaurant]?
+    // v10.0 新增：用户勘误记录
+    let user_corrections: [UserCorrection]?
 
     // P0：AI 未识别（restaurant_id 为 nil）
     var isP0: Bool { restaurant_id == nil }
@@ -628,4 +669,34 @@ struct CheckinResponse: Codable {
 struct ReviewsSummaryResponse: Codable {
     let summary: String
     let note_count: Int
+}
+
+// ─────────────────────────────────────────
+// v10.10 饭团养成体系
+// ─────────────────────────────────────────
+
+// 饭团养成状态
+struct FanTuanStatus: Codable, Hashable {
+    let satiety: Int              // 饱食度 0-100
+    let intimacy: Int             // 亲密度 0-∞
+    let intimacy_level: Int       // 亲密度等级 1-5
+    let consecutive_login_days: Int // 连续登录天数
+    let last_login_date: String?  // 最后登录日期
+    let last_pet_date: String?    // 最后摸摸日期
+}
+
+// 每日登录签到响应
+struct FanTuanLoginResponse: Codable {
+    let satiety_change: Int
+    let intimacy_change: Int
+    let fantuan_status: FanTuanStatus
+    let already_logged_in: Bool
+}
+
+// 摸摸饭团响应
+struct FanTuanPetResponse: Codable {
+    let already_pet: Bool
+    let satiety_change: Int
+    let intimacy_change: Int
+    let fantuan_status: FanTuanStatus
 }

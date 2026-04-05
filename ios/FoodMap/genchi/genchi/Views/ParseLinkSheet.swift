@@ -12,6 +12,9 @@ struct ParseLinkSheet: View {
     var initialLink: String? = nil
     var autoStart: Bool = false
 
+    // v10.0 新增：异步解析开始回调（通知 MapView 开始轮询）
+    var onParsingStarted: ((String) -> Void)? = nil
+
     @State private var linkText = ""
     @State private var isLoading = false
     @State private var errorMessage: String? = nil
@@ -308,8 +311,18 @@ struct ParseLinkSheet: View {
                     userId: authState.userId,
                     scope: selectedScope == .singleOnly ? "single_only" : "follow_all"
                 )
+
+                // v10.0 半异步：status="parsing" 时自动关闭 Sheet，通知 MapView 开始轮询
+                if response.status == "parsing", let videoCacheId = response.video_cache_id, !videoCacheId.isEmpty {
+                    isLoading = false
+                    onParsingStarted?(videoCacheId)
+                    dismiss()
+                    return
+                }
+
+                // 缓存命中或同步返回结果（行为不变）
                 result = response
-                parseCompleted = true  // 标记完成
+                parseCompleted = true
                 onSuccess()
 
                 // 如果有后台任务正在运行，启动轮询

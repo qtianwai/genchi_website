@@ -173,7 +173,7 @@ struct CheckinSheet: View {
     // MARK: - 提交打卡
 
     private func submitCheckin() {
-        guard let userId = authState.userId else { return }
+        guard !authState.userId.isEmpty else { return }
         isSubmitting = true
         errorMessage = nil
 
@@ -182,7 +182,7 @@ struct CheckinSheet: View {
                 // TODO: 照片上传到 Supabase Storage，获取 URL
                 // MVP 阶段先不上传照片，只提交文字
                 let response = try await APIService.shared.createCheckin(
-                    userId: userId,
+                    userId: authState.userId,
                     restaurantId: restaurantId,
                     rating: rating > 0 ? rating : nil,
                     comment: comment.isEmpty ? nil : comment,

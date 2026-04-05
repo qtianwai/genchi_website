@@ -164,6 +164,9 @@ struct RestaurantDetailView: View {
                     if let category = restaurant.category, !category.isEmpty {
                         FavoritesPill(text: category, color: FavoritesTheme.accent)
                     }
+                    if let avgPrice = restaurant.avg_price, avgPrice > 0 {
+                        FavoritesPill(text: "人均¥\(avgPrice)", color: .secondary)
+                    }
                 }
 
                 HStack(spacing: 6) {

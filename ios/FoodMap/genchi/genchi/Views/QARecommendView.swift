@@ -51,8 +51,8 @@ struct QARecommendView: View {
             }
         }
         .task {
-            guard let userId = authState.userId else { return }
-            await viewModel.fetchQuestions(userId: userId, lat: latitude, lng: longitude)
+            guard !authState.userId.isEmpty else { return }
+            await viewModel.fetchQuestions(userId: authState.userId, lat: latitude, lng: longitude)
         }
     }
 
@@ -70,8 +70,8 @@ struct QARecommendView: View {
                 Text(error).font(.caption).foregroundColor(.red)
                 Button("重试") {
                     Task {
-                        guard let userId = authState.userId else { return }
-                        await viewModel.fetchQuestions(userId: userId, lat: latitude, lng: longitude)
+                        guard !authState.userId.isEmpty else { return }
+                        await viewModel.fetchQuestions(userId: authState.userId, lat: latitude, lng: longitude)
                     }
                 }
                 .buttonStyle(.bordered)
@@ -111,8 +111,8 @@ struct QARecommendView: View {
                     ForEach(question.options, id: \.self) { option in
                         Button(action: {
                             Task {
-                                guard let userId = authState.userId else { return }
-                                await viewModel.answerQuestion(option: option, userId: userId, lat: latitude, lng: longitude)
+                                guard !authState.userId.isEmpty else { return }
+                                await viewModel.answerQuestion(option: option, userId: authState.userId, lat: latitude, lng: longitude)
                             }
                         }) {
                             Text(option)

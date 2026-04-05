@@ -169,6 +169,53 @@ struct ReviewDetailView: View {
 
                 Divider()
 
+                // ── v10.0 新增：用户勘误信息 ──
+                if let corrections = item.user_corrections, !corrections.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(spacing: 6) {
+                            Image(systemName: "person.fill.questionmark")
+                                .foregroundColor(.orange)
+                            Text("用户反馈")
+                                .font(.headline)
+                                .foregroundColor(.orange)
+                            Text("(\(corrections.count)条)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+
+                        ForEach(corrections) { correction in
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text(correctionTypeLabel(correction.correction_type))
+                                        .font(.caption)
+                                        .fontWeight(.bold)
+                                        .foregroundColor(.white)
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(Color.orange)
+                                        .cornerRadius(4)
+                                    Spacer()
+                                    if let time = correction.created_at {
+                                        Text(time.prefix(16))
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                if let detail = correction.correction_detail, !detail.isEmpty {
+                                    Text(detail)
+                                        .font(.subheadline)
+                                        .foregroundColor(.primary)
+                                }
+                            }
+                            .padding(10)
+                            .background(Color.orange.opacity(0.08))
+                            .cornerRadius(8)
+                        }
+                    }
+
+                    Divider()
+                }
+
                 // ── 操作按钮 ──
                 if isProcessing {
                     HStack { Spacer(); ProgressView(); Spacer() }
@@ -310,5 +357,17 @@ struct ReviewDetailView: View {
             viewModel.removeFromPending(id: item.id)
         }
         dismiss()
+    }
+
+    // v10.0 新增：勘误类型中文标签
+    private func correctionTypeLabel(_ type: String) -> String {
+        switch type {
+        case "wrong_restaurant": return "店铺识别错误"
+        case "wrong_address": return "地址/位置不对"
+        case "closed": return "店铺已关闭"
+        case "duplicate": return "重复店铺"
+        case "other": return "其他问题"
+        default: return type
+        }
     }
 }

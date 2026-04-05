@@ -78,10 +78,10 @@ struct AchievementsView: View {
     }
 
     private func loadData() async {
-        guard let userId = authState.userId else { return }
+        guard !authState.userId.isEmpty else { return }
         do {
             async let achTask = APIService.shared.getAllAchievements()
-            async let userTask = APIService.shared.getUserAchievements(userId: userId)
+            async let userTask = APIService.shared.getUserAchievements(userId: authState.userId)
             let (all, user) = try await (achTask, userTask)
             allAchievements = all
             unlockedIds = Set(user.map { $0.achievement_id })

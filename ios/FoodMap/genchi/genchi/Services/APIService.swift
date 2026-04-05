@@ -83,6 +83,31 @@ class APIService {
         )
     }
 
+    // v10.0 新增：查询异步解析结果（前端轮询用）
+    func getParseResult(videoCacheId: String) async throws -> ParseResultResponse {
+        return try await get(
+            path: "/api/parse-result/\(videoCacheId)",
+            params: [:],
+            responseType: ParseResultResponse.self
+        )
+    }
+
+    // v10.0 新增：提交用户勘误
+    func submitCorrection(userId: String, restaurantId: String?, videoCacheId: String?, correctionType: String, correctionDetail: String?) async throws -> CorrectionResponse {
+        struct Body: Codable {
+            let user_id: String
+            let restaurant_id: String?
+            let video_cache_id: String?
+            let correction_type: String
+            let correction_detail: String?
+        }
+        return try await post(
+            path: "/api/corrections",
+            body: Body(user_id: userId, restaurant_id: restaurantId, video_cache_id: videoCacheId, correction_type: correctionType, correction_detail: correctionDetail),
+            responseType: CorrectionResponse.self
+        )
+    }
+
     // ─────────────────────────────────────────
     // 地图数据
     // ─────────────────────────────────────────
@@ -974,6 +999,37 @@ class APIService {
         try await get(
             path: "/api/restaurants/\(restaurantId)/reviews-summary",
             responseType: ReviewsSummaryResponse.self
+        )
+    }
+
+    // MARK: - v10.10 饭团养成体系
+
+    /// 获取饭团养成状态
+    func getFanTuanStatus(userId: String) async throws -> FanTuanStatus {
+        try await get(
+            path: "/api/fantuan/status",
+            params: ["user_id": userId],
+            responseType: FanTuanStatus.self
+        )
+    }
+
+    /// 每日登录签到
+    func fanTuanLogin(userId: String) async throws -> FanTuanLoginResponse {
+        struct Body: Codable { let user_id: String }
+        return try await post(
+            path: "/api/fantuan/login",
+            body: Body(user_id: userId),
+            responseType: FanTuanLoginResponse.self
+        )
+    }
+
+    /// 摸摸饭团（每日限 1 次）
+    func fanTuanPet(userId: String) async throws -> FanTuanPetResponse {
+        struct Body: Codable { let user_id: String }
+        return try await post(
+            path: "/api/fantuan/pet",
+            body: Body(user_id: userId),
+            responseType: FanTuanPetResponse.self
         )
     }
 }

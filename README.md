@@ -12,12 +12,14 @@
 │   ├── main.py                 # API 路由主程序
 │   ├── douyin_parser.py        # 抖音链接解析
 │   ├── ai_extractor.py         # 通义千问 AI 提取店铺信息
+│   ├── rule_extractor.py       # 规则预提取候选店铺名（v10.0 新增）
 │   ├── amap_service.py         # 高德地图地址搜索 + 周边餐饮搜索
 │   ├── weather_service.py      # 和风天气 API 接入（v8.0 新增）
 │   ├── db.py                   # Supabase 数据库操作
-│   ├── supabase_schema.sql     # 数据库建表 SQL（含 v8.0 新增 6 张表）
+│   ├── supabase_schema.sql     # 数据库建表 SQL（含 v10.0 user_corrections 表）
 │   ├── migrations/             # 数据库迁移脚本
-│   │   └── v8.0_gacha_system.sql  # 饭团系统建表迁移
+│   │   ├── v8.0_gacha_system.sql  # 饭团系统建表迁移
+│   │   └── v10_user_corrections.sql # 用户勘误表迁移（v10.0 新增）
 │   ├── requirements.txt        # Python 依赖
 │   ├── Procfile                # Railway 部署配置
 │   ├── runtime.txt             # Python 版本
@@ -42,7 +44,9 @@
         ├── QARecommendView.swift # 问答推荐页面（v8.0 新增）
         ├── CheckinSheet.swift   # 打卡弹窗（v8.0 新增）
         ├── AchievementsView.swift # 成就列表页（v8.0 新增）
-        ├── ParseLinkSheet.swift # 粘贴链接弹窗
+        ├── ParseLinkSheet.swift # 粘贴链接弹窗（v10.0：半异步模式）
+        ├── ParseCompleteAlert.swift # 解析完成弹框（v10.0 新增）
+        ├── CorrectionSheet.swift # 用户勘误表单（v10.0 新增）
         ├── UserAddRestaurantSheet.swift # 手动添加店铺
         ├── FavoritesView.swift  # 收藏页（v5.0：合并博主+收藏）
         ├── AuthorDetailView.swift   # 博主详情页（v5.0 新增）
@@ -2445,3 +2449,49 @@ SwiftUI
 - 关键决策：使用 NSCache（自动内存管理，最多缓存 200 张）而非磁盘缓存，平衡性能和内存占用；名称在 avatars 层级即显示，不再需要放大到 names 层级
 - 技术栈：SwiftUI、NSCache、MapKit
 - 修改的文件：新建 `ios/.../Views/CachedAsyncImage.swift`、`ios/.../Views/MapView.swift`、`ios/.../ViewModels/MapViewModel.swift`
+
+### 会话记录 — 2026-04-05 v10.0 解析算法优化 + 异步解析UX + 勘误功能
+
+- 主要目的：提升视频解析召回率、改善解析等待体验（半异步模式）、新增用户勘误功能
+- 完成的主要任务：
+  - 新增 `backend/rule_extractor.py`：规则预提取模块，在 AI 之前用正则从标题/标签/评论中提取候选店铺名（零API成本）
+  - 修改 `backend/douyin_parser.py`：探测抖音 POI 字段、删除评论回复接口相关函数（fetch_comment_replies、poll_comment_replies_for_confidence）
+  - 修改 `backend/ai_extractor.py`：优化 AI prompt（加入候选输入、放宽拒绝率、low 置信度不丢弃）、删除 extract_restaurants_with_replies
+  - 修改 `backend/amap_service.py`：放宽高德搜索相似度阈值（strict 0.5→0.4，非strict 0.3→0.25）
+  - 修改 `backend/main.py`：parse_single_video_fast 集成新四层算法（规则预提取→AI精选→POI校验+候选兜底→置信排序）；/api/parse-link 改为半异步模式；新增 /api/parse-result 轮询接口；新增 /api/corrections 勘误接口
+  - 修改 `backend/db.py`：新增 get_video_cache_by_pk、create_user_correction、reset_review_status_for_correction 等函数
+  - 新增 `backend/migrations/v10_user_corrections.sql`：用户勘误表建表SQL
+  - 修改 iOS `ParseLinkSheet.swift`：支持半异步模式（status="parsing"时自动关闭Sheet）
+  - 新增 iOS `ParseCompleteAlert.swift`：解析完成弹框（成功可定位/勘误，失败提示人工复核）
+  - 新增 iOS `CorrectionSheet.swift`：用户勘误表单（5种勘误类型+补充说明）
+  - 修改 iOS `MapView.swift`：添加按钮呼吸动画、轮询逻辑、解析完成弹框overlay、地图卡片勘误按钮
+  - 修改 iOS `MapViewModel.swift`：新增 flyToCoordinate 方法
+  - 修改 iOS `Models.swift`：新增 ParseResultResponse、CorrectionRequest/Response、UserCorrection 模型；ParseLinkResponse 新增 video_cache_id 字段；ReviewItem 新增 user_corrections 字段
+  - 修改 iOS `APIService.swift`：新增 getParseResult、submitCorrection 方法
+  - 修改 iOS `ReviewDetailView.swift`：复核页展示用户勘误信息（橙色卡片区域）
+- 关键决策：半异步模式（缓存命中直接返回，未命中异步解析+轮询）；保留AI为主+规则预提取辅助；low置信度不入库但缓存供复核参考；勘误后店铺重新进入复核队列
+- 技术栈：Python FastAPI、SwiftUI、Supabase PostgreSQL、通义千问 qwen-plus、高德地图 API、JustOneAPI
+- 修改的文件：`backend/rule_extractor.py`(新)、`backend/douyin_parser.py`、`backend/ai_extractor.py`、`backend/amap_service.py`、`backend/main.py`、`backend/db.py`、`backend/supabase_schema.sql`、`backend/migrations/v10_user_corrections.sql`(新)、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Views/ParseLinkSheet.swift`、`ios/.../Views/ParseCompleteAlert.swift`(新)、`ios/.../Views/CorrectionSheet.swift`(新)、`ios/.../Views/MapView.swift`、`ios/.../ViewModels/MapViewModel.swift`、`ios/.../Views/Admin/ReviewDetailView.swift`、`需求文档&技术方案/视频解析与数据入库技术方案.md`
+
+### 会话记录 — 2026-04-06 饭团养成体系 v10.10 开发
+
+- 主要目的：实现饭团养成体系（饱食度 + 亲密度），让用户的每次平台行为转化为饭团的"成长"，提升留存率
+- 完成的主要任务：
+  - 数据库：新增 `fantuan_status` 表（迁移脚本 `backend/migrations/v10_10_fantuan_nurture.sql`），更新 `supabase_schema.sql`
+  - 后端 `db.py`：新增 6 个养成函数（get_fantuan_status、fantuan_daily_login、fantuan_pet、update_fantuan_on_gacha/checkin/favorite）
+  - 后端 `main.py`：新增 3 个 API（GET /api/fantuan/status、POST /api/fantuan/login、POST /api/fantuan/pet）；改造 3 个现有 API（/api/gacha/select、/api/checkins、/api/favorites/add 附带更新养成数值）
+  - iOS `Models.swift`：新增 FanTuanStatus、FanTuanLoginResponse、FanTuanPetResponse 模型
+  - iOS `APIService.swift`：新增 getFanTuanStatus、fanTuanLogin、fanTuanPet 方法
+  - iOS `FanTuanViewModel.swift`：新增养成属性（fanTuanStatus/showPetFeedback/showStatusPanel）和方法（dailyLogin/loadStatus/petFanTuan/updateStatusFromResponse）；改造 mood 判定逻辑（饱食度优先级 > 天气 > 时间段）；冒泡文案根据亲密度等级选择语气
+  - iOS `FanTuanView.swift`：新增长按手势（0.5秒触发摸摸）+ 浮动数字动画；FanTuanMenuSheet 新增「饭团状态」入口，重构为通用 menuCard 组件
+  - iOS `FanTuanStatusView.swift`（新建）：饭团状态面板（大号动画 + 饱食度进度条 + 亲密度等级进度 + 连续登录 + 摸摸按钮）
+  - iOS `MapView.swift`：APP 启动时调用 dailyLogin 签到；FanTuanView 传入 userId；FanTuanMenuSheet 传入 viewModel；新增状态面板 sheet
+- 关键决策：饱食度衰减在登录时按天数差计算（避免后端 cron）；亲密度只增不减降低挫败感；连续登录≥3天亲密度获取×1.5；摸摸用长按手势区分短按菜单
+- 技术栈：Python FastAPI、SwiftUI（手势系统/动画）、Supabase PostgreSQL
+- 修改的文件：`backend/db.py`、`backend/main.py`、`backend/supabase_schema.sql`、`backend/migrations/v10_10_fantuan_nurture.sql`(新)、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../ViewModels/FanTuanViewModel.swift`、`ios/.../Views/FanTuanView.swift`、`ios/.../Views/FanTuanStatusView.swift`(新)、`ios/.../Views/MapView.swift`、`帮助文档/会话记录.md`、`README.md`
+
+### 2026-04-06 会话：修复 Xcode 编译报错（Unicode 弯引号）
+- 目的：修复 FanTuanViewModel.swift 编译失败
+- 完成任务：将文件中所有 Unicode 弯引号（`""`）替换为 ASCII 直引号（`""`），编译通过
+- 技术栈：Swift、sed
+- 修改的文件：`ios/.../ViewModels/FanTuanViewModel.swift`、`帮助文档/会话记录.md`、`README.md`

@@ -279,10 +279,11 @@ def _pick_best_poi(pois: list[dict], query: str, city: str, strict: bool = True)
     """
     从高德返回的 POI 列表中挑选最匹配的结果。
 
-    - strict=True：相似度阈值 0.5（有城市限制时使用）
-    - strict=False：相似度阈值 0.3（全国搜索时适当放宽）
+    - strict=True：相似度阈值 0.4（有城市限制时使用，v10.0 从 0.5 放宽）
+    - strict=False：相似度阈值 0.25（全国搜索时适当放宽，v10.0 从 0.3 放宽）
+    v10.0 放宽原因：允许牺牲一点准确率来提升召回率，后续有人工复核兜底
     """
-    threshold = 0.5 if strict else 0.3
+    threshold = 0.4 if strict else 0.25
     best_poi = None
     best_score = 0.0
 

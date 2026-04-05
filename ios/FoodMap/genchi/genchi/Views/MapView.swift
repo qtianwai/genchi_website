@@ -68,6 +68,15 @@ struct MapView: View {
     // 手动添加店铺成功后，待定位的 restaurant_id
     @State private var pendingFocusRestaurantId: String? = nil
 
+    // v10.0 新增：异步解析相关状态
+    @State private var parsingVideoCacheId: String? = nil       // 正在异步解析的 video_cache_id
+    @State private var parsePollingTimer: Timer? = nil           // 轮询定时器
+    @State private var showParseCompleteAlert = false            // 是否显示解析完成弹框
+    @State private var parseCompleteResult: ParseResultResponse? = nil  // 解析完成结果
+    @State private var showCorrectionSheet = false               // 是否显示勘误表单
+    @State private var correctionRestaurantId: String? = nil     // 勘误的店铺 ID
+    @State private var correctionVideoCacheId: String? = nil     // 勘误的视频缓存 ID
+
     /// 跨文件构造入口（如 MainTabView）。
     /// 说明：结构体内存在 `private` 存储属性时，编译器生成的成员初始化器为 `private`，
     /// 其他源码文件无法调用 `MapView(refreshTrigger:)`，故提供显式 internal 初始化器。
@@ -104,6 +113,13 @@ struct MapView: View {
         _radarPhase = State(initialValue: 0)
         _radarTimer = State(initialValue: nil)
         _pendingFocusRestaurantId = State(initialValue: nil)
+        _parsingVideoCacheId = State(initialValue: nil)
+        _parsePollingTimer = State(initialValue: nil)
+        _showParseCompleteAlert = State(initialValue: false)
+        _parseCompleteResult = State(initialValue: nil)
+        _showCorrectionSheet = State(initialValue: false)
+        _correctionRestaurantId = State(initialValue: nil)
+        _correctionVideoCacheId = State(initialValue: nil)
         _authState = EnvironmentObject()
     }
 
@@ -149,7 +165,7 @@ struct MapView: View {
                 Spacer()
                 HStack {
                     Spacer()
-                    FanTuanView(viewModel: fanTuanVM)
+                    FanTuanView(viewModel: fanTuanVM, userId: authState.userId)
                         .padding(.trailing, 16)
                         .padding(.bottom, 120) // 避开底部卡片和 Tab 栏
                 }
@@ -168,6 +184,8 @@ struct MapView: View {
             if let loc = locationManager.userLocation {
                 await fanTuanVM.fetchWeather(lat: loc.latitude, lng: loc.longitude)
             }
+            // v10.10 饭团养成：每日登录签到
+            await fanTuanVM.dailyLogin(userId: authState.userId)
         }
         .onAppear {
             viewModel.startAutoRefresh(userId: authState.userId)
@@ -223,7 +241,11 @@ struct MapView: View {
             ParseLinkSheet(
                 onSuccess: { refreshTrigger += 1 },
                 initialLink: pendingParseLink,
-                autoStart: parseAutoStart
+                autoStart: parseAutoStart,
+                onParsingStarted: { videoCacheId in
+                    // v10.0：异步解析开始，启动轮询
+                    startParseResultPolling(videoCacheId: videoCacheId)
+                }
             )
             .environmentObject(authState)
         }
@@ -254,12 +276,57 @@ struct MapView: View {
         .sheet(isPresented: $showImagePreview) {
             ImagePreviewSheet(imageURL: previewImageURL)
         }
+        // v10.0 新增：勘误表单
+        .sheet(isPresented: $showCorrectionSheet) {
+            CorrectionSheet(
+                restaurantId: correctionRestaurantId,
+                videoCacheId: correctionVideoCacheId,
+                onSubmitted: {
+                    toastMessage = "反馈已提交"
+                }
+            )
+            .environmentObject(authState)
+        }
+        // v10.0 新增：解析完成弹框（overlay 覆盖在地图上）
+        .overlay {
+            if showParseCompleteAlert, let result = parseCompleteResult {
+                ParseCompleteAlert(
+                    result: result,
+                    onDismiss: {
+                        withAnimation(.easeOut(duration: 0.25)) {
+                            showParseCompleteAlert = false
+                            parseCompleteResult = nil
+                        }
+                    },
+                    onLocateRestaurant: { coordinate in
+                        // 刷新地图数据后飞到店铺位置
+                        refreshTrigger += 1
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                            viewModel.flyToCoordinate(coordinate)
+                        }
+                    },
+                    onReportError: {
+                        // 打开勘误表单
+                        correctionRestaurantId = result.restaurant?.id
+                        correctionVideoCacheId = parsingVideoCacheId
+                        showCorrectionSheet = true
+                    }
+                )
+                .animation(.easeInOut(duration: 0.3), value: showParseCompleteAlert)
+            }
+        }
         // v8.0 饭团菜单
         .sheet(isPresented: $fanTuanVM.isMenuOpen) {
             FanTuanMenuSheet(
+                viewModel: fanTuanVM,
+                userId: authState.userId,
                 onSelectGacha: { showGachaView = true },
                 onSelectQA: { showQAView = true }
             )
+        }
+        // v10.10 饭团状态面板
+        .sheet(isPresented: $fanTuanVM.showStatusPanel) {
+            FanTuanStatusView(viewModel: fanTuanVM, userId: authState.userId)
         }
         // v8.0 抽卡全屏页
         .fullScreenCover(isPresented: $showGachaView) {
@@ -558,6 +625,12 @@ struct MapView: View {
                                 previewImageURL = photo
                                 showImagePreview = true
                             }
+                        },
+                        onCorrection: {
+                            // v10.0：打开勘误表单
+                            correctionRestaurantId = item.restaurant.id
+                            correctionVideoCacheId = nil
+                            showCorrectionSheet = true
                         }
                     )
                     .padding(.horizontal, DS.Spacing.lg)
@@ -604,8 +677,27 @@ struct MapView: View {
     }
 
     private var addButton: some View {
-        MapToolCircleButton(icon: "plus", style: .neutral) {
-            showAddMenu = true
+        ZStack {
+            // v10.0：解析中呼吸动画（橙色脉冲圆环）
+            if parsingVideoCacheId != nil {
+                Circle()
+                    .stroke(DS.Color.brand.opacity(0.4), lineWidth: 2)
+                    .frame(width: 48, height: 48)
+                    .scaleEffect(parsingVideoCacheId != nil ? 1.4 : 1.0)
+                    .opacity(parsingVideoCacheId != nil ? 0 : 0.6)
+                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false), value: parsingVideoCacheId != nil)
+
+                Circle()
+                    .stroke(DS.Color.brand.opacity(0.6), lineWidth: 1.5)
+                    .frame(width: 48, height: 48)
+                    .scaleEffect(parsingVideoCacheId != nil ? 1.2 : 1.0)
+                    .opacity(parsingVideoCacheId != nil ? 0.2 : 0.8)
+                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: parsingVideoCacheId != nil)
+            }
+
+            MapToolCircleButton(icon: "plus", style: .neutral) {
+                showAddMenu = true
+            }
         }
     }
 
@@ -752,6 +844,51 @@ struct MapView: View {
                 showUserAddSheet = true
             }
         }
+    }
+
+    // ─────────────────────────────────────────
+    // v10.0 新增：异步解析轮询逻辑
+    // ─────────────────────────────────────────
+
+    /// 开始轮询异步解析结果（每3秒一次，最多60次 = 3分钟）
+    private func startParseResultPolling(videoCacheId: String) {
+        parsingVideoCacheId = videoCacheId
+        parsePollingTimer?.invalidate()
+        var pollCount = 0
+
+        parsePollingTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [self] _ in
+            pollCount += 1
+            if pollCount > 60 {
+                // 超时，停止轮询
+                stopParseResultPolling()
+                return
+            }
+            Task { @MainActor in
+                do {
+                    let result = try await APIService.shared.getParseResult(videoCacheId: videoCacheId)
+                    if result.status == "completed" || result.status == "failed" {
+                        stopParseResultPolling()
+                        // 刷新地图数据
+                        refreshTrigger += 1
+                        // 弹出解析完成提醒
+                        parseCompleteResult = result
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            showParseCompleteAlert = true
+                        }
+                    }
+                } catch {
+                    // 网络错误不停止轮询，继续重试
+                    print("[轮询] 查询解析结果失败: \(error)")
+                }
+            }
+        }
+    }
+
+    /// 停止轮询
+    private func stopParseResultPolling() {
+        parsePollingTimer?.invalidate()
+        parsePollingTimer = nil
+        parsingVideoCacheId = nil
     }
 
     private func syncSelectionWithLatestData() {
@@ -2188,6 +2325,7 @@ struct MapQuickActionCard: View {
     let onCopyName: () -> Void
     let onCopyAuthor: (String) -> Void
     let onPreviewImage: () -> Void
+    let onCorrection: () -> Void  // v10.0 新增：勘误回调
 
     // v7.1 新增：探店视频兜底用（支持推荐来源中首个有效博主）
     private var primaryDouyinAuthor: Author? {
@@ -2321,6 +2459,15 @@ struct MapQuickActionCard: View {
                     emphasis: .secondaryWithCount,
                     action: onAvoid,
                     count: item.avoidCount
+                )
+
+                // v10.0 新增：勘误/反馈
+                CardActionButton(
+                    title: "反馈",
+                    icon: "exclamationmark.bubble",
+                    tint: .gray,
+                    emphasis: .secondaryWithCount,
+                    action: onCorrection
                 )
 
                 // 标记删除

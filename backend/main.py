@@ -10,9 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, extract_video_id_from_url, poll_comment_replies_for_confidence
-from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies, filter_food_video_titles
-from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, extract_restaurants_with_replies
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, extract_video_id_from_url
+from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, filter_food_video_titles
 from amap_service import batch_search_restaurants, search_restaurant_for_review, get_poi_detail
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
@@ -64,6 +63,9 @@ from db import (
     get_platform_popular_restaurants, get_user_all_restaurants,
     get_restaurant_recommend_count, get_favorite_notes_for_restaurant,
     get_restaurant_authors,
+    # 新增：v10.10 饭团养成体系
+    get_fantuan_status, fantuan_daily_login, fantuan_pet,
+    update_fantuan_on_gacha, update_fantuan_on_checkin, update_fantuan_on_favorite,
 )
 
 load_dotenv()
@@ -72,34 +74,12 @@ load_dotenv()
 DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
 DEBUG_MAX_VIDEOS = int(os.getenv("DEBUG_MAX_VIDEOS", "5"))
 
-# 读取评论回复调用限制配置
-COMMENT_REPLY_DAILY_LIMIT = int(os.getenv("COMMENT_REPLY_DAILY_LIMIT", "100"))
-
 # v8.0 饭团系统配置（环境变量可配置）
 DAILY_GACHA_LIMIT = int(os.getenv("DAILY_GACHA_LIMIT", "15"))  # 每日抽卡次数上限
 GACHA_INSERT_QA_THRESHOLD = int(os.getenv("GACHA_INSERT_QA_THRESHOLD", "3"))  # 连续换一批 N 次后插入提问
 
-# 全局计数器：评论回复接口每日调用次数（内存存储，重启后重置）
-_comment_reply_calls_today = 0
-_comment_reply_calls_date = datetime.now().date()
-
-def can_call_comment_reply() -> bool:
-    """检查今日是否还能调用评论回复接口"""
-    global _comment_reply_calls_today, _comment_reply_calls_date
-
-    # 检查日期是否变化，变化则重置计数器
-    today = datetime.now().date()
-    if today != _comment_reply_calls_date:
-        _comment_reply_calls_today = 0
-        _comment_reply_calls_date = today
-
-    return _comment_reply_calls_today < COMMENT_REPLY_DAILY_LIMIT
-
-def increment_comment_reply_calls(count: int = 1):
-    """增加评论回复调用次数"""
-    global _comment_reply_calls_today
-    _comment_reply_calls_today += count
-    print(f"[评论回复限制] 今日已调用 {_comment_reply_calls_today}/{COMMENT_REPLY_DAILY_LIMIT} 次")
+# v10.0：评论回复接口相关的全局计数器已移除
+# 原因：去掉了 get-video-sub-comment 接口调用，不再需要限流
 
 app = FastAPI(title="跟吃 API", version="1.0.0")
 
@@ -435,28 +415,27 @@ async def parse_single_video_fast(
     data_source: str = "user_submit",  # 数据来源标识
 ) -> dict:
     """
-    快速解析单个视频的核心逻辑（优化版：使用 parse_douyin_link 已获取的扩展信息）。
+    快速解析单个视频的核心逻辑（v10.0 优化版）。
 
-    优化1：parse_douyin_link 已获取完整的扩展信息（话题标签、城市、评论），
-           此函数不再单独调用 fetch_video_detail_extra，节省 1 次 JustOneAPI 调用。
-
-    v2.6 优化：置信度 medium 或 high 但缺分店信息时，调用评论回复接口补充信息。
-    v2.5 新增：记录 parse_reason、data_source、api_cost、api_cost_note。
+    v10.0 变化：
+    - 新增规则预提取层（rule_extractor），在 AI 之前用正则提取候选店铺名
+    - 将候选列表传给 AI 辅助决策，提升召回率
+    - 去掉评论回复接口（get-video-sub-comment），降低成本
+    - low 置信度不入库但缓存供人工复核参考
+    - AI 结果搜不到高德时，用规则候选兜底搜索
     """
     vid = video_info.get("video_id", "")
     title = video_info.get("title", "")
     author_name = video_info.get("author_name", "")
 
-    # 使用 parse_douyin_link 已获取的扩展信息（优化1：避免重复调用）
+    # 使用 parse_douyin_link 已获取的扩展信息
     hashtags = video_info.get("hashtags", [])
     city = video_info.get("city_name", "未知")
     author_liked_comments = video_info.get("author_liked_comments", [])
     hot_comments = video_info.get("hot_comments", [])
     all_comments = video_info.get("all_comments", [])
-    hot_comments_raw = video_info.get("hot_comments_raw", [])
 
-    # API 成本统计（parse_douyin_link 已消耗：share-url-transfer + get-video-detail + get-video-comment）
-    # 单价参考 JustOneAPI 官网，此处按每次调用 0.001 元估算
+    # API 成本统计
     COST_PER_CALL = 0.1  # 元/次
     api_calls = [
         "share-url-transfer/v1（解析短链）",
@@ -465,7 +444,19 @@ async def parse_single_video_fast(
     ]
     api_cost = len(api_calls) * COST_PER_CALL
 
-    # AI 提取（使用完整信息，优先级算法）
+    # ── 第一层：规则预提取候选（零 API 成本）──
+    from rule_extractor import extract_candidates
+    poi_info = video_info.get("poi_info")  # 抖音 POI（如果有）
+    rule_candidates = extract_candidates(
+        title=title,
+        hashtags=hashtags,
+        author_name=author_name,
+        author_liked_comments=author_liked_comments,
+        all_comments=all_comments,
+        poi_info=poi_info,
+    )
+
+    # ── 第二层：AI 精选（传入规则候选辅助决策）──
     extracted = await extract_restaurants_priority(
         video_title=title,
         author_name=author_name,
@@ -474,70 +465,27 @@ async def parse_single_video_fast(
         author_liked_comments=author_liked_comments,
         hot_comments=hot_comments,
         all_comments=all_comments,
+        rule_candidates=rule_candidates,
     )
 
-    # 收集 parse_reason（无论是否提取到店铺）
+    # 收集 parse_reason
     parse_reason = ""
+    ai_confidence = None
     if extracted:
         if extracted[0].get("_no_result"):
             parse_reason = extracted[0].get("reason", "AI未识别到店铺")
         else:
             parse_reason = extracted[0].get("reason", "")
-
-    # 置信度判断（v2.6 优化：high 但缺分店信息时也调用评论回复）
-    should_call_replies = extracted and not extracted[0].get("_no_result") and extracted[0].get("confidence") == "medium"
-    if not should_call_replies and extracted and not extracted[0].get("_no_result") and extracted[0].get("confidence") == "high":
-        parsed_name = extracted[0].get("name", "")
-        if not any(keyword in parsed_name for keyword in ["店", "广场", "分店", "路", "街"]):
-            should_call_replies = True
-    if should_call_replies:
-        if can_call_comment_reply():
-            print(f"[解析策略] 置信度 medium 或缺分店信息，调用评论回复接口补充信息")
-            reply_data = await poll_comment_replies_for_confidence(
-                hot_comments_raw=hot_comments_raw,
-                author_uid=author_id,
-                max_polls=2,
-            )
-            polls_used = reply_data.get("polls_used", 0)
-            increment_comment_reply_calls(polls_used)
-
-            if polls_used > 0:
-                # 记录评论回复接口调用成本
-                for i in range(polls_used):
-                    api_calls.append(f"get-video-sub-comment/v1（评论回复#{i+1}）")
-                api_cost += polls_used * COST_PER_CALL
-
-            if reply_data.get("polled_replies"):
-                extracted_with_replies = await extract_restaurants_with_replies(
-                    video_title=title,
-                    author_name=author_name,
-                    hashtags=hashtags,
-                    city_name=city,
-                    author_liked_comments=author_liked_comments,
-                    hot_comments=hot_comments,
-                    all_comments=all_comments,
-                    polled_replies=reply_data.get("polled_replies", []),
-                )
-                if extracted_with_replies:
-                    new_conf = extracted_with_replies[0].get("confidence") if not extracted_with_replies[0].get("_no_result") else None
-                    old_conf = extracted[0].get("confidence") if not extracted[0].get("_no_result") else None
-                    new_name = extracted_with_replies[0].get("name", "")
-                    old_name = extracted[0].get("name", "")
-                    if new_conf == "high" or (new_conf == old_conf and len(new_name) > len(old_name)):
-                        print(f"[解析策略] 评论回复优化结果: {old_name} → {new_name}")
-                        extracted = extracted_with_replies
-                        parse_reason = extracted[0].get("reason", parse_reason) if not extracted[0].get("_no_result") else extracted[0].get("reason", parse_reason)
-        else:
-            print(f"[解析策略] 今日评论回复调用已达上限，跳过")
+            ai_confidence = extracted[0].get("confidence", "low")
 
     # 构建 API 成本说明
     api_cost_note = "；".join(api_calls) + f"；合计 {len(api_calls)} 次调用，约 ¥{api_cost:.4f}"
 
-    # 过滤掉 _no_result 标记（只是用于传递 reason，不是真实店铺）
+    # 过滤掉 _no_result 标记
     real_extracted = [r for r in extracted if not r.get("_no_result")] if extracted else []
 
     if not real_extracted:
-        # 未提取到店铺，更新缓存记录 parse_reason 和 data_source
+        # AI 未提取到店铺，更新缓存
         upsert_video_cache({
             "video_url": video_url,
             "video_id": vid,
@@ -550,11 +498,33 @@ async def parse_single_video_fast(
         })
         return {"restaurant": None, "status": "not_found"}
 
-    # 调用高德搜索坐标
+    # ── 第三层：高德 POI 校验 + 候选兜底 ──
     restaurant_data = real_extracted[0]
+    ai_name = restaurant_data.get("name", "")
     search_results = await batch_search_restaurants([restaurant_data])
 
+    # 如果 AI 结果搜不到高德，用规则候选兜底搜索
+    if not search_results and rule_candidates:
+        print(f"[解析策略] AI 结果「{ai_name}」高德未命中，尝试规则候选兜底")
+        for candidate in rule_candidates:
+            cand_name = candidate.get("name", "")
+            if cand_name and cand_name != ai_name:
+                fallback_results = await batch_search_restaurants([{
+                    "name": cand_name,
+                    "city": city,
+                    "category": restaurant_data.get("category", ""),
+                }])
+                if fallback_results:
+                    search_results = fallback_results
+                    # 标记为规则兜底
+                    data_source = data_source + "_rule_fallback" if "rule_fallback" not in data_source else data_source
+                    parse_reason = f"AI识别「{ai_name}」高德未命中，规则候选「{cand_name}」命中"
+                    print(f"[解析策略] 规则候选兜底成功: {cand_name}")
+                    break
+
     if not search_results:
+        # ── 第四层：置信排序 + 入库决策 ──
+        # low 置信度：缓存结果但不入库（供人工复核参考）
         upsert_video_cache({
             "video_url": video_url,
             "video_id": vid,
@@ -563,7 +533,7 @@ async def parse_single_video_fast(
             "restaurant_name": restaurant_data.get("name", ""),
             "restaurant_city": restaurant_data.get("city", ""),
             "error_message": "高德地图未找到该店铺",
-            "parse_reason": parse_reason or f"AI识别到店铺「{restaurant_data.get('name')}」但高德地图未找到",
+            "parse_reason": parse_reason or f"AI识别到店铺「{ai_name}」但高德地图未找到",
             "data_source": data_source,
             "api_cost": api_cost,
             "api_cost_note": api_cost_note,
@@ -571,14 +541,40 @@ async def parse_single_video_fast(
         return {"restaurant": None, "status": "amap_not_found"}
 
     amap_result = search_results[0]
+
+    # ── 第四层：置信排序 + 入库决策 ──
+    # low 置信度 + POI 命中：缓存完整结果但不入库到地图
+    if ai_confidence == "low":
+        print(f"[解析策略] low 置信度，缓存结果但不入库: {ai_name}")
+        upsert_video_cache({
+            "video_url": video_url,
+            "video_id": vid,
+            "author_id": author_id,
+            "status": "failed",  # 标记为 failed 使其不入库
+            "restaurant_name": amap_result.get("name", restaurant_data.get("name", "")),
+            "restaurant_address": amap_result.get("address", ""),
+            "restaurant_city": amap_result.get("city", city),
+            "restaurant_lat": amap_result.get("latitude"),
+            "restaurant_lng": amap_result.get("longitude"),
+            "restaurant_amap_id": amap_result.get("amap_id", ""),
+            "restaurant_category": restaurant_data.get("category", ""),
+            "error_message": "低置信度结果，待人工复核",
+            "parse_reason": parse_reason or f"低置信度: {ai_name}",
+            "data_source": data_source,
+            "api_cost": api_cost,
+            "api_cost_note": api_cost_note,
+        })
+        return {"restaurant": None, "status": "low_confidence"}
+
+    # high/medium 置信度 + POI 命中：正常入库
     restaurant_data.update({
         "address": amap_result.get("address", ""),
         "latitude": amap_result.get("latitude"),
         "longitude": amap_result.get("longitude"),
         "amap_id": amap_result.get("amap_id"),
-        "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
-        "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
-        # 附加新字段，供 _save_video_restaurant 写入缓存
+        "avg_price": amap_result.get("avg_price"),
+        "photo_url": amap_result.get("photo_url", ""),
+        # 附加字段，供 _save_video_restaurant 写入缓存
         "parse_reason": parse_reason,
         "data_source": data_source,
         "api_cost": api_cost,
@@ -724,7 +720,16 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
             # 更新该视频的 video_extra（按 video_id 查找，URL 可能不精确匹配）
             update_video_cache_extra_by_video_id(vid, bg_video_extra)
 
-            # AI 提取（v2.3：废弃降级算法，优先级算法返回空时直接返回空）
+            # AI 提取（v10.0：传入规则候选辅助决策，去掉评论回复接口）
+            from rule_extractor import extract_candidates as extract_candidates_bg
+            bg_rule_candidates = extract_candidates_bg(
+                title=title,
+                hashtags=extra.get("hashtags", []),
+                author_name="",
+                author_liked_comments=extra.get("author_liked_comments", []),
+                all_comments=extra.get("all_comments", []),
+                poi_info=extra.get("poi_info"),
+            )
             extracted = await extract_restaurants_priority(
                 video_title=title,
                 author_name="",
@@ -733,59 +738,18 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                 author_liked_comments=extra.get("author_liked_comments", []),
                 hot_comments=extra.get("hot_comments", []),
                 all_comments=extra.get("all_comments", []),
+                rule_candidates=bg_rule_candidates,
             )
 
             # 收集 parse_reason
             parse_reason_bg = ""
+            ai_confidence_bg = None
             if extracted:
                 if extracted[0].get("_no_result"):
                     parse_reason_bg = extracted[0].get("reason", "AI未识别到店铺")
                 else:
                     parse_reason_bg = extracted[0].get("reason", "")
-
-            # 置信度判断（v2.6 优化：high 但缺分店信息时也调用评论回复）
-            should_call_replies = extracted and not extracted[0].get("_no_result") and extracted[0].get("confidence") == "medium"
-            if not should_call_replies and extracted and not extracted[0].get("_no_result") and extracted[0].get("confidence") == "high":
-                parsed_name = extracted[0].get("name", "")
-                if not any(keyword in parsed_name for keyword in ["店", "广场", "分店", "路", "街"]):
-                    should_call_replies = True
-            if should_call_replies:
-                if can_call_comment_reply():
-                    conf_tag = "medium" if (extracted and not extracted[0].get("_no_result") and extracted[0].get("confidence") == "medium") else "缺分店"
-                    print(f"[后台解析] 视频 {vid} 置信度 {conf_tag}，调用评论回复补充")
-                    reply_data = await poll_comment_replies_for_confidence(
-                        hot_comments_raw=extra.get("hot_comments_raw", []),
-                        author_uid=author_id,
-                        max_polls=2,
-                    )
-                    polls_used = reply_data.get("polls_used", 0)
-                    increment_comment_reply_calls(polls_used)
-                    if polls_used > 0:
-                        for i_r in range(polls_used):
-                            api_calls_bg.append(f"get-video-sub-comment/v1（评论回复#{i_r+1}）")
-                        api_cost_bg += polls_used * COST_PER_CALL
-                    if reply_data.get("polled_replies"):
-                        extracted_with_replies = await extract_restaurants_with_replies(
-                            video_title=title,
-                            author_name="",
-                            hashtags=extra.get("hashtags", []),
-                            city_name=extra.get("city_name", "未知"),
-                            author_liked_comments=extra.get("author_liked_comments", []),
-                            hot_comments=extra.get("hot_comments", []),
-                            all_comments=extra.get("all_comments", []),
-                            polled_replies=reply_data.get("polled_replies", []),
-                        )
-                        if extracted_with_replies:
-                            new_conf = extracted_with_replies[0].get("confidence") if not extracted_with_replies[0].get("_no_result") else None
-                            old_conf = extracted[0].get("confidence") if not extracted[0].get("_no_result") else None
-                            new_name = extracted_with_replies[0].get("name", "")
-                            old_name = extracted[0].get("name", "")
-                            if new_conf == "high" or (new_conf == old_conf and len(new_name) > len(old_name)):
-                                print(f"[后台解析] 视频 {vid} 评论回复优化: {old_name} → {new_name}")
-                                extracted = extracted_with_replies
-                                parse_reason_bg = extracted[0].get("reason", parse_reason_bg) if not extracted[0].get("_no_result") else extracted[0].get("reason", parse_reason_bg)
-                else:
-                    print(f"[后台解析] 今日评论回复调用已达上限，跳过视频 {vid}")
+                    ai_confidence_bg = extracted[0].get("confidence", "low")
 
             api_cost_note_bg = "；".join(api_calls_bg) + f"；合计 {len(api_calls_bg)} 次调用，约 ¥{api_cost_bg:.4f}"
 
@@ -793,9 +757,40 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
             real_extracted = [r for r in extracted if not r.get("_no_result")] if extracted else []
 
             if real_extracted:
-                # 高德搜索
-                search_results = await batch_search_restaurants([real_extracted[0]])
-                if search_results:
+                # v10.0：low 置信度不入库但缓存
+                if ai_confidence_bg == "low":
+                    upsert_video_cache({
+                        "video_url": video_url,
+                        "video_id": vid,
+                        "author_id": author_id,
+                        "status": "failed",
+                        "restaurant_name": real_extracted[0].get("name", ""),
+                        "restaurant_city": real_extracted[0].get("city", ""),
+                        "error_message": "低置信度结果，待人工复核",
+                        "parse_reason": parse_reason_bg,
+                        "data_source": "background_scan",
+                        "api_cost": api_cost_bg,
+                        "api_cost_note": api_cost_note_bg,
+                    })
+                else:
+                    # 高德搜索
+                    search_results = await batch_search_restaurants([real_extracted[0]])
+                    # v10.0：AI 结果搜不到高德时，用规则候选兜底
+                    if not search_results and bg_rule_candidates:
+                        ai_name_bg = real_extracted[0].get("name", "")
+                        for cand in bg_rule_candidates:
+                            cand_name = cand.get("name", "")
+                            if cand_name and cand_name != ai_name_bg:
+                                fallback = await batch_search_restaurants([{
+                                    "name": cand_name,
+                                    "city": extra.get("city_name", "未知"),
+                                    "category": real_extracted[0].get("category", ""),
+                                }])
+                                if fallback:
+                                    search_results = fallback
+                                    parse_reason_bg = f"AI识别「{ai_name_bg}」高德未命中，规则候选「{cand_name}」命中"
+                                    break
+                    if search_results:
                     amap_result = search_results[0]
                     real_extracted[0].update({
                         "address": amap_result.get("address", ""),
@@ -959,18 +954,16 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             author_id = author_record["id"]
 
         # 第七步：为当前视频创建/更新缓存记录（parsing 状态）
-        upsert_video_cache({
+        cache_record = upsert_video_cache({
             "video_url": clean_url,
             "video_id": vid,
             "author_id": author_id,
             "status": "parsing",
         })
+        # 获取 video_cache_id（用于前端轮询）
+        video_cache_id = cache_record.get("id", "") if cache_record else ""
 
-        # 第八步：快速解析当前视频（使用已获取的完整信息，不再单独调用）
-        parse_result = await parse_single_video_fast(clean_url, video_info, author_id, data_source="user_submit")
-        restaurant = parse_result.get("restaurant")
-
-        # 第九步：写入视频扩展信息到 video_parse_cache（v7.0 新增）
+        # 第八步：写入视频扩展信息到 video_parse_cache（v7.0 新增）
         video_extra = {
             "title": video_info.get("title", ""),
             "city_name": video_info.get("city_name", ""),
@@ -988,8 +981,53 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         }
         update_video_cache_extra(clean_url, video_extra)
 
-        # 第十步：建立博主-店铺关联（当前视频的店铺）
-        is_new_restaurant = False
+        # 第九步（v10.0 半异步）：将店铺解析放入后台任务，立即返回博主信息
+        # 后台任务：AI提取 → 高德搜索 → 入库 → 后台博主历史视频扫描
+        background_tasks.add_task(
+            _async_parse_and_save,
+            clean_url, video_info, author_id, author_record,
+            req.scope, req.user_id, author_sec_uid, vid,
+        )
+
+        # 立即返回博主信息 + video_cache_id（前端用于轮询）
+        return {
+            "status": "parsing",
+            "video_cache_id": video_cache_id,
+            "restaurant": None,
+            "author": author_record,
+            "author_id": author_id,
+            "message": "正在识别店铺信息...",
+            "is_background_running": False,
+            "background_progress": None,
+        }
+
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"[解析链接] 未知错误: {e}")
+        raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
+
+
+async def _async_parse_and_save(
+    clean_url: str,
+    video_info: dict,
+    author_id: str,
+    author_record: dict,
+    scope: str,
+    user_id: str,
+    author_sec_uid: str,
+    vid: str,
+):
+    """
+    v10.0 半异步：后台执行店铺解析+入库+后台任务启动。
+    由 /api/parse-link 的 BackgroundTasks 调用。
+    """
+    try:
+        # 解析当前视频
+        parse_result = await parse_single_video_fast(clean_url, video_info, author_id, data_source="user_submit")
+        restaurant = parse_result.get("restaurant")
+
+        # 建立博主-店铺关联
         if restaurant:
             existing = get_restaurant_by_amap_id(restaurant["amap_id"])
             restaurant_id = existing["id"] if existing else None
@@ -1002,84 +1040,53 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
                     "longitude": restaurant["longitude"],
                     "amap_id": restaurant["amap_id"],
                     "category": restaurant.get("category", ""),
-                    "avg_price": restaurant.get("avg_price"),    # 人均消费（元）
-                    "photo_url": restaurant.get("photo_url", ""), # 店铺封面图
+                    "avg_price": restaurant.get("avg_price"),
+                    "photo_url": restaurant.get("photo_url", ""),
                 })
                 restaurant_id = saved["id"]
-                is_new_restaurant = True
             if restaurant_id:
                 link_author_restaurant(author_id, restaurant_id, vid)
 
-        # 第十步：自动关注博主（single_only 模式下跳过）
-        if req.scope != "single_only":
-            follow_author(req.user_id, author_id)
+        # 自动关注博主（single_only 模式下跳过）
+        if scope != "single_only":
+            follow_author(user_id, author_id)
 
-        # 第十一步：启用/重新激活博主的自动更新检测（single_only 模式下跳过）
-        # 逻辑：
-        # - 新博主：首次解析时自动启用
-        # - 已有博主但自动更新被关闭：如果当前视频识别出了美食店铺，重新激活
-        if req.scope != "single_only":
+        # 启用/重新激活博主的自动更新检测
+        if scope != "single_only":
             try:
                 from db import get_author_by_id
                 existing_author_record = get_author_by_id(author_id)
                 if existing_author_record:
                     auto_update_enabled = existing_author_record.get("auto_update_enabled", True)
                     if not auto_update_enabled and restaurant:
-                        # 自动更新被关闭，但当前视频识别出了店铺，说明博主仍在更新，重新激活
                         enable_author_auto_update(author_id)
-                        print(f"[解析链接] 博主 {author_id} 自动更新已重新激活（发现新美食视频）")
                     elif auto_update_enabled is None:
-                        # 新博主（auto_update_enabled 为 NULL），首次解析时自动启用
                         enable_author_auto_update(author_id)
-                        print(f"[解析链接] 新博主 {author_id} 自动更新已启用")
             except Exception as e:
-                # 自动更新逻辑不应阻塞主流程
-                print(f"[解析链接] 自动更新启用出错: {e}")
+                print(f"[异步解析] 自动更新启用出错: {e}")
 
-        # 第十二步：启动后台任务解析博主历史视频（single_only 模式下跳过）
-        # 优化3.3：冷却期检查 - 1 天内不重复扫描
-        is_bg_running = False
-        latest_task = None
-        if req.scope != "single_only":
+        # 启动后台任务解析博主历史视频（single_only 模式下跳过）
+        if scope != "single_only" and author_sec_uid:
             latest_task = get_latest_bg_task(author_id)
             should_start_bg = (
-                latest_task is None  # 新博主，从未创建过后台任务
-                or latest_task.get("status") in ("completed", "failed")  # 上次任务已结束
+                latest_task is None
+                or latest_task.get("status") in ("completed", "failed")
             )
-            if should_start_bg and author_sec_uid:
-                # 冷却期检查
-                if is_author_in_cool_down(author_id, hours=24):
-                    print(f"[解析链接] 博主 {author_id} 在冷却期内（24小时），跳过后台任务")
-                else:
-                    background_tasks.add_task(
-                        parse_author_all_videos_background,
-                        author_id,
-                        author_sec_uid,
-                        vid,
-                    )
-                    is_bg_running = True
-                    print(f"[解析链接] 已启动后台任务，异步解析博主 {author_id} 的历史视频")
-            elif latest_task and latest_task.get("status") in ("pending", "running"):
-                is_bg_running = True
-        else:
-            print(f"[解析链接] single_only 模式，跳过关注博主和后台任务")
+            if should_start_bg:
+                if not is_author_in_cool_down(author_id, hours=24):
+                    # 在新事件循环中运行后台扫描（因为当前已在 BackgroundTasks 中）
+                    parse_author_all_videos_background(author_id, author_sec_uid, vid)
 
-        # 第十三步：返回结果
-        return {
-            "status": "parsed",
-            "restaurant": restaurant,
-            "author": author_record,
-            "author_id": author_id,
-            "message": _build_message(parse_result, is_new_restaurant, is_bg_running),
-            "is_background_running": is_bg_running,
-            "background_progress": _build_progress_info(latest_task) if is_bg_running else None,
-        }
-
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[解析链接] 未知错误: {e}")
-        raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
+        print(f"[异步解析] 后台解析出错: {e}")
+        # 更新缓存状态为失败
+        upsert_video_cache({
+            "video_url": clean_url,
+            "video_id": vid,
+            "author_id": author_id,
+            "status": "failed",
+            "error_message": f"异步解析出错: {str(e)}",
+        })
 
 
 def _cache_to_restaurant(cached: dict) -> dict:
@@ -1315,6 +1322,45 @@ async def unfollow(req: FollowRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/parse-result/{video_cache_id}")
+async def get_parse_result(video_cache_id: str):
+    """
+    v10.0 新增：查询单个视频的异步解析结果（前端轮询用）。
+
+    前端在 /api/parse-link 返回 status="parsing" 后，每3秒轮询此接口。
+    返回 completed/failed 后前端停止轮询并弹框通知用户。
+    """
+    try:
+        from db import get_video_cache_by_pk
+        cache = get_video_cache_by_pk(video_cache_id)
+        if not cache:
+            raise HTTPException(status_code=404, detail="记录不存在")
+
+        status = cache.get("status", "")
+
+        if status == "parsing":
+            return {"status": "parsing", "restaurant": None, "message": "正在识别中..."}
+
+        if status == "completed":
+            return {
+                "status": "completed",
+                "restaurant": _cache_to_restaurant(cache),
+                "message": "已识别到店铺",
+            }
+
+        # failed（包括 low 置信度缓存的情况）
+        return {
+            "status": "failed",
+            "restaurant": None,
+            "message": "未能识别到店铺，后台将人工复核",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/parse-status/{author_id}")
 async def get_parse_status(author_id: str):
     """
@@ -1393,10 +1439,12 @@ async def get_favorites(user_id: str):
 
 @app.post("/api/favorites/add")
 async def add_to_favorites(req: FavoriteRequest):
-    """收藏店铺"""
+    """收藏店铺（v10.10：附带更新饭团养成数值）"""
     try:
         result = add_favorite(req.user_id, req.restaurant_id)
-        return {"status": "ok", "data": result}
+        # v10.10 养成：收藏 → 饱食度 +2
+        fantuan = update_fantuan_on_favorite(req.user_id)
+        return {"status": "ok", "data": result, "fantuan_status": fantuan}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1732,6 +1780,57 @@ async def require_admin(x_user_id: str = Header(None, alias="X-User-ID")) -> str
     return x_user_id
 
 
+# ─────────────────────────────────────────
+# v10.0 新增：用户勘误接口
+# ─────────────────────────────────────────
+
+class CorrectionRequest(BaseModel):
+    user_id: str
+    restaurant_id: str | None = None
+    video_cache_id: str | None = None
+    correction_type: str          # wrong_restaurant / wrong_address / closed / duplicate / other
+    correction_detail: str | None = None
+
+@app.post("/api/corrections")
+async def submit_correction(req: CorrectionRequest):
+    """
+    用户提交勘误。
+    勘误后将关联的 video_parse_cache 记录的 review_status 重置为 pending，
+    即使之前已人工复核过，也重新进入复核队列。
+    """
+    try:
+        from db import create_user_correction, reset_review_status_for_correction
+
+        # 1. 写入 user_corrections 表
+        correction_data = {
+            "user_id": req.user_id,
+            "correction_type": req.correction_type,
+        }
+        if req.restaurant_id:
+            correction_data["restaurant_id"] = req.restaurant_id
+        if req.video_cache_id:
+            correction_data["video_cache_id"] = req.video_cache_id
+        if req.correction_detail:
+            correction_data["correction_detail"] = req.correction_detail
+
+        create_user_correction(correction_data)
+
+        # 2. 重置关联记录的 review_status 为 pending（重新进入复核队列）
+        reset_review_status_for_correction(
+            restaurant_id=req.restaurant_id,
+            video_cache_id=req.video_cache_id,
+        )
+
+        print(f"[勘误] 用户 {req.user_id} 提交勘误: type={req.correction_type}, "
+              f"restaurant={req.restaurant_id}, video_cache={req.video_cache_id}")
+
+        return {"status": "ok", "message": "反馈已收到，我们会尽快核实处理"}
+
+    except Exception as e:
+        print(f"[勘误] 提交失败: {e}")
+        raise HTTPException(status_code=500, detail=f"提交失败: {str(e)}")
+
+
 @app.get("/api/admin/check")
 async def admin_check(x_user_id: str = Header(None, alias="X-User-ID")):
     """
@@ -1755,8 +1854,23 @@ async def review_list(
     获取复核列表。
     tab=pending（默认）：待复核，P0 优先。
     tab=reviewed：已复核，按 reviewed_at 倒序。
+    v10.0：每条记录附加 user_corrections 字段（用户勘误信息）
     """
     result = get_review_list(page=page, page_size=page_size, tab=tab)
+
+    # v10.0：为每条记录附加用户勘误信息
+    from db import get_corrections_by_restaurant, get_corrections_by_video_cache
+    items = result.get("items", [])
+    for item in items:
+        corrections = []
+        restaurant_id = item.get("restaurant_id")
+        cache_id = item.get("id")
+        if restaurant_id:
+            corrections.extend(get_corrections_by_restaurant(restaurant_id))
+        if cache_id and not corrections:
+            corrections.extend(get_corrections_by_video_cache(cache_id))
+        item["user_corrections"] = corrections
+
     return result
 
 
@@ -2611,10 +2725,8 @@ async def api_gacha_select(req: GachaSelectRequest):
     return {
         "status": "ok",
         "newly_unlocked_achievements": newly_unlocked,
+        "fantuan_status": update_fantuan_on_gacha(req.user_id),  # v10.10 养成：抽卡 → 饱食度+3 亲密度+1
     }
-
-
-# ── 问答推荐 API ──
 
 @app.post("/api/recommend/questions")
 async def api_recommend_questions(req: QAQuestionsRequest):
@@ -2778,6 +2890,7 @@ async def api_create_checkin(req: CheckinRequest):
     return {
         "checkin": checkin,
         "newly_unlocked_achievements": newly_unlocked,
+        "fantuan_status": update_fantuan_on_checkin(req.user_id),  # v10.10 养成：打卡 → 饱食度+15 亲密度+5
     }
 
 
@@ -2851,8 +2964,36 @@ async def api_reviews_summary(restaurant_id: str):
 
 
 # ─────────────────────────────────────────
-# 本地开发启动入口
+# v10.10 饭团养成体系 API
 # ─────────────────────────────────────────
+
+class FanTuanUserRequest(BaseModel):
+    user_id: str
+
+
+@app.get("/api/fantuan/status")
+async def api_fantuan_status(user_id: str):
+    """获取饭团养成状态（饱食度/亲密度/等级/连续登录天数）"""
+    return get_fantuan_status(user_id)
+
+
+@app.post("/api/fantuan/login")
+async def api_fantuan_login(req: FanTuanUserRequest):
+    """
+    每日登录签到。
+    计算离线饱食度衰减 + 登录奖励。
+    返回：{ satiety_change, intimacy_change, fantuan_status, already_logged_in }
+    """
+    return fantuan_daily_login(req.user_id)
+
+
+@app.post("/api/fantuan/pet")
+async def api_fantuan_pet(req: FanTuanUserRequest):
+    """
+    摸摸饭团（每日限 1 次）。
+    返回：{ already_pet, satiety_change, intimacy_change, fantuan_status }
+    """
+    return fantuan_pet(req.user_id)
 
 if __name__ == "__main__":
     import uvicorn

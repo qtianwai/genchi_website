@@ -126,11 +126,9 @@ struct GachaView: View {
     private var loadingView: some View {
         VStack(spacing: 20) {
             Spacer()
-            // 饭团加载动画
-            Text("🍙")
-                .font(.system(size: 60))
-                .rotationEffect(.degrees(viewModel.isLoading ? 10 : -10))
-                .animation(.easeInOut(duration: 0.5).repeatForever(autoreverses: true), value: viewModel.isLoading)
+            LottieView(animation: .looping(.excited), playbackID: 0)
+                .frame(width: 92, height: 92)
+                .clipped()
 
             Text("饭团正在挑选美食...")
                 .font(.subheadline)
@@ -476,8 +474,8 @@ struct GachaCardView: View {
                     )
                 )
             VStack(spacing: 4) {
-                Text("🍙")
-                    .font(.title)
+                FanTuanStickerView(asset: .idle)
+                    .frame(width: 34, height: 34)
                 Text("?")
                     .font(.title2.weight(.bold))
                     .foregroundColor(.white)
@@ -563,8 +561,8 @@ struct InsertedQuestionSheet: View {
     var body: some View {
         VStack(spacing: 24) {
             HStack {
-                Text("🍙")
-                    .font(.title)
+                FanTuanStickerView(asset: .happy)
+                    .frame(width: 30, height: 30)
                 Text("饭团想更了解你～")
                     .font(.headline)
                 Spacer()

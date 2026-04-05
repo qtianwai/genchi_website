@@ -1915,3 +1915,206 @@ def get_favorite_notes_for_restaurant(restaurant_id: str, limit: int = 10) -> li
         .execute()
     )
     return [row["note"] for row in (result.data or []) if row.get("note")]
+
+
+# ─────────────────────────────────────────
+# v10.0 新增：用户勘误相关操作
+# ─────────────────────────────────────────
+
+def create_user_correction(data: dict) -> dict:
+    """创建用户勘误记录"""
+    result = supabase.table("user_corrections").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_corrections_by_restaurant(restaurant_id: str) -> list[dict]:
+    """获取某店铺的所有勘误记录（复核页面展示用）"""
+    result = (
+        supabase.table("user_corrections")
+        .select("*")
+        .eq("restaurant_id", restaurant_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_corrections_by_video_cache(video_cache_id: str) -> list[dict]:
+    """获取某视频缓存记录的所有勘误"""
+    result = (
+        supabase.table("user_corrections")
+        .select("*")
+        .eq("video_cache_id", video_cache_id)
+        .order("created_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def reset_review_status_for_correction(restaurant_id: str = None, video_cache_id: str = None):
+    """
+    勘误提交后，将关联的 video_parse_cache 记录的 review_status 重置为 pending。
+    即使之前已人工复核过，也重新进入复核队列。
+    """
+    if restaurant_id:
+        # 找到该店铺关联的所有 video_parse_cache 记录
+        result = (
+            supabase.table("video_parse_cache")
+            .select("id")
+            .eq("restaurant_id", restaurant_id)
+            .execute()
+        )
+        for row in (result.data or []):
+            supabase.table("video_parse_cache").update(
+                {"review_status": "pending"}
+            ).eq("id", row["id"]).execute()
+
+    if video_cache_id:
+        supabase.table("video_parse_cache").update(
+            {"review_status": "pending"}
+        ).eq("id", video_cache_id).execute()
+
+
+# ─────────────────────────────────────────
+# v10.10 饭团养成体系
+# ─────────────────────────────────────────
+
+def _calc_intimacy_level(intimacy: int) -> int:
+    """根据亲密度数值计算等级 1-5"""
+    if intimacy >= 500: return 5
+    if intimacy >= 300: return 4
+    if intimacy >= 150: return 3
+    if intimacy >= 50: return 2
+    return 1
+
+
+def get_fantuan_status(user_id: str) -> dict:
+    """
+    获取饭团养成状态。
+    不存在则自动创建默认记录（饱食度 80，亲密度 0）。
+    """
+    result = supabase.table("fantuan_status").select("*").eq("user_id", user_id).execute()
+    if result.data:
+        return result.data[0]
+    # 首次访问，创建默认记录
+    default = {"user_id": user_id, "satiety": 80, "intimacy": 0, "intimacy_level": 1, "consecutive_login_days": 0}
+    insert_result = supabase.table("fantuan_status").insert(default).execute()
+    return insert_result.data[0] if insert_result.data else default
+
+
+def fantuan_daily_login(user_id: str) -> dict:
+    """
+    每日登录签到。
+    - 计算离线天数，扣减饱食度（每天 -5）
+    - 判断连续登录
+    - 饱食度 +10，亲密度 +2（连续≥3天 ×1.5）
+    返回：{ satiety_change, intimacy_change, fantuan_status, already_logged_in }
+    """
+    from datetime import date
+    today = date.today()
+    status = get_fantuan_status(user_id)
+
+    last_login = status.get("last_login_date")
+    if last_login and str(last_login) == today.isoformat():
+        return {"satiety_change": 0, "intimacy_change": 0, "fantuan_status": status, "already_logged_in": True}
+
+    satiety = status["satiety"]
+    intimacy = status["intimacy"]
+    consecutive = status["consecutive_login_days"]
+
+    # 计算离线天数并扣减饱食度
+    if last_login:
+        try:
+            last_date = date.fromisoformat(str(last_login))
+            days_away = (today - last_date).days
+        except (ValueError, TypeError):
+            days_away = 1
+    else:
+        days_away = 0  # 首次登录不扣减
+
+    if days_away > 0:
+        satiety = max(0, satiety - days_away * 5)
+
+    # 连续登录判断
+    if last_login:
+        try:
+            last_date = date.fromisoformat(str(last_login))
+            consecutive = consecutive + 1 if (today - last_date).days == 1 else 1
+        except (ValueError, TypeError):
+            consecutive = 1
+    else:
+        consecutive = 1
+
+    # 计算增量（连续≥3天 ×1.5）
+    multiplier = 1.5 if consecutive >= 3 else 1.0
+    satiety_add = 10
+    intimacy_add = int(2 * multiplier)
+    satiety = min(100, satiety + satiety_add)
+    intimacy += intimacy_add
+    level = _calc_intimacy_level(intimacy)
+
+    update_data = {
+        "satiety": satiety, "intimacy": intimacy, "intimacy_level": level,
+        "consecutive_login_days": consecutive, "last_login_date": today.isoformat(),
+        "updated_at": "now()",
+    }
+    result = supabase.table("fantuan_status").update(update_data).eq("user_id", user_id).execute()
+    updated = result.data[0] if result.data else {**status, **update_data}
+    return {"satiety_change": satiety_add, "intimacy_change": intimacy_add, "fantuan_status": updated, "already_logged_in": False}
+
+
+def fantuan_pet(user_id: str) -> dict:
+    """
+    摸摸饭团，每日限 1 次。
+    饱食度 +5，亲密度 +3（连续≥3天 ×1.5）。
+    """
+    from datetime import date
+    today = date.today()
+    status = get_fantuan_status(user_id)
+
+    if status.get("last_pet_date") and str(status["last_pet_date"]) == today.isoformat():
+        return {"already_pet": True, "satiety_change": 0, "intimacy_change": 0, "fantuan_status": status}
+
+    multiplier = 1.5 if status["consecutive_login_days"] >= 3 else 1.0
+    satiety_add = 5
+    intimacy_add = int(3 * multiplier)
+    satiety = min(100, status["satiety"] + satiety_add)
+    intimacy = status["intimacy"] + intimacy_add
+    level = _calc_intimacy_level(intimacy)
+
+    update_data = {
+        "satiety": satiety, "intimacy": intimacy, "intimacy_level": level,
+        "last_pet_date": today.isoformat(), "updated_at": "now()",
+    }
+    result = supabase.table("fantuan_status").update(update_data).eq("user_id", user_id).execute()
+    updated = result.data[0] if result.data else {**status, **update_data}
+    return {"already_pet": False, "satiety_change": satiety_add, "intimacy_change": intimacy_add, "fantuan_status": updated}
+
+
+def _update_fantuan_values(user_id: str, satiety_add: int, intimacy_add: int) -> dict:
+    """内部通用：增加饱食度和亲密度，返回更新后状态"""
+    status = get_fantuan_status(user_id)
+    multiplier = 1.5 if status["consecutive_login_days"] >= 3 else 1.0
+    actual_intimacy = int(intimacy_add * multiplier) if intimacy_add > 0 else 0
+    satiety = min(100, status["satiety"] + satiety_add)
+    intimacy = status["intimacy"] + actual_intimacy
+    level = _calc_intimacy_level(intimacy)
+
+    update_data = {"satiety": satiety, "intimacy": intimacy, "intimacy_level": level, "updated_at": "now()"}
+    result = supabase.table("fantuan_status").update(update_data).eq("user_id", user_id).execute()
+    return result.data[0] if result.data else {**status, **update_data}
+
+
+def update_fantuan_on_gacha(user_id: str) -> dict:
+    """抽卡时附带更新：饱食度 +3，亲密度 +1"""
+    return _update_fantuan_values(user_id, satiety_add=3, intimacy_add=1)
+
+
+def update_fantuan_on_checkin(user_id: str) -> dict:
+    """打卡时附带更新：饱食度 +15，亲密度 +5"""
+    return _update_fantuan_values(user_id, satiety_add=15, intimacy_add=5)
+
+
+def update_fantuan_on_favorite(user_id: str) -> dict:
+    """收藏时附带更新：饱食度 +2"""
+    return _update_fantuan_values(user_id, satiety_add=2, intimacy_add=0)

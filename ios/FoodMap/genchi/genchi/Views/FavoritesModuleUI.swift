@@ -199,13 +199,7 @@ struct FavoritesCard<Content: View>: View {
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
                     .stroke(FavoritesTheme.border, lineWidth: 1)
             }
-            .overlay {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(FavoritesTheme.overlay)
-                    .opacity(0.55)
-                    .allowsHitTesting(false) // 让触摸事件穿透装饰层，避免拦截点击
-            }
-            .shadow(color: Color.black.opacity(0.05), radius: 10, y: 4)
+            .shadow(color: Color.black.opacity(0.03), radius: 8, y: 2)
     }
 }
 
@@ -332,7 +326,14 @@ struct FavoritesRestaurantRow: View {
                 }
 
                 if let badgeText = configuration.badgeText, !badgeText.isEmpty {
-                    FavoritesPill(text: badgeText, color: configuration.badgeTint)
+                    HStack(spacing: 6) {
+                        FavoritesPill(text: badgeText, color: configuration.badgeTint)
+                        if let avgPrice = restaurant.avg_price, avgPrice > 0 {
+                            FavoritesPill(text: "人均¥\(avgPrice)", color: .secondary)
+                        }
+                    }
+                } else if let avgPrice = restaurant.avg_price, avgPrice > 0 {
+                    FavoritesPill(text: "人均¥\(avgPrice)", color: .secondary)
                 }
             }
 

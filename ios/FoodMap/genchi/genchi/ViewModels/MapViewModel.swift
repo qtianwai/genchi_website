@@ -55,14 +55,28 @@ enum MapGroupFilter: Hashable {
     case custom(String)
 }
 
-enum MapDistanceFilter: Int, CaseIterable, Identifiable {
-    case all = 0
-    case km1 = 1
-    case km3 = 3
-    case km5 = 5
-    case km10 = 10
+enum MapDistanceFilter: Hashable, Identifiable {
+    case all
+    case km1
+    case km3
+    case km5
+    case km10
+    case custom(Double)
 
-    var id: Int { rawValue }
+    static var allCases: [MapDistanceFilter] {
+        [.all, .km1, .km3, .km5, .km10]
+    }
+
+    var id: String {
+        switch self {
+        case .all: return "all"
+        case .km1: return "1"
+        case .km3: return "3"
+        case .km5: return "5"
+        case .km10: return "10"
+        case .custom(let value): return "custom-\(Int(value.rounded()))"
+        }
+    }
 
     var title: String {
         switch self {
@@ -71,6 +85,7 @@ enum MapDistanceFilter: Int, CaseIterable, Identifiable {
         case .km3: return "3km"
         case .km5: return "5km"
         case .km10: return "10km"
+        case .custom(let value): return "\(Int(value.rounded()))km"
         }
     }
 
@@ -81,7 +96,13 @@ enum MapDistanceFilter: Int, CaseIterable, Identifiable {
         case .km3: return 3
         case .km5: return 5
         case .km10: return 10
+        case .custom(let value): return value
         }
+    }
+
+    var isCustom: Bool {
+        if case .custom = self { return true }
+        return false
     }
 }
 
@@ -178,11 +199,12 @@ class MapViewModel: ObservableObject {
     // 是否是首次定位（首次定位时自动移动地图到用户位置）
     var isFirstLocationUpdate = true
 
-    // 缩放阈值（平衡档）+ 滞回防抖
-    private let nameShowEnterDelta: CLLocationDegrees = 0.06
-    private let nameShowExitDelta: CLLocationDegrees = 0.065
-    private let clusterEnterDelta: CLLocationDegrees = 0.11
-    private let clusterExitDelta: CLLocationDegrees = 0.105
+    // 缩放阈值（放宽名称显示范围）+ 滞回防抖
+    // 调大 clusterExit 让头像+名称更早出现，缩小 nameShowEnter 让名称跟随头像同步显示
+    private let nameShowEnterDelta: CLLocationDegrees = 0.12
+    private let nameShowExitDelta: CLLocationDegrees = 0.13
+    private let clusterEnterDelta: CLLocationDegrees = 0.18
+    private let clusterExitDelta: CLLocationDegrees = 0.17
     private let cameraThrottleInterval: TimeInterval = 0.12
 
     private var renderRegion: MKCoordinateRegion? = nil
@@ -253,17 +275,6 @@ class MapViewModel: ObservableObject {
             items = items.filter { item in
                 let point = CLLocation(latitude: item.coordinate.latitude, longitude: item.coordinate.longitude)
                 return point.distance(from: center) <= radius * 1000
-            }
-        }
-
-        // Search filter (联动筛选结果)
-        let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !keyword.isEmpty {
-            items = items.filter { item in
-                let inRestaurant = item.restaurant.name.localizedCaseInsensitiveContains(keyword)
-                let inAddress = item.restaurant.address?.localizedCaseInsensitiveContains(keyword) == true
-                let inAuthor = item.author?.name.localizedCaseInsensitiveContains(keyword) == true
-                return inRestaurant || inAddress || inAuthor
             }
         }
 
@@ -350,8 +361,9 @@ class MapViewModel: ObservableObject {
         zoomBucket == .clusters
     }
 
+    // 头像层级即显示店铺名称（不再需要放大到 names 层级）
     var shouldShowStoreName: Bool {
-        zoomBucket == .names
+        zoomBucket != .clusters
     }
 
     // MARK: - Camera
@@ -385,6 +397,16 @@ class MapViewModel: ObservableObject {
         mapCameraPosition = .region(
             MKCoordinateRegion(
                 center: item.coordinate,
+                span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
+            )
+        )
+    }
+
+    /// v10.0 新增：飞到指定坐标（解析完成后定位到店铺用）
+    func flyToCoordinate(_ coordinate: CLLocationCoordinate2D) {
+        mapCameraPosition = .region(
+            MKCoordinateRegion(
+                center: coordinate,
                 span: MKCoordinateSpan(latitudeDelta: 0.02, longitudeDelta: 0.02)
             )
         )

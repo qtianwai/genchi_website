@@ -646,3 +646,46 @@ insert into achievements (id, name, description, icon_name, category, condition_
   ('checkin_10',        '美食探索者',   '累计打卡 10 家店铺',               'mappin.circle',     'collection', 'checkin_count', 10),
   ('checkin_50',        '美食版图家',   '累计打卡 50 家店铺',               'map.fill',          'collection', 'checkin_count', 50)
 on conflict (id) do nothing;
+
+
+-- ─────────────────────────────────────────
+-- 21. 用户勘误表（v10.0 新增）
+-- 用户反馈店铺信息错误，勘误后店铺重新进入复核队列
+-- ─────────────────────────────────────────
+create table if not exists user_corrections (
+  id                uuid primary key default uuid_generate_v4(),
+  user_id           uuid not null,                          -- 提交勘误的用户
+  restaurant_id     uuid references restaurants(id),        -- 被勘误的店铺（地图卡片勘误时有值）
+  video_cache_id    uuid references video_parse_cache(id),  -- 关联的视频缓存记录（解析结果勘误时有值）
+  correction_type   text not null,                          -- 勘误类型：wrong_restaurant / wrong_address / closed / duplicate / other
+  correction_detail text,                                   -- 用户补充说明
+  status            text not null default 'pending',        -- pending / reviewed / resolved
+  reviewed_by       uuid,                                   -- 复核人
+  reviewed_at       timestamptz,                            -- 复核时间
+  review_note       text,                                   -- 复核备注
+  created_at        timestamptz default now()
+);
+
+create index if not exists idx_user_corrections_status on user_corrections(status);
+create index if not exists idx_user_corrections_restaurant on user_corrections(restaurant_id);
+create index if not exists idx_user_corrections_video_cache on user_corrections(video_cache_id);
+
+-- ─────────────────────────────────────────
+-- v10.10 饭团养成体系
+-- ─────────────────────────────────────────
+
+create table if not exists fantuan_status (
+    id                      uuid default gen_random_uuid() primary key,
+    user_id                 uuid not null,
+    satiety                 integer not null default 80,           -- 饱食度 0-100
+    intimacy                integer not null default 0,            -- 亲密度 0-∞
+    intimacy_level          integer not null default 1,            -- 亲密度等级 1-5
+    consecutive_login_days  integer not null default 0,            -- 连续登录天数
+    last_login_date         date,                                  -- 最后登录日期
+    last_pet_date           date,                                  -- 最后摸摸日期
+    created_at              timestamptz default now(),
+    updated_at              timestamptz default now(),
+    unique(user_id)
+);
+
+create index if not exists idx_fantuan_status_user on fantuan_status(user_id);

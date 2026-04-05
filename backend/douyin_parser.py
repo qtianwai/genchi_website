@@ -277,6 +277,22 @@ async def parse_douyin_link(url: str) -> dict:
     # 分享链接（share_url）
     share_url = aweme.get("share_url", "") or redirect_url
 
+    # 探测抖音自带 POI 地点信息（如果视频标记了地点，这是 100% 准确的店铺来源）
+    # JustOneAPI 返回的字段名可能是 poi_info、poi_biz 或其他，此处尝试多种
+    poi_info_raw = aweme.get("poi_info") or aweme.get("poi_biz") or aweme.get("poi_detail") or {}
+    poi_name = (
+        poi_info_raw.get("poi_name", "")
+        or poi_info_raw.get("name", "")
+        or poi_info_raw.get("poi_biz_name", "")
+    )
+    poi_address = poi_info_raw.get("address", "") or poi_info_raw.get("poi_address", "")
+    poi_info_result = None
+    if poi_name:
+        poi_info_result = {"poi_name": poi_name, "address": poi_address}
+        print(f"[抖音解析] 发现抖音 POI: {poi_name} ({poi_address})")
+    else:
+        print(f"[抖音解析] 未发现抖音 POI 字段")
+
     print(f"[抖音解析] 解析成功: video_id={video_id}, author={author_name}, sec_uid={author_sec_uid[:20] if author_sec_uid else ''}")
     print(f"[抖音解析] 扩展信息: 话题={hashtags}, 城市={city_name}, "
           f"博主点赞评论={len(author_liked_comments)}条, 热门评论={len(hot_comments)}条, 总评论={len(all_comments)}条")
@@ -306,6 +322,8 @@ async def parse_douyin_link(url: str) -> dict:
         "hot_search_keywords": hot_search_keywords,
         "aweme_type_tags": aweme.get("aweme_type_tags", ""),
         "share_url": share_url,
+        # 抖音 POI 地点信息（如果视频标记了地点）
+        "poi_info": poi_info_result,
         # 评论信息
         "author_liked_comments": author_liked_comments,
         "hot_comments": hot_comments,
@@ -628,155 +646,11 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
     }
 
 
-async def fetch_comment_replies(comment_id: str, author_uid: str = "") -> dict:
-    """
-    获取某条评论的回复列表（评论回复接口）
 
-    返回字段：
-    - replies: 回复列表 [{"text": "...", "digg_count": 0, "is_author": False}, ...]
-    - has_author_reply: 是否有博主回复
-    - author_reply_text: 博主回复内容（如果有）
-    """
-    result = await _aget(
-        "/api/douyin/get-video-sub-comment/v1",
-        {"commentId": comment_id, "page": 1},
-    )
-
-    if result.get("code") != 0:
-        print(f"[评论回复] 获取失败: {result.get('message')} (code={result.get('code')})")
-        return {"replies": [], "has_author_reply": False, "author_reply_text": ""}
-
-    raw_replies = (result.get("data") or {}).get("comments", []) or []
-    replies = []
-    has_author_reply = False
-    author_reply_text = ""
-
-    for r in raw_replies:
-        text = r.get("text", "")
-        if not text:
-            continue
-
-        reply_user_uid = str(r.get("user", {}).get("uid", ""))
-        is_author = (reply_user_uid == author_uid) if author_uid else False
-
-        replies.append({
-            "text": text,
-            "digg_count": r.get("digg_count", 0),
-            "is_author": is_author,
-        })
-
-        if is_author:
-            has_author_reply = True
-            author_reply_text = text
-
-    print(f"[评论回复] 获取到 {len(replies)} 条回复，博主回复={has_author_reply}")
-    return {
-        "replies": replies,
-        "has_author_reply": has_author_reply,
-        "author_reply_text": author_reply_text,
-    }
-
-
-def is_food_related_comment(comment_text: str) -> bool:
-    """
-    判断评论是否与美食店铺相关
-
-    策略：评论中包含以下关键词之一，认为与店铺相关：
-    - 店铺名相关：店、馆、家、坊、轩、阁、楼、居、苑、记、号
-    - 地点相关：哪里、在哪、地址、位置、路、街、区、市
-    - 询问相关：叫什么、什么店、店名、哪家
-    """
-    keywords = [
-        "店", "馆", "家", "坊", "轩", "阁", "楼", "居", "苑", "记", "号",
-        "哪里", "在哪", "地址", "位置", "路", "街", "区", "市",
-        "叫什么", "什么店", "店名", "哪家", "名字",
-    ]
-    return any(kw in comment_text for kw in keywords)
-
-
-async def poll_comment_replies_for_confidence(
-    hot_comments_raw: list[dict],
-    author_uid: str,
-    max_polls: int = 2,
-) -> dict:
-    """
-    轮询热门评论的回复，直到找到博主确认或置信度提升的信息
-
-    策略：
-    1. 只轮询与美食店铺相关的热门评论（通过关键词过滤）
-    2. 优先轮询点赞数高的评论
-    3. 如果找到博主回复且内容与店铺相关，立即返回
-    4. 最多轮询 max_polls 次（默认 2 次），控制成本
-
-    返回：
-    - polled_replies: 所有轮询到的回复 [{"comment_text": "...", "replies": [...]}]
-    - has_author_confirmation: 是否找到博主确认
-    - author_confirmation_text: 博主确认内容
-    - polls_used: 实际轮询次数
-    """
-    polled_replies = []
-    has_author_confirmation = False
-    author_confirmation_text = ""
-    polls_used = 0
-
-    # 过滤出与美食店铺相关的热门评论
-    food_related_comments = [
-        c for c in hot_comments_raw
-        if is_food_related_comment(c.get("text", ""))
-    ]
-
-    if not food_related_comments:
-        print("[评论回复轮询] 无美食相关评论，跳过轮询")
-        return {
-            "polled_replies": [],
-            "has_author_confirmation": False,
-            "author_confirmation_text": "",
-            "polls_used": 0,
-        }
-
-    print(f"[评论回复轮询] 找到 {len(food_related_comments)} 条美食相关评论，开始轮询（最多 {max_polls} 次）")
-
-    for comment in food_related_comments[:max_polls]:
-        cid = comment.get("cid", "")
-        comment_text = comment.get("text", "")
-
-        if not cid:
-            continue
-
-        # 调用评论回复接口
-        reply_data = await fetch_comment_replies(cid, author_uid)
-        polls_used += 1
-
-        polled_replies.append({
-            "comment_text": comment_text,
-            "replies": reply_data.get("replies", []),
-        })
-
-        # 检查是否有博主回复
-        if reply_data.get("has_author_reply"):
-            author_reply = reply_data.get("author_reply_text", "")
-            # 博主回复内容与店铺相关（包含店名关键词或肯定表达）
-            if is_food_related_comment(author_reply) or any(
-                kw in author_reply for kw in ["是的", "对", "没错", "就是", "嗯", "对的"]
-            ):
-                has_author_confirmation = True
-                author_confirmation_text = author_reply
-                print(f"[评论回复轮询] 找到博主确认: {author_reply[:50]}")
-                break  # 找到博主确认，立即停止轮询
-
-        # 检查回复中是否有高赞确认（网友确认）
-        high_digg_replies = [
-            r for r in reply_data.get("replies", [])
-            if r.get("digg_count", 0) >= 10
-        ]
-        if high_digg_replies:
-            print(f"[评论回复轮询] 找到 {len(high_digg_replies)} 条高赞回复")
-
-    print(f"[评论回复轮询] 完成，轮询次数={polls_used}，博主确认={has_author_confirmation}")
-
-    return {
-        "polled_replies": polled_replies,
-        "has_author_confirmation": has_author_confirmation,
-        "author_confirmation_text": author_confirmation_text,
-        "polls_used": polls_used,
-    }
+# ─────────────────────────────────────────
+# 以下函数已在 v10.0 算法优化中移除：
+# - fetch_comment_replies（评论回复接口，成本高帮助小）
+# - is_food_related_comment（评论关键词过滤）
+# - poll_comment_replies_for_confidence（回复轮询）
+# 替代方案：规则预提取（rule_extractor.py）+ AI 优化 prompt
+# ─────────────────────────────────────────
