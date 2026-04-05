@@ -4,6 +4,7 @@
 import os
 import re
 import math
+import asyncio
 import httpx
 from dotenv import load_dotenv
 
@@ -15,9 +16,12 @@ AMAP_SEARCH_URL = "https://restapi.amap.com/v3/place/text"
 
 def _name_similarity(query: str, result: str) -> float:
     """
-    计算 AI 提取的店名与高德返回店名的相似度（0~1）。
-    策略：检查 query 的核心词是否出现在 result 中。
-    用于过滤高德返回的不相关结果（如搜"最山城"却返回"山城烤肉"）。
+    计算搜索词与高德返回店名的相似度（0~1）。
+    策略：
+    1. 完全包含 → 1.0
+    2. 去掉分店信息后包含 → 0.9
+    3. 搜索词可拆分为多个片段时，计算片段命中率（解决"马场老火锅金桥"排序问题）
+    4. 兜底：字符级重叠率
     """
     query = query.strip().lower()
     result = result.strip().lower()
@@ -34,6 +38,27 @@ def _name_similarity(query: str, result: str) -> float:
     result_core = re.sub(r'[（(][^）)]*[）)]', '', result).strip()
     if query_core and (query_core in result_core or result_core in query_core):
         return 0.9
+
+    # 片段命中率：将搜索词拆分为连续片段，检查每个片段是否出现在结果中
+    # 例如搜"马场老火锅金桥"，拆分为可能的子片段，检查"金桥"是否在结果中
+    # 这样包含"金桥"的结果会比不包含的得分更高
+    result_full = result_core or result
+    query_full = query_core or query
+    if len(query_full) >= 4:
+        # 尝试用滑动窗口找出搜索词中所有长度>=2的子串在结果中的命中情况
+        # 简化方案：把搜索词按2字符窗口切片，计算命中率
+        bigrams = [query_full[i:i+2] for i in range(len(query_full) - 1)]
+        if bigrams:
+            hits = sum(1 for bg in bigrams if bg in result_full)
+            bigram_score = hits / len(bigrams)
+            # bigram 命中率映射到 0.3~0.85 区间（避免与包含匹配的 0.9/1.0 冲突）
+            score = 0.3 + bigram_score * 0.55
+            # 同时计算字符重叠率作为补充
+            query_chars = set(query_full)
+            result_chars = set(result_full)
+            char_overlap = len(query_chars & result_chars) / len(query_chars) if query_chars else 0
+            # 取两者较高值
+            return max(score, char_overlap)
 
     # 字符级重叠率（用于处理简称/全称差异）
     query_chars = set(query_core or query)
@@ -76,7 +101,7 @@ async def _search_amap(
                 return []
             return data.get("pois", []) or []
         except Exception as e:
-            print(f"[高德搜索] 请求失败: {e}")
+            print(f"[高德搜索] 请求失败: keywords={keywords}, city={city}, page={page}, error={type(e).__name__}: {e}")
             return []
 
 
@@ -387,18 +412,50 @@ async def search_restaurant_for_review(
     - 不做相似度过滤，让管理员自行判断
     - 每条结果包含分类信息
     """
+    # --- 构建多关键词搜索策略 ---
+    # 1. 原始名称
+    # 2. 去掉括号分店信息的核心名称
     core_name = re.sub(r'[（(][^）)]*[）)]', '', name).strip()
-    keyword_candidates = [name.strip()]
-    if core_name and core_name not in keyword_candidates:
-        keyword_candidates.append(core_name)
+    primary_keywords = [name.strip()]
+    if core_name and core_name not in primary_keywords:
+        primary_keywords.append(core_name)
 
     deduped_pois: dict[str, dict] = {}
-    for keyword in keyword_candidates:
+    for keyword in primary_keywords:
         pois = await _search_amap_pages(keyword, city, offset=20, max_pages=3)
         for poi in pois:
             poi_id = poi.get("id", "")
             if poi_id and poi_id not in deduped_pois:
                 deduped_pois[poi_id] = poi
+
+    # 3. 补充搜索：如果初始结果太少（<5条），可能是用户输入不完整
+    #    例如"马场老火"实际想搜"马场老火锅"，补充常见餐饮后缀再搜
+    #    只在结果不足时触发，避免浪费 API 调用
+    #    要求搜索词 ≥3 字符（2字词如"马厂"加后缀无意义）
+    #    并发执行所有后缀搜索，避免串行导致总耗时过长
+    _COMMON_SUFFIXES = ["锅", "店", "馆", "堂", "坊"]
+    search_term = core_name or name.strip()
+    if len(deduped_pois) < 5 and 3 <= len(search_term) <= 6:
+        expand_keywords = [
+            search_term + suffix
+            for suffix in _COMMON_SUFFIXES
+            if search_term + suffix not in primary_keywords
+        ]
+        if expand_keywords:
+            # 并发搜索所有后缀关键词（每个只拉1页，控制总请求量）
+            tasks = [
+                _search_amap_pages(kw, city, offset=20, max_pages=1)
+                for kw in expand_keywords
+            ]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            for result in results:
+                if isinstance(result, Exception):
+                    print(f"[高德补充搜索] 并发请求异常: {result}")
+                    continue
+                for poi in result:
+                    poi_id = poi.get("id", "")
+                    if poi_id and poi_id not in deduped_pois:
+                        deduped_pois[poi_id] = poi
 
     candidates = []
     for poi in deduped_pois.values():
