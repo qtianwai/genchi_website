@@ -1081,22 +1081,10 @@ def get_map_restaurants_for_user(user_id: str) -> dict:
             continue
         item["is_avoided"] = rid in avoided_ids
         item["is_favorited"] = rid in favorited_ids
-            item["group_ids"] = group_map.get(rid, [])
-            author_data.append(item)
-
-    # 用户自建推荐
-    raw_user_data = get_user_created_restaurants(user_id)
-    user_data = []
-    for item in raw_user_data:
-        rid = item.get("restaurant_id")
-        if rid in deleted_ids:
-            continue
-        item["is_avoided"] = rid in avoided_ids
-        item["is_favorited"] = rid in favorited_ids
         item["group_ids"] = group_map.get(rid, [])
         user_data.append(item)
 
-    # v7.1 新增：批量聚合全平台收藏/避雷计数
+    # 批量聚合全平台收藏/避雷计数
     # 收集所有 restaurant_id，两次 in_ 查询避免 N+1
     all_restaurant_ids = (
         [r["restaurant_id"] for r in author_data if r.get("restaurant_id")]
