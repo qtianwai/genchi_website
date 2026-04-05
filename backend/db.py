@@ -1747,6 +1747,25 @@ def get_restaurant_recommend_count(restaurant_id: str) -> int:
     return result.count or 0
 
 
+def get_restaurant_authors(restaurant_id: str) -> list[dict]:
+    """获取推荐某店铺的所有博主信息（用于抽卡结果页展示）"""
+    result = (
+        supabase.table("author_restaurants")
+        .select("authors(id, name, avatar_url)")
+        .eq("restaurant_id", restaurant_id)
+        .execute()
+    )
+    # 去重（同一博主可能有多个视频推荐同一店铺）
+    seen = set()
+    authors = []
+    for row in (result.data or []):
+        a = row.get("authors")
+        if a and a.get("id") not in seen:
+            seen.add(a["id"])
+            authors.append(a)
+    return authors
+
+
 def get_favorite_notes_for_restaurant(restaurant_id: str, limit: int = 10) -> list[str]:
     """获取某店铺的所有收藏理由（用于 AI 摘要）"""
     result = (

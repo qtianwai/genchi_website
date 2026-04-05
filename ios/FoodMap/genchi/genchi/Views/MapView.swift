@@ -58,6 +58,12 @@ struct MapView: View {
     @State private var checkinRestaurantId: String = ""
     @State private var checkinRestaurantName: String = ""
 
+    // v8.0 抽卡导航和视频
+    @State private var showGachaNavSheet = false
+    @State private var gachaNavCard: GachaCard? = nil
+    @State private var showGachaVideos = false
+    @State private var gachaVideoRestaurantId: String = ""
+
     /// 跨文件构造入口（如 MainTabView）。
     /// 说明：结构体内存在 `private` 存储属性时，编译器生成的成员初始化器为 `private`，
     /// 其他源码文件无法调用 `MapView(refreshTrigger:)`，故提供显式 internal 初始化器。
@@ -166,7 +172,7 @@ struct MapView: View {
             }
             // v8.0 饭团：获取天气
             if let loc = locationManager.userLocation {
-                await fanTuanVM.fetchWeather(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
+                await fanTuanVM.fetchWeather(lat: loc.latitude, lng: loc.longitude)
             }
         }
         .onAppear {
@@ -247,20 +253,27 @@ struct MapView: View {
         .fullScreenCover(isPresented: $showGachaView) {
             GachaView(
                 fanTuanVM: fanTuanVM,
-                latitude: locationManager.userLocation?.coordinate.latitude ?? 39.9,
-                longitude: locationManager.userLocation?.coordinate.longitude ?? 116.4,
+                latitude: locationManager.userLocation?.latitude ?? 39.9,
+                longitude: locationManager.userLocation?.longitude ?? 116.4,
                 onNavigate: { restaurantId in
+                    // 10.8 从抽卡结果中找到卡片，用坐标导航
+                    if let card = viewModel.selectedCard ?? nil {
+                        gachaNavCard = card
+                    }
                     showGachaView = false
-                    // TODO: 跳转导航
+                    showGachaNavSheet = true
                 },
                 onFavorite: { restaurantId in
                     Task {
-                        guard let userId = authState.userId else { return }
-                        try? await APIService.shared.addFavorite(userId: userId, restaurantId: restaurantId)
+                        guard !authState.userId.isEmpty else { return }
+                        try? await APIService.shared.addFavorite(userId: authState.userId, restaurantId: restaurantId)
                     }
                 },
                 onViewVideos: { restaurantId in
-                    // TODO: 跳转视频列表
+                    // 10.1 跳转探店视频列表
+                    gachaVideoRestaurantId = restaurantId
+                    showGachaView = false
+                    showGachaVideos = true
                 },
                 onCheckin: { restaurantId in
                     checkinRestaurantId = restaurantId
@@ -273,13 +286,13 @@ struct MapView: View {
         // v8.0 问答推荐全屏页
         .fullScreenCover(isPresented: $showQAView) {
             QARecommendView(
-                latitude: locationManager.userLocation?.coordinate.latitude ?? 39.9,
-                longitude: locationManager.userLocation?.coordinate.longitude ?? 116.4,
+                latitude: locationManager.userLocation?.latitude ?? 39.9,
+                longitude: locationManager.userLocation?.longitude ?? 116.4,
                 onNavigate: { _ in showQAView = false },
                 onFavorite: { restaurantId in
                     Task {
-                        guard let userId = authState.userId else { return }
-                        try? await APIService.shared.addFavorite(userId: userId, restaurantId: restaurantId)
+                        guard !authState.userId.isEmpty else { return }
+                        try? await APIService.shared.addFavorite(userId: authState.userId, restaurantId: restaurantId)
                     }
                 },
                 onCheckin: { restaurantId in
@@ -309,6 +322,37 @@ struct MapView: View {
                 Button("百度地图") { openBaidu(for: item) }
             }
             Button("取消", role: .cancel) {}
+        }
+        // v8.0 抽卡结果导航（10.8）
+        .confirmationDialog("选择导航应用", isPresented: $showGachaNavSheet, titleVisibility: .visible) {
+            if let card = gachaNavCard, let lat = card.latitude, let lng = card.longitude {
+                Button("高德地图") {
+                    let name = card.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? card.name
+                    if let url = URL(string: "iosamap://navi?sourceApplication=FoodMap&backScheme=foodmap&lat=\(lat)&lon=\(lng)&dev=0&style=2&poiname=\(name)"),
+                       UIApplication.shared.canOpenURL(url) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+                Button("Apple 地图") {
+                    let coordinate = CLLocationCoordinate2D(latitude: lat, longitude: lng)
+                    let placeMark = MKPlacemark(coordinate: coordinate)
+                    let mapItem = MKMapItem(placemark: placeMark)
+                    mapItem.name = card.name
+                    mapItem.openInMaps(launchOptions: [MKLaunchOptionsDirectionsModeKey: MKLaunchOptionsDirectionsModeDriving])
+                }
+                Button("百度地图") {
+                    let name = card.name.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? card.name
+                    if let url = URL(string: "baidumap://map/direction?destination=latlng:\(lat),\(lng)|name:\(name)&mode=driving&coord_type=gcj02"),
+                       UIApplication.shared.canOpenURL(url) {
+                        UIApplication.shared.open(url)
+                    }
+                }
+            }
+            Button("取消", role: .cancel) {}
+        }
+        // v8.0 抽卡探店视频列表（10.1）
+        .sheet(isPresented: $showGachaVideos) {
+            GachaVideoListSheet(restaurantId: gachaVideoRestaurantId)
         }
         .alert("检测到抖音链接", isPresented: $showClipboardPrompt) {
             Button("确认添加") {

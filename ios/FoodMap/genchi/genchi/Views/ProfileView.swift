@@ -19,6 +19,11 @@ struct ProfileView: View {
     @State private var showMapPrivacyError: String? = nil
     @State private var showShareSheet = false
 
+    // v8.0 成就展示（10.5）
+    @State private var recentAchievements: [Achievement] = []
+    @State private var unlockedCount: Int = 0
+    @State private var totalCount: Int = 0
+
     var body: some View {
         NavigationView {
             List {
@@ -83,6 +88,35 @@ struct ProfileView: View {
                         Text(err)
                             .font(.caption)
                             .foregroundColor(.red)
+                    }
+
+                    // v8.0 成就徽章展示（10.5）
+                    if !recentAchievements.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack {
+                                Text("成就")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                Text("\(unlockedCount)/\(totalCount)")
+                                    .font(.caption2)
+                                    .foregroundColor(.orange)
+                            }
+                            HStack(spacing: 8) {
+                                ForEach(recentAchievements.prefix(4), id: \.id) { ach in
+                                    VStack(spacing: 2) {
+                                        Image(systemName: ach.icon_name ?? "trophy")
+                                            .font(.body)
+                                            .foregroundColor(.orange)
+                                        Text(ach.name)
+                                            .font(.system(size: 9))
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                    .frame(maxWidth: .infinity)
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -167,6 +201,7 @@ struct ProfileView: View {
             .onAppear {
                 Task {
                     await loadMapPrivacy()
+                    await loadAchievements()
                 }
             }
         }
@@ -226,6 +261,26 @@ struct ProfileView: View {
         } catch {
             showMapPrivacyError = "更新失败，请重试"
             print("[地图隐私] 更新失败: \(error)")
+        }
+    }
+
+    // v8.0 加载成就数据（10.5）
+    private func loadAchievements() async {
+        guard !authState.userId.isEmpty else { return }
+        do {
+            async let allTask = APIService.shared.getAllAchievements()
+            async let userTask = APIService.shared.getUserAchievements(userId: authState.userId)
+            let (all, user) = try await (allTask, userTask)
+            let unlockedIds = Set(user.map { $0.achievement_id })
+            // 取最近解锁的成就详情
+            let unlocked = all.filter { unlockedIds.contains($0.id) }
+            await MainActor.run {
+                totalCount = all.count
+                unlockedCount = unlocked.count
+                recentAchievements = Array(unlocked.prefix(4))
+            }
+        } catch {
+            print("[成就] 加载失败: \(error)")
         }
     }
 }

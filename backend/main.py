@@ -62,6 +62,7 @@ from db import (
     log_user_behavior, get_recent_user_behaviors, get_user_gacha_streak,
     get_platform_popular_restaurants, get_user_all_restaurants,
     get_restaurant_recommend_count, get_favorite_notes_for_restaurant,
+    get_restaurant_authors,
 )
 
 load_dotenv()
@@ -2498,10 +2499,13 @@ async def api_gacha_draw(req: GachaDrawRequest):
             "category": restaurant.get("category", ""),
             "avg_price": restaurant.get("avg_price"),
             "photo_url": restaurant.get("photo_url"),
+            "latitude": restaurant.get("latitude"),
+            "longitude": restaurant.get("longitude"),
             "distance_km": distance_km,
             "rarity": rarity,
             "recommend_reason": pick.get("reason", ""),
             "source": restaurant.get("source", "unknown"),
+            "authors": get_restaurant_authors(rid) if restaurant.get("source") in ("author", "subscription") else [],
         }
         cards.append(card)
 

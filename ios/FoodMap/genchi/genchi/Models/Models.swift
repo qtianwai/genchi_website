@@ -470,10 +470,13 @@ struct GachaCard: Identifiable, Codable {
     let category: String?
     let avg_price: Int?
     let photo_url: String?
+    let latitude: Double?
+    let longitude: Double?
     let distance_km: Double?
     let rarity: CardRarity
     let recommend_reason: String
     let source: String          // author / user_created / subscription / platform_popular / amap_nearby
+    let authors: [GachaAuthor]? // 推荐该店铺的博主列表
 
     var id: String { restaurant_id }
 
@@ -497,6 +500,13 @@ struct GachaCard: Identifiable, Codable {
         default: return "推荐"
         }
     }
+}
+
+// 抽卡卡片中的博主简要信息
+struct GachaAuthor: Identifiable, Codable {
+    let id: String
+    let name: String
+    let avatar_url: String?
 }
 
 // 抽卡响应

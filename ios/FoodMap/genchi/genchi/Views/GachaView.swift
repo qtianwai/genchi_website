@@ -17,6 +17,9 @@ struct GachaView: View {
 
     @Environment(\.dismiss) private var dismiss
 
+    // 10.2 收藏留言 AI 摘要
+    @State private var reviewsSummary: String? = nil
+
     var body: some View {
         ZStack {
             // 背景
@@ -38,6 +41,17 @@ struct GachaView: View {
                 case .result:
                     if let card = viewModel.selectedCard {
                         resultView(card: card)
+                            .task {
+                                // 10.2 加载收藏留言 AI 摘要
+                                do {
+                                    let resp = try await APIService.shared.getReviewsSummary(restaurantId: card.restaurant_id)
+                                    if resp.note_count > 0 {
+                                        reviewsSummary = resp.summary
+                                    }
+                                } catch {
+                                    print("[抽卡] 加载摘要失败: \(error)")
+                                }
+                            }
                     }
                 }
             }
@@ -57,9 +71,9 @@ struct GachaView: View {
             }
         }
         .task {
-            guard let userId = authState.userId else { return }
-            await viewModel.fetchRemaining(userId: userId)
-            await viewModel.draw(userId: userId, lat: latitude, lng: longitude)
+            guard !authState.userId.isEmpty else { return }
+            await viewModel.fetchRemaining(userId: authState.userId)
+            await viewModel.draw(userId: authState.userId, lat: latitude, lng: longitude)
         }
         // 连续换一批后插入提问
         .sheet(isPresented: $viewModel.showInsertedQuestion) {
@@ -67,8 +81,8 @@ struct GachaView: View {
                 viewModel.insertedQuestionAnswers = answers
                 viewModel.showInsertedQuestion = false
                 Task {
-                    guard let userId = authState.userId else { return }
-                    await viewModel.draw(userId: userId, lat: latitude, lng: longitude)
+                    guard !authState.userId.isEmpty else { return }
+                    await viewModel.draw(userId: authState.userId, lat: latitude, lng: longitude)
                 }
             }
         }
@@ -130,8 +144,8 @@ struct GachaView: View {
 
                 Button("重试") {
                     Task {
-                        guard let userId = authState.userId else { return }
-                        await viewModel.draw(userId: userId, lat: latitude, lng: longitude)
+                        guard !authState.userId.isEmpty else { return }
+                        await viewModel.draw(userId: authState.userId, lat: latitude, lng: longitude)
                     }
                 }
                 .buttonStyle(.bordered)
@@ -166,8 +180,8 @@ struct GachaView: View {
                     .onTapGesture {
                         guard viewModel.phase == .cardsFaceDown else { return }
                         Task {
-                            guard let userId = authState.userId else { return }
-                            await viewModel.selectCard(at: index, userId: userId)
+                            guard !authState.userId.isEmpty else { return }
+                            await viewModel.selectCard(at: index, userId: authState.userId)
                             fanTuanVM.startEating()
                         }
                     }
@@ -209,6 +223,48 @@ struct GachaView: View {
                         .font(.subheadline)
                         .foregroundColor(.orange)
                         .italic()
+
+                    // 关联博主（10.1）
+                    if let authors = card.authors, !authors.isEmpty {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("推荐达人")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                            HStack(spacing: 8) {
+                                ForEach(authors) { author in
+                                    HStack(spacing: 4) {
+                                        if let avatarUrl = author.avatar_url, !avatarUrl.isEmpty {
+                                            AsyncImage(url: URL(string: avatarUrl)) { image in
+                                                image.resizable().aspectRatio(contentMode: .fill)
+                                            } placeholder: {
+                                                Circle().fill(Color.gray.opacity(0.2))
+                                            }
+                                            .frame(width: 20, height: 20)
+                                            .clipShape(Circle())
+                                        }
+                                        Text(author.name)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+
+                    // 收藏留言 AI 摘要（10.2）
+                    if let summary = reviewsSummary, !summary.isEmpty {
+                        HStack(spacing: 6) {
+                            Image(systemName: "quote.opening")
+                                .font(.caption2)
+                                .foregroundColor(.orange.opacity(0.6))
+                            Text(summary)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .italic()
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
 
                     // 信息标签
                     HStack(spacing: 12) {
@@ -266,8 +322,8 @@ struct GachaView: View {
                     // 再抽一次
                     Button(action: {
                         Task {
-                            guard let userId = authState.userId else { return }
-                            await viewModel.drawAgain(userId: userId, lat: latitude, lng: longitude)
+                            guard !authState.userId.isEmpty else { return }
+                            await viewModel.drawAgain(userId: authState.userId, lat: latitude, lng: longitude)
                         }
                     }) {
                         HStack {
@@ -552,5 +608,89 @@ struct InsertedQuestionSheet: View {
         .padding(.horizontal, 20)
         .presentationDetents([.height(260)])
         .presentationDragIndicator(.visible)
+    }
+}
+
+// MARK: - 抽卡探店视频列表（10.1）
+
+struct GachaVideoListSheet: View {
+    let restaurantId: String
+    @State private var videos: [RestaurantVideo] = []
+    @State private var isLoading = true
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            Group {
+                if isLoading {
+                    ProgressView()
+                } else if videos.isEmpty {
+                    VStack(spacing: 12) {
+                        Image(systemName: "play.slash")
+                            .font(.largeTitle)
+                            .foregroundColor(.secondary)
+                        Text("暂无探店视频")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                } else {
+                    List(videos) { video in
+                        Button(action: {
+                            if let url = video.douyinURL {
+                                UIApplication.shared.open(url)
+                            }
+                        }) {
+                            HStack(spacing: 12) {
+                                // 博主头像
+                                if let avatarUrl = video.author_avatar_url, !avatarUrl.isEmpty {
+                                    AsyncImage(url: URL(string: avatarUrl)) { image in
+                                        image.resizable().aspectRatio(contentMode: .fill)
+                                    } placeholder: {
+                                        Circle().fill(Color.gray.opacity(0.2))
+                                    }
+                                    .frame(width: 36, height: 36)
+                                    .clipShape(Circle())
+                                } else {
+                                    Circle()
+                                        .fill(Color.gray.opacity(0.2))
+                                        .frame(width: 36, height: 36)
+                                }
+
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(video.author_name)
+                                        .font(.subheadline.weight(.medium))
+                                    Text("点击查看探店视频")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+
+                                Spacer()
+
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title3)
+                                    .foregroundColor(.orange)
+                            }
+                            .padding(.vertical, 4)
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("探店视频")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .task {
+                do {
+                    videos = try await APIService.shared.getRestaurantVideos(restaurantId: restaurantId)
+                } catch {
+                    print("[视频列表] 加载失败: \(error)")
+                }
+                isLoading = false
+            }
+        }
     }
 }
