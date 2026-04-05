@@ -37,6 +37,7 @@ from db import (
     # 新增：后台人工复核相关（v3.0）
     is_admin_user, get_review_list, get_video_cache_by_cache_id,
     admin_confirm_correct, admin_confirm_empty, admin_correct_restaurant, admin_skip,
+    admin_correct_restaurants_multi,  # v9.0 新增：多店铺修正
     # 新增：用户自建推荐店铺相关（v4.0）
     get_user_created_restaurants, add_user_restaurant, remove_user_restaurant,
     # 新增：用户 profile 相关
@@ -1700,6 +1701,20 @@ class AdminCorrectRequest(BaseModel):
 class AdminSkipRequest(BaseModel):
     cache_id: str
 
+# v9.0 新增：多店铺修正请求模型
+class AdminCorrectMultiRestaurantItem(BaseModel):
+    amap_id: str
+    restaurant_name: str
+    address: str
+    city: str
+    latitude: float
+    longitude: float
+    category: str
+
+class AdminCorrectMultiRequest(BaseModel):
+    cache_id: str
+    restaurants: list[AdminCorrectMultiRestaurantItem]  # 至少 1 家店铺
+
 
 async def require_admin(x_user_id: str = Header(None, alias="X-User-ID")) -> str:
     """
@@ -1807,6 +1822,41 @@ async def review_correct(
     if not success:
         raise HTTPException(status_code=404, detail="未找到该复核记录")
     return {"status": "ok", "message": "店铺已修正入库"}
+
+
+@app.post("/api/admin/review/correct-multi")
+async def review_correct_multi(
+    req: AdminCorrectMultiRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """
+    多店铺人工修正：一个视频关联多家店铺。
+    - 逐个 upsert restaurants（verified=true）
+    - 删除旧 author_restaurants 关联，插入新关联
+    - video_parse_cache：restaurant_id 存第一个，corrected_restaurants 存完整 JSON
+    """
+    if not req.restaurants:
+        raise HTTPException(status_code=400, detail="至少需要一家店铺")
+    restaurants_data = [
+        {
+            "amap_id": r.amap_id,
+            "name": r.restaurant_name,
+            "address": r.address,
+            "city": r.city,
+            "latitude": r.latitude,
+            "longitude": r.longitude,
+            "category": r.category,
+        }
+        for r in req.restaurants
+    ]
+    success = admin_correct_restaurants_multi(
+        cache_id=req.cache_id,
+        admin_user_id=admin_user_id,
+        restaurants=restaurants_data,
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="未找到该复核记录")
+    return {"status": "ok", "message": f"已修正入库 {len(req.restaurants)} 家店铺"}
 
 
 @app.post("/api/admin/review/skip")

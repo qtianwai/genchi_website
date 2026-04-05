@@ -184,6 +184,20 @@ struct ReviewRestaurantInfo: Codable {
     let verified: Bool?
 }
 
+// 多店铺修正记录（对应 video_parse_cache.corrected_restaurants JSON 数组中的每个元素）
+struct CorrectedRestaurant: Codable, Identifiable {
+    let restaurant_id: String
+    let amap_id: String
+    let name: String
+    let address: String
+    let city: String
+    let lat: Double
+    let lng: Double
+    let category: String
+
+    var id: String { restaurant_id }
+}
+
 // 单条待复核记录
 struct ReviewItem: Identifiable, Codable {
     let id: String              // video_parse_cache.id
@@ -209,6 +223,8 @@ struct ReviewItem: Identifiable, Codable {
     let reviewed_at: String?    // 复核时间（已复核记录有值）
     // 关联数据
     let authors: ReviewAuthorInfo?
+    // v9.0 新增：多店铺修正记录（corrected_restaurants JSON 数组）
+    let corrected_restaurants: [CorrectedRestaurant]?
 
     // P0：AI 未识别（restaurant_id 为 nil）
     var isP0: Bool { restaurant_id == nil }

@@ -2,6 +2,7 @@
 # 负责所有数据库的读写操作：博主、店铺、用户关注关系等
 
 import os
+import json
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -534,6 +535,7 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
         "id, video_id, video_url, author_id, restaurant_id, status, review_status, "
         "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
         "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
+        "corrected_restaurants, "  # v9.0 新增：多店铺修正 JSON 数组
         "video_extra, "  # v7.0 新增：视频扩展信息 JSON
         "reviewed_at, created_at, authors(name, avatar_url)"
     )
@@ -736,6 +738,102 @@ def admin_correct_restaurant(
         "restaurant_lng": longitude,
         "restaurant_amap_id": amap_id,
         "restaurant_category": category,
+        "review_status": "corrected",
+        "reviewed_by": admin_user_id,
+        "reviewed_at": "now()",
+        "updated_at": "now()",
+    }).eq("id", cache_id).execute()
+
+    return True
+
+
+def admin_correct_restaurants_multi(
+    cache_id: str,
+    admin_user_id: str,
+    restaurants: list[dict],
+) -> bool:
+    """
+    多店铺人工修正：一个视频关联多家店铺。
+    restaurants 列表中每个元素包含：amap_id, name, address, city, latitude, longitude, category
+
+    处理逻辑：
+    1. 遍历 restaurants，逐个 upsert restaurants 表（amap_id 唯一键，verified=true）
+    2. 删除该视频的所有旧 author_restaurants 关联
+    3. 为每个店铺插入新的 author_restaurants 关联
+    4. 更新 video_parse_cache：restaurant_id 存第一个店铺，corrected_restaurants 存完整 JSON
+    """
+    if not restaurants:
+        return False
+
+    # 获取缓存记录
+    cache = get_video_cache_by_cache_id(cache_id)
+    if not cache:
+        return False
+
+    author_id = cache.get("author_id")
+    video_id = cache.get("video_id", "")
+
+    # 逐个 upsert restaurants 表，收集 restaurant_id
+    restaurant_ids = []
+    corrected_list = []
+    for r in restaurants:
+        r_result = supabase.table("restaurants").upsert({
+            "name": r["name"],
+            "address": r["address"],
+            "city": r["city"],
+            "latitude": r["latitude"],
+            "longitude": r["longitude"],
+            "amap_id": r["amap_id"],
+            "category": r["category"],
+            "verified": True,
+            "verified_at": "now()",
+        }, on_conflict="amap_id").execute()
+
+        if not r_result.data:
+            return False
+
+        rid = r_result.data[0]["id"]
+        restaurant_ids.append(rid)
+        corrected_list.append({
+            "restaurant_id": rid,
+            "amap_id": r["amap_id"],
+            "name": r["name"],
+            "address": r["address"],
+            "city": r["city"],
+            "lat": r["latitude"],
+            "lng": r["longitude"],
+            "category": r["category"],
+        })
+
+    # 删除该视频的所有旧 author_restaurants 关联
+    if author_id and video_id:
+        supabase.table("author_restaurants").delete().eq(
+            "author_id", author_id
+        ).eq("video_id", video_id).execute()
+
+    # 为每个店铺插入新的 author_restaurants 关联
+    if author_id:
+        for rid in restaurant_ids:
+            supabase.table("author_restaurants").insert({
+                "author_id": author_id,
+                "restaurant_id": rid,
+                "video_id": video_id,
+            }).execute()
+
+    # 更新 video_parse_cache：第一个店铺作为主显示，corrected_restaurants 存完整数组
+    first = restaurants[0]
+    first_id = restaurant_ids[0]
+    supabase.table("video_parse_cache").update({
+        "status": "completed",
+        "restaurant_id": first_id,
+        "restaurant_name": first["name"],
+        "restaurant_address": first["address"],
+        "restaurant_city": first["city"],
+        "restaurant_lat": first["latitude"],
+        "restaurant_lng": first["longitude"],
+        "restaurant_amap_id": first["amap_id"],
+        "restaurant_category": first["category"],
+        "corrected_restaurants": json.dumps(corrected_list),
         "review_status": "corrected",
         "reviewed_by": admin_user_id,
         "reviewed_at": "now()",

@@ -2373,3 +2373,54 @@ SwiftUI
 - 关键决策：第一版仅做到店场景；外部推荐池用高德 POI；AI 用 qwen-plus 实时推理；四档稀有度纯随机无保底；每日 15 次限制；卡通形象 MVP 用 Emoji+SF Symbol
 - 技术栈：SwiftUI、FastAPI、qwen-plus、和风天气 API、高德地图周边搜索、Supabase PostgreSQL
 - 修改的文件：`backend/main.py`、`backend/db.py`、`backend/amap_service.py`、`backend/supabase_schema.sql`、`backend/.env`、新建 `backend/weather_service.py`、`backend/migrations/v8.0_gacha_system.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Views/MapView.swift`、`ios/.../Views/ProfileView.swift`、新建 `ios/.../ViewModels/FanTuanViewModel.swift`、`GachaViewModel.swift`、`QARecommendViewModel.swift`、`ios/.../Views/FanTuanView.swift`、`GachaView.swift`、`QARecommendView.swift`、`CheckinSheet.swift`、`AchievementsView.swift`、`需求文档&技术方案/AI美食决策助手实施计划.md`
+
+### 会话记录 — 2026-04-05 修复 Xcode 编译错误
+
+- 目的：修复 `authState.userId`（非 Optional 的 String）被 `guard let` 解包导致的编译错误
+- 任务：将所有 `guard let userId = authState.userId else { return }` 改为 `guard !authState.userId.isEmpty else { return }`，并将后续引用从局部变量 `userId` 改为 `authState.userId`
+- 修改文件：`QARecommendView.swift`、`GachaView.swift`、`MapView.swift`、`AchievementsView.swift`、`CheckinSheet.swift`（共 5 个文件，10+ 处修改）
+
+### 会话记录 — 2026-04-05 饭团形象升级 + 养成体系规划
+
+- 主要目的：规划饭团形象升级（10.9）和饭团养成体系（10.10）的完整实施计划
+- 完成的主要任务：
+  - 头脑风暴确认方向：Lottie 动画 + Q版圆润可爱风格 + 轻量养成（饱食度+亲密度）+ 后端存储同步
+  - 重写实施计划 10.9 章节：饭团形象设计规范、9 种 Lottie 动画清单、素材制作流程（AI 生成→Lottie 转换）、iOS 端技术实现方案（lottie-ios SPM）、改动范围和验证清单
+  - 新增实施计划 10.10 章节：饱食度/亲密度数值设计、变化规则、亲密度等级体系、摸摸互动功能、饭团状态联动、数据库设计（fantuan_status 表）、3 个新 API、iOS 端改动清单、饭团状态面板 UI 设计
+  - 新增实施计划 10.11 章节：二阶段规划（装扮系统、等级进化、通知推送、社交功能）
+  - 更新改动范围总览（第二章），补充新增文件
+- 关键决策：一阶段不做装扮/通知/等级进化；养成数据后端存储（跨设备同步）；饱食度每日自然衰减-5驱动用户回访；亲密度只增不减降低挫败感；摸摸用长按手势区分短按菜单
+- 技术栈：Lottie（lottie-ios SPM）、SwiftUI 手势系统、Supabase PostgreSQL
+- 修改的文件：`需求文档&技术方案/AI美食决策助手实施计划.md`（重写 10.9 + 新增 10.10/10.11 + 更新改动范围总览）、`帮助文档/会话记录.md`、`README.md`
+
+### 会话记录 — 2026-04-05 地图筛选/搜索三项问题修复
+
+- 主要目的：修复地图页筛选面板底部遮挡、搜索博主误触跳转、搜索无结果无引导三个体验问题
+- 完成的主要任务：筛选面板 ScrollView 增加底部 padding 防遮挡；搜索 onSubmit 改为只记录历史不自动跳转；新增 SearchEmptyView 无结果引导视图，点击可快速触发手动添加并自动注入店铺名称
+- 关键决策：UserAddRestaurantSheet 新增 initialName 可选参数，从搜索无结果引导时自动填入
+- 技术栈：SwiftUI
+- 修改的文件：`ios/.../Views/MapView.swift`、`ios/.../Views/UserAddRestaurantSheet.swift`、`需求文档&技术方案/产品功能清单.md`、`帮助文档/会话记录.md`、`README.md`
+
+### 会话记录 — 2026-04-05 手动搜索店铺智能补全与排序优化
+
+- 主要目的：修复手动搜索店铺时结果过少（如搜"马场老火"只有2条）以及排序不合理（包含关键词的结果未排在前面）的问题
+- 完成的主要任务：改进搜索策略，初始结果<5条时自动补充常见餐饮后缀（锅/店/馆/堂/坊）再搜；改进名称相似度算法，从字符集重叠率改为 bigram 片段命中率，搜索词中每个2字片段是否出现在结果中都会影响排序得分
+- 关键决策：补充搜索仅在初始结果不足时触发，避免浪费高德 API 调用；bigram 得分映射到 0.3~0.85 区间，不与包含匹配的 0.9/1.0 冲突
+- 技术栈：Python FastAPI、高德地图 API
+- 修改的文件：`backend/amap_service.py`、`需求文档&技术方案/产品功能清单.md`、`README.md`
+
+### 会话记录 — 2026-04-05 复核支持多店铺添加
+
+- 主要目的：将人工复核的「修正店铺」操作从单选改为多选，支持一个视频关联多家店铺
+- 完成的主要任务：
+  - 数据库：`video_parse_cache` 新增 `corrected_restaurants jsonb` 列（已执行迁移）
+  - 后端 `db.py`：新增 `admin_correct_restaurants_multi()` 函数，`get_review_list()` select 字段加入 `corrected_restaurants`
+  - 后端 `main.py`：新增 `AdminCorrectMultiRequest` / `AdminCorrectMultiRestaurantItem` 模型，新增 `POST /api/admin/review/correct-multi` 路由
+  - iOS `Models.swift`：新增 `CorrectedRestaurant` 结构体，`ReviewItem` 新增 `corrected_restaurants` 字段
+  - iOS `APIService.swift`：新增 `adminCorrectMulti()` 方法
+  - iOS `RestaurantSearchView.swift`：从单选重构为多选模式（已选列表 + 内联分类编辑 + 批量提交）
+  - iOS `ReviewDetailView.swift`：多店铺修正记录展示所有关联店铺
+  - 更新 `supabase_schema.sql`、实施计划文档（v1.5）、产品功能清单
+- 关键决策：原有 `restaurant_id` + 快照字段保留存第一家店铺（向后兼容），`corrected_restaurants` JSON 存完整数组；单店铺走原有 `/correct` 接口，多店铺走新 `/correct-multi` 接口
+- 技术栈：Python FastAPI、SwiftUI、Supabase PostgreSQL（JSONB）
+- 修改的文件：`backend/db.py`、`backend/main.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Views/Admin/RestaurantSearchView.swift`、`ios/.../Views/Admin/ReviewDetailView.swift`、`需求文档&技术方案/后台人工复核功能实施计划.md`、`需求文档&技术方案/产品功能清单.md`

@@ -153,7 +153,9 @@ create table if not exists video_parse_cache (
   -- v3.0 新增：人工复核字段
   review_status   text not null default 'pending',  -- pending/approved/corrected/confirmed/skipped
   reviewed_by     uuid,                -- 复核操作人（管理员 user_id）
-  reviewed_at     timestamptz          -- 复核时间
+  reviewed_at     timestamptz,         -- 复核时间
+  -- v9.0 新增：多店铺修正记录（JSON 数组）
+  corrected_restaurants jsonb           -- [{restaurant_id, amap_id, name, address, city, lat, lng, category}]
 );
 
 -- 索引：按视频 URL 精确查询（唯一索引保证每个 URL 只有一条记录）

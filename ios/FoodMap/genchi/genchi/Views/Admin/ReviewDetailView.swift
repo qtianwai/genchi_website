@@ -78,7 +78,29 @@ struct ReviewDetailView: View {
                 }
 
                 // ── 当前关联店铺（有 restaurant_name 时显示）──
-                if let name = item.restaurant_name {
+                // 多店铺修正时展示所有关联店铺
+                if let corrected = item.corrected_restaurants, corrected.count > 1 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(isFromReviewed ? "当前关联店铺（\(corrected.count) 家）" : "AI 识别结果")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        ForEach(corrected) { r in
+                            VStack(alignment: .leading, spacing: 4) {
+                                Label(r.name, systemImage: "fork.knife")
+                                Label(r.address, systemImage: "mappin")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                                Label(r.category, systemImage: "tag")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                            .padding(10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color(.systemGray6))
+                            .cornerRadius(8)
+                        }
+                    }
+                } else if let name = item.restaurant_name {
                     VStack(alignment: .leading, spacing: 4) {
                         Text(isFromReviewed ? "当前关联店铺" : "AI 识别结果")
                             .font(.caption)

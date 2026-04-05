@@ -353,6 +353,47 @@ class APIService {
         )
     }
 
+    // v9.0 新增：多店铺修正（一个视频关联多家店铺）
+    func adminCorrectMulti(
+        cacheId: String,
+        restaurants: [(candidate: RestaurantCandidate, category: String)],
+        userId: String
+    ) async throws {
+        // 单个店铺条目
+        struct RestaurantEntry: Codable {
+            let amap_id: String
+            let restaurant_name: String
+            let address: String
+            let city: String
+            let latitude: Double
+            let longitude: Double
+            let category: String
+        }
+        struct Body: Codable {
+            let cache_id: String
+            let restaurants: [RestaurantEntry]
+        }
+        struct Resp: Codable { let status: String }
+
+        let entries = restaurants.map { r in
+            RestaurantEntry(
+                amap_id: r.candidate.amap_id,
+                restaurant_name: r.candidate.name,
+                address: r.candidate.address,
+                city: r.candidate.city,
+                latitude: r.candidate.latitude,
+                longitude: r.candidate.longitude,
+                category: r.category
+            )
+        }
+        _ = try await adminPost(
+            path: "/api/admin/review/correct-multi",
+            body: Body(cache_id: cacheId, restaurants: entries),
+            userId: userId,
+            responseType: Resp.self
+        )
+    }
+
     // 跳过复核
     func adminSkip(cacheId: String, userId: String) async throws {
         struct Body: Codable { let cache_id: String }
