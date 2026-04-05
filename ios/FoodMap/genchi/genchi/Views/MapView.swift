@@ -19,6 +19,7 @@ struct MapView: View {
     @State private var showParseSheet = false
     @State private var showUserAddSheet = false
     @State private var showNavSheet = false
+    @State private var pendingUserAddName: String? = nil  // 搜索无结果时注入手动添加的店铺名称
 
     @State private var pendingParseLink: String? = nil
     @State private var parseAutoStart = false
@@ -64,6 +65,9 @@ struct MapView: View {
     @State private var showGachaVideos = false
     @State private var gachaVideoRestaurantId: String = ""
 
+    // 手动添加店铺成功后，待定位的 restaurant_id
+    @State private var pendingFocusRestaurantId: String? = nil
+
     /// 跨文件构造入口（如 MainTabView）。
     /// 说明：结构体内存在 `private` 存储属性时，编译器生成的成员初始化器为 `private`，
     /// 其他源码文件无法调用 `MapView(refreshTrigger:)`，故提供显式 internal 初始化器。
@@ -78,6 +82,7 @@ struct MapView: View {
         _showParseSheet = State(initialValue: false)
         _showUserAddSheet = State(initialValue: false)
         _showNavSheet = State(initialValue: false)
+        _pendingUserAddName = State(initialValue: nil)
         _pendingParseLink = State(initialValue: nil)
         _parseAutoStart = State(initialValue: false)
         _showClipboardPrompt = State(initialValue: false)
@@ -98,6 +103,7 @@ struct MapView: View {
         _searchHistoryStore = AppStorage(wrappedValue: "", "map_recent_searches")
         _radarPhase = State(initialValue: 0)
         _radarTimer = State(initialValue: nil)
+        _pendingFocusRestaurantId = State(initialValue: nil)
         _authState = EnvironmentObject()
     }
 
@@ -126,27 +132,15 @@ struct MapView: View {
             mapLayer
                 .zIndex(0)
 
-            if showFilterPanel {
-                Color.black.opacity(0.12)
-                    .ignoresSafeArea()
-                    .onTapGesture {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
-                            showFilterPanel = false
-                        }
-                    }
-                    .transition(.opacity)
-                    .zIndex(1)
-            }
-
             topOverlay
-                .zIndex(2)
+                .zIndex(1)
 
             bottomCard
-                .zIndex(3)
+                .zIndex(2)
 
             if let toastMessage {
                 toastView(message: toastMessage)
-                    .zIndex(4)
+                    .zIndex(3)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -160,7 +154,7 @@ struct MapView: View {
                         .padding(.bottom, 120) // 避开底部卡片和 Tab 栏
                 }
             }
-            .zIndex(5)
+            .zIndex(4)
         }
         .ignoresSafeArea()
         .task {
@@ -234,10 +228,28 @@ struct MapView: View {
             .environmentObject(authState)
         }
         .sheet(isPresented: $showUserAddSheet) {
-            UserAddRestaurantSheet(locationManager: locationManager, onSuccess: {
-                refreshTrigger += 1
-            })
+            UserAddRestaurantSheet(
+                locationManager: locationManager,
+                initialName: pendingUserAddName,
+                onSuccess: { restaurantId in
+                    pendingFocusRestaurantId = restaurantId
+                    refreshTrigger += 1
+                }
+            )
             .environmentObject(authState)
+            .onDisappear { pendingUserAddName = nil }
+        }
+        .fullScreenCover(isPresented: $showFilterPanel) {
+            MapFilterSheetView(
+                authors: viewModel.availableAuthors,
+                groups: viewModel.userGroups,
+                subscriptions: viewModel.mapSubscriptions,
+                filter: $viewModel.filter,
+                resultCount: currentFilteredResultCount,
+                onReset: {
+                    viewModel.clearFilters()
+                }
+            )
         }
         .sheet(isPresented: $showImagePreview) {
             ImagePreviewSheet(imageURL: previewImageURL)
@@ -405,7 +417,7 @@ struct MapView: View {
                             }
                     } else if let item = cluster.primary {
                         RestaurantPinView(
-                            avatarURL: item.author?.avatar_url ?? authState.avatarURL,
+                            avatarURL: pinAvatarURL(for: item),
                             title: item.restaurant.name,
                             isSelected: selectedItem?.id == item.id,
                             isHighlighted: viewModel.highlightedItemId == item.id,
@@ -460,21 +472,6 @@ struct MapView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                 }
 
-                if showFilterPanel {
-                    FilterPanelView(
-                        authors: viewModel.availableAuthors,
-                        groups: viewModel.userGroups,
-                        subscriptions: viewModel.mapSubscriptions,  // v6.0 新增：订阅用户列表
-                        filter: $viewModel.filter,
-                        maxHeight: max(proxy.size.height - topInset - 120, 360),
-                        onReset: {
-                            viewModel.clearFilters()
-                        }
-                    )
-                    .padding(.top, 2)
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-
                 if shouldShowSearchHistory {
                     SearchHistoryPanelView(
                         histories: searchHistory,
@@ -490,18 +487,37 @@ struct MapView: View {
                 }
 
                 if shouldShowSearchResults {
-                    SearchResultsView(
-                        results: viewModel.searchResults(hiddenRestaurantIds: hiddenRestaurantIds)
-                    ) { item in
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            selectedItem = item
-                            viewModel.focus(on: item)
-                            showSearchField = false
-                            isSearchFocused = false
+                    let results = viewModel.searchResults(hiddenRestaurantIds: hiddenRestaurantIds)
+                    if results.isEmpty {
+                        // 无结果：提示用户并引导手动添加
+                        SearchEmptyView(keyword: viewModel.searchText) {
+                            // 关闭搜索，打开手动添加并注入店铺名称
+                            let name = viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showSearchField = false
+                                isSearchFocused = false
+                                viewModel.searchText = ""
+                            }
+                            pendingUserAddName = name
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                                showUserAddSheet = true
+                            }
                         }
-                        recordSearchHistory(viewModel.searchText)
+                        .transition(.opacity)
+                    } else {
+                        SearchResultsView(
+                            results: results
+                        ) { item in
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                selectedItem = item
+                                viewModel.focus(on: item)
+                                showSearchField = false
+                                isSearchFocused = false
+                            }
+                            recordSearchHistory(viewModel.searchText)
+                        }
+                        .transition(.opacity)
                     }
-                    .transition(.opacity)
                 }
 
                 Spacer(minLength: 0)
@@ -555,14 +571,12 @@ struct MapView: View {
 
     private var filterTriggerButton: some View {
         Button {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                showSearchField = false
-                isSearchFocused = false
-                if viewModel.filter.author == .mine {
-                    viewModel.filter.author = .all
-                }
-                showFilterPanel.toggle()
+            showSearchField = false
+            isSearchFocused = false
+            if viewModel.filter.author == .mine {
+                viewModel.filter.author = .all
             }
+            showFilterPanel = true
         } label: {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: "line.3.horizontal.decrease.circle")
@@ -648,7 +662,13 @@ struct MapView: View {
                 .disableAutocorrection(true)
                 .focused($isSearchFocused)
                 .onSubmit {
-                    commitSearchTerm(viewModel.searchText)
+                    // 提交搜索时只记录历史并收起键盘，不自动跳转到第一个结果
+                    // 让用户从搜索结果列表中自行选择
+                    let keyword = viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !keyword.isEmpty {
+                        recordSearchHistory(keyword)
+                    }
+                    isSearchFocused = false
                 }
 
             if !viewModel.searchText.isEmpty {
@@ -686,11 +706,17 @@ struct MapView: View {
         .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
     }
 
+    // 搜索有关键词时就显示结果区域（包括无结果时的引导提示）
     private var shouldShowSearchResults: Bool {
         let keyword = viewModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return showSearchField
-            && !keyword.isEmpty
-            && !viewModel.searchResults(hiddenRestaurantIds: hiddenRestaurantIds).isEmpty
+        return showSearchField && !keyword.isEmpty
+    }
+
+    private var currentFilteredResultCount: Int {
+        viewModel.filteredItems(
+            userLocation: locationManager.userLocation,
+            hiddenRestaurantIds: hiddenRestaurantIds
+        ).count
     }
 
     private var shouldShowSearchHistory: Bool {
@@ -704,6 +730,15 @@ struct MapView: View {
         await viewModel.loadMapData(userId: authState.userId)
         await viewModel.loadUserGroups(userId: authState.userId)
         syncSelectionWithLatestData()
+
+        // 手动添加店铺成功后，自动定位到新店铺并显示卡片
+        if let targetId = pendingFocusRestaurantId {
+            pendingFocusRestaurantId = nil
+            if let item = viewModel.allItems.first(where: { $0.restaurantId == targetId }) {
+                selectedItem = item
+                viewModel.focus(on: item)
+            }
+        }
     }
 
     private func presentAddDestination(_ destination: MapAddDestination) {
@@ -916,7 +951,7 @@ struct MapView: View {
 
     private func applySearchHistory(_ keyword: String) {
         viewModel.searchText = keyword
-        commitSearchTerm(keyword)
+        isSearchFocused = false
     }
 
     private func loadSearchHistory() {
@@ -1062,6 +1097,40 @@ struct MapView: View {
             openAppleMaps(for: item)
         }
     }
+
+    private func pinAvatarURL(for item: MapDisplayItem) -> String? {
+        if item.isUserCreated,
+           let currentUserAvatarURL = normalizedAvatarURL(authState.avatarURL) {
+            return currentUserAvatarURL
+        }
+
+        for source in item.recommendedBy {
+            switch source {
+            case .author(let author):
+                if let avatarURL = normalizedAvatarURL(author.avatar_url) {
+                    return avatarURL
+                }
+            case .selfCreated:
+                if let currentUserAvatarURL = normalizedAvatarURL(authState.avatarURL) {
+                    return currentUserAvatarURL
+                }
+            case .subscribedUser(_, _, let avatarURL):
+                if let avatarURL = normalizedAvatarURL(avatarURL) {
+                    return avatarURL
+                }
+            }
+        }
+
+        return normalizedAvatarURL(item.author?.avatar_url)
+    }
+
+    private func normalizedAvatarURL(_ rawValue: String?) -> String? {
+        guard let value = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
 }
 
 // MARK: - Top Buttons
@@ -1143,69 +1212,79 @@ struct RestaurantPinView: View {
     }
 
     var body: some View {
+        // 头像 + 名称纵向排列（名称在头像底部）
         VStack(spacing: 4) {
-            ZStack(alignment: .topTrailing) {
-                ZStack {
-                    AsyncImage(url: URL(string: avatarURL ?? "")) { image in
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    } placeholder: {
-                        Image(systemName: isUserCreated ? "person.crop.circle.badge.plus" : "person.crop.circle")
-                            .font(.system(size: 14, weight: .semibold))
-                            .foregroundColor(.white)
-                            .frame(width: size - 4, height: size - 4)
-                            .background(
-                                Circle().fill(isUserCreated ? Color.purple.opacity(0.8) : DS.Color.brand.opacity(0.8))
-                            )
-                    }
-                    .frame(width: size, height: size)
-                    .clipShape(Circle())
-
-                    if isHighlighted {
-                        Circle()
-                            .stroke(DS.Color.brand, lineWidth: 2)
-                            .frame(width: size + 6, height: size + 6)
-                    }
-                }
-                .overlay {
-                    Circle()
-                        .stroke(isSelected ? DS.Color.brand : Color.white.opacity(0.55), lineWidth: isSelected ? 2 : 0.8)
-                }
-                .shadow(color: .black.opacity(isSelected ? 0.25 : 0.15), radius: isSelected ? 6 : 3, y: 2)
-
-                // v6.0 新增：多人推荐角标
-                if recommendSourceCount > 1 {
-                    ZStack {
-                        Circle()
-                            .fill(Color.orange)
-                            .frame(width: 20, height: 20)
-                        Text("\(recommendSourceCount)")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .offset(x: 4, y: -4)
-                }
-            }
+            avatarBubble
 
             if showTitle {
-                Text(title)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .background(.ultraThinMaterial, in: Capsule())
-                    .overlay {
-                        Capsule().stroke(DS.Color.separator.opacity(0.2), lineWidth: 0.5)
-                    }
-                    .frame(maxWidth: 120)
+                titleBubble
             }
         }
+        .fixedSize()
         .animation(.spring(response: 0.24, dampingFraction: 0.84), value: isSelected)
     }
 
     private var size: CGFloat { isSelected ? 42 : 34 }
+
+    private var avatarBubble: some View {
+        ZStack(alignment: .topTrailing) {
+            ZStack {
+                // 使用带缓存的图片组件，避免缩放时闪烁
+                CachedAsyncImage(url: avatarURL, size: size)
+                    .overlay {
+                        // 无头像时显示占位图标
+                        if avatarURL == nil || avatarURL!.isEmpty {
+                            Circle()
+                                .fill(isUserCreated ? Color.purple.opacity(0.8) : DS.Color.brand.opacity(0.8))
+                            Image(systemName: isUserCreated ? "person.crop.circle.badge.plus" : "person.crop.circle")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                        }
+                    }
+
+                if isHighlighted {
+                    Circle()
+                        .stroke(DS.Color.brand, lineWidth: 2)
+                        .frame(width: size + 6, height: size + 6)
+                }
+            }
+            .overlay {
+                Circle()
+                    .stroke(isSelected ? DS.Color.brand : Color.white.opacity(0.7), lineWidth: isSelected ? 2 : 1)
+            }
+            .shadow(color: .black.opacity(isSelected ? 0.24 : 0.14), radius: isSelected ? 7 : 4, y: 2)
+
+            if recommendSourceCount > 1 {
+                ZStack {
+                    Circle()
+                        .fill(Color.orange)
+                        .frame(width: 20, height: 20)
+                    Text("\(recommendSourceCount)")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundColor(.white)
+                }
+                .offset(x: 4, y: -4)
+            }
+        }
+    }
+
+    // 店铺名称气泡（显示在头像底部）
+    private var titleBubble: some View {
+        Text(title)
+            .font(.system(size: 11, weight: .bold))
+            .foregroundColor(.primary)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(DS.Color.surface.opacity(0.96), in: Capsule())
+            .overlay {
+                Capsule()
+                    .stroke(DS.Color.separator.opacity(0.18), lineWidth: 0.8)
+            }
+            .shadow(color: .black.opacity(0.10), radius: 4, y: 1)
+            .frame(maxWidth: 100)
+    }
 }
 
 struct UserLocationPinView: View {
@@ -1248,6 +1327,88 @@ struct ClusterPinView: View {
     }
 }
 
+private struct MapFilterSheetView: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let authors: [Author]
+    let groups: [RestaurantGroup]
+    let subscriptions: [MapSubscription]
+    @Binding var filter: MapFilterState
+    let resultCount: Int
+    let onReset: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            FilterPanelView(
+                authors: authors,
+                groups: groups,
+                subscriptions: subscriptions,
+                filter: $filter,
+                onReset: onReset
+            )
+            .navigationTitle("筛选")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("重置") { onReset() }
+                        .foregroundColor(DS.Color.brand)
+                }
+            }
+            .background(Color(.systemGroupedBackground))
+        }
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            filterFooter
+        }
+    }
+
+    private var filterFooter: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Text(filter.hasActiveFilters ? "筛选后剩余" : "当前地图共")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text("\(resultCount)")
+                    .font(.system(size: 20, weight: .bold))
+                    .foregroundColor(DS.Color.brand)
+                Text("家店铺")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer(minLength: 0)
+            }
+
+            Button {
+                dismiss()
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "map.fill")
+                        .font(.system(size: 15, weight: .semibold))
+                    Text("查看地图结果")
+                        .font(.system(size: 16, weight: .semibold))
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 16)
+                .frame(height: 52)
+                .background(DS.Color.brand, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            }
+            .buttonStyle(PressableScaleButtonStyle())
+        }
+        .padding(.horizontal, DS.Spacing.lg)
+        .padding(.top, 14)
+        .padding(.bottom, 12)
+        .background(.ultraThinMaterial)
+        .overlay(alignment: .top) {
+            Divider()
+        }
+    }
+}
+
 // MARK: - Filter Panel
 struct FilterPanelView: View {
     private enum Section: String, CaseIterable, Identifiable {
@@ -1278,7 +1439,6 @@ struct FilterPanelView: View {
     let groups: [RestaurantGroup]
     let subscriptions: [MapSubscription]  // v6.0 新增：订阅用户列表
     @Binding var filter: MapFilterState
-    let maxHeight: CGFloat
     let onReset: () -> Void
     @State private var activeSection: Section
     @State private var customDistanceValue: Double
@@ -1288,14 +1448,12 @@ struct FilterPanelView: View {
         groups: [RestaurantGroup],
         subscriptions: [MapSubscription],
         filter: Binding<MapFilterState>,
-        maxHeight: CGFloat,
         onReset: @escaping () -> Void
     ) {
         self.authors = authors
         self.groups = groups
         self.subscriptions = subscriptions
         self._filter = filter
-        self.maxHeight = maxHeight
         self.onReset = onReset
         self._activeSection = State(initialValue: Self.initialSection(for: filter.wrappedValue))
         self._customDistanceValue = State(initialValue: filter.wrappedValue.distance.kilometers ?? 10)
@@ -1304,31 +1462,15 @@ struct FilterPanelView: View {
     var body: some View {
         ScrollView(.vertical, showsIndicators: false) {
             VStack(alignment: .leading, spacing: DS.Spacing.md) {
-                HStack {
-                    Text("筛选")
-                        .font(.system(size: 18, weight: .bold))
-                    Spacer()
-                    Button("重置") { onReset() }
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(DS.Color.brand)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(DS.Color.brand.opacity(0.10), in: Capsule())
-                }
-
                 primarySectionList
 
                 secondarySectionCard
             }
+            .padding(.horizontal, DS.Spacing.lg)
+            .padding(.top, DS.Spacing.md)
+            .padding(.bottom, 168)
         }
-        .padding(DS.Spacing.lg)
-        .frame(maxHeight: maxHeight, alignment: .top)
-        .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-        .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(DS.Color.separator.opacity(0.14), lineWidth: 0.8)
-        }
-        .shadow(color: .black.opacity(0.12), radius: 16, y: 8)
+        .background(Color(.systemGroupedBackground))
     }
 
     private var sourceOptions: [MapSourceOption] {
@@ -1355,16 +1497,22 @@ struct FilterPanelView: View {
     }
 
     private var primarySectionList: some View {
-        VStack(spacing: 10) {
-            ForEach(Section.allCases) { section in
-                FilterSectionRow(
-                    title: section.title,
-                    systemImage: section.systemImage,
-                    summary: summary(for: section),
-                    isSelected: activeSection == section
-                ) {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        activeSection = section
+        VStack(alignment: .leading, spacing: 10) {
+            Text("筛选维度")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            VStack(spacing: 10) {
+                ForEach(Section.allCases) { section in
+                    FilterSectionRow(
+                        title: section.title,
+                        systemImage: section.systemImage,
+                        summary: summary(for: section),
+                        isSelected: activeSection == section
+                    ) {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            activeSection = section
+                        }
                     }
                 }
             }
@@ -1379,15 +1527,21 @@ struct FilterPanelView: View {
 
     private var secondarySectionCard: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-            HStack(spacing: 8) {
-                Image(systemName: activeSection.systemImage)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(DS.Color.brand)
-                Text(activeSection.title)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.primary)
+            Text("具体选项")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            VStack(alignment: .leading, spacing: DS.Spacing.sm) {
+                HStack(spacing: 8) {
+                    Image(systemName: activeSection.systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(DS.Color.brand)
+                    Text(activeSection.title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.primary)
+                }
+                secondarySectionContent
             }
-            secondarySectionContent
         }
         .padding(DS.Spacing.md)
         .background(DS.Color.surfaceAlt.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -1972,6 +2126,49 @@ struct SearchResultsView: View {
             return "\(authorText) · \(address)"
         }
         return authorText
+    }
+}
+
+// MARK: - 搜索无结果引导视图
+struct SearchEmptyView: View {
+    let keyword: String
+    let onAddManually: () -> Void
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundColor(.secondary)
+                Text("未找到「\(keyword.trimmingCharacters(in: .whitespacesAndNewlines))」相关店铺")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.top, 4)
+
+            Button {
+                onAddManually()
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "plus.circle.fill")
+                        .font(.system(size: 14))
+                    Text("手动添加这家店")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(DS.Color.brand, in: Capsule())
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.Radius.md))
+        .overlay {
+            RoundedRectangle(cornerRadius: DS.Radius.md)
+                .stroke(DS.Color.separator.opacity(0.18), lineWidth: 0.6)
+        }
     }
 }
 

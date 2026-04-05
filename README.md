@@ -189,6 +189,16 @@ python main.py
 
 ---
 
+### 2026-04-05 修复删除后重新添加店铺不显示 + 添加成功后自动定位
+- 主要目的：修复删除店铺后再手动添加无法显示的 Bug，并实现添加成功后自动定位到新店铺显示卡片
+- 完成的主要任务：
+  - 后端 db.py：`add_user_restaurant` 新增删除标记清除逻辑，添加店铺前先从 `user_deleted_restaurants` 表删除对应记录
+  - 前端 UserAddRestaurantSheet：`onSuccess` 回调改为传回 `restaurant_id`，供 MapView 定位使用
+  - 前端 MapView：新增 `pendingFocusRestaurantId` 状态，`reloadAllData` 完成后自动查找并定位到新店铺、显示卡片
+- 关键决策：在后端 `add_user_restaurant` 中清除删除标记（而非前端单独调接口），保证逻辑原子性
+- 技术栈：Python FastAPI、Supabase PostgreSQL、SwiftUI
+- 修改了哪些文件：`backend/db.py`、`ios/.../Views/UserAddRestaurantSheet.swift`、`ios/.../Views/MapView.swift`、`需求文档&技术方案/产品功能清单.md`
+
 ### 2026-04-04 收藏模块功能调整与完善（v5.0）
 - 主要目的：合并博主 Tab 与收藏 Tab 为统一入口，新增博主详情页、店铺详情全屏页、店铺列表分组管理页，引入避雷/删除/分组/收藏理由等精细化操作
 - 完成的主要任务：
@@ -2424,3 +2434,14 @@ SwiftUI
 - 关键决策：原有 `restaurant_id` + 快照字段保留存第一家店铺（向后兼容），`corrected_restaurants` JSON 存完整数组；单店铺走原有 `/correct` 接口，多店铺走新 `/correct-multi` 接口
 - 技术栈：Python FastAPI、SwiftUI、Supabase PostgreSQL（JSONB）
 - 修改的文件：`backend/db.py`、`backend/main.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Views/Admin/RestaurantSearchView.swift`、`ios/.../Views/Admin/ReviewDetailView.swift`、`需求文档&技术方案/后台人工复核功能实施计划.md`、`需求文档&技术方案/产品功能清单.md`
+
+### 会话记录 — 2026-04-05 地图标注头像闪烁修复 + 店铺名称位置优化
+
+- 主要目的：修复地图缩放时头像图标闪烁（显示紫色/橙色占位图标），并将店铺名称从头像右侧改为头像底部、降低名称显示的缩放阈值
+- 完成的主要任务：
+  - 新建 `CachedAsyncImage.swift`：带 NSCache 内存缓存的异步图片组件，避免地图缩放时 AsyncImage 反复重新加载导致闪烁
+  - 重构 `RestaurantPinView`：用 CachedAsyncImage 替换 AsyncImage；布局从 HStack（名称在右）改为 VStack（名称在底部）；名称气泡字号和尺寸微调适配纵向布局
+  - 调整 `MapViewModel` 缩放阈值：clusterExit 从 0.105 放宽到 0.17，让头像+名称更早出现；cluster 进入阈值从 0.11 放宽到 0.18，增大滞回区间减少边界闪烁
+- 关键决策：使用 NSCache（自动内存管理，最多缓存 200 张）而非磁盘缓存，平衡性能和内存占用；名称在 avatars 层级即显示，不再需要放大到 names 层级
+- 技术栈：SwiftUI、NSCache、MapKit
+- 修改的文件：新建 `ios/.../Views/CachedAsyncImage.swift`、`ios/.../Views/MapView.swift`、`ios/.../ViewModels/MapViewModel.swift`

@@ -234,6 +234,13 @@ def get_video_cache_by_id(video_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
+def get_video_cache_by_pk(cache_id: str) -> dict | None:
+    """v10.0 新增：根据主键 id 查找缓存记录（前端轮询解析结果用）"""
+    result = supabase.table("video_parse_cache").select("*").eq("id", cache_id).execute()
+    rows = result.data
+    return rows[0] if rows else None
+
+
 def upsert_video_cache(cache_data: dict) -> dict:
     """
     插入或更新视频缓存记录
