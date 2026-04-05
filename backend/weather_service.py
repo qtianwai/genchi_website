@@ -9,10 +9,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 和风天气 API Key（免费开发版）
+# 和风天气 API Key
 QWEATHER_API_KEY = os.getenv("QWEATHER_API_KEY", "")
-# 免费版用 devapi，商业版用 api
-QWEATHER_BASE_URL = os.getenv("QWEATHER_BASE_URL", "https://devapi.qweather.com")
+# API Host（新版认证方式，每个项目有专属域名）
+QWEATHER_BASE_URL = os.getenv("QWEATHER_BASE_URL", "https://n34qbkf8fr.re.qweatherapi.com")
 
 # 内存缓存：{cache_key: (timestamp, data)}
 # cache_key = "lat_lng" 四舍五入到小数点后 1 位（约 11km 精度，同城共享缓存）
