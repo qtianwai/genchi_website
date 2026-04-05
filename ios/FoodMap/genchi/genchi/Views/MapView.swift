@@ -255,11 +255,9 @@ struct MapView: View {
                 fanTuanVM: fanTuanVM,
                 latitude: locationManager.userLocation?.latitude ?? 39.9,
                 longitude: locationManager.userLocation?.longitude ?? 116.4,
-                onNavigate: { restaurantId in
-                    // 10.8 从抽卡结果中找到卡片，用坐标导航
-                    if let card = viewModel.selectedCard ?? nil {
-                        gachaNavCard = card
-                    }
+                onNavigate: { card in
+                    // 10.8 用卡片坐标导航
+                    gachaNavCard = card
                     showGachaView = false
                     showGachaNavSheet = true
                 },

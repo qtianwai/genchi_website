@@ -10,7 +10,7 @@ struct GachaView: View {
 
     let latitude: Double
     let longitude: Double
-    var onNavigate: ((String) -> Void)?     // 导航到店铺
+    var onNavigate: ((GachaCard) -> Void)?    // 导航到店铺（传完整卡片，含坐标）
     var onFavorite: ((String) -> Void)?     // 收藏店铺
     var onViewVideos: ((String) -> Void)?   // 查看探店视频
     var onCheckin: ((String) -> Void)?      // 打卡
@@ -306,7 +306,7 @@ struct GachaView: View {
                     // 主操作行
                     HStack(spacing: 12) {
                         actionButton(icon: "location.fill", title: "导航", color: .blue) {
-                            onNavigate?(card.restaurant_id)
+                            onNavigate?(card)
                         }
                         actionButton(icon: "heart.fill", title: "收藏", color: .pink) {
                             onFavorite?(card.restaurant_id)
