@@ -791,36 +791,36 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                                     parse_reason_bg = f"AI识别「{ai_name_bg}」高德未命中，规则候选「{cand_name}」命中"
                                     break
                     if search_results:
-                    amap_result = search_results[0]
-                    real_extracted[0].update({
-                        "address": amap_result.get("address", ""),
-                        "latitude": amap_result.get("latitude"),
-                        "longitude": amap_result.get("longitude"),
-                        "amap_id": amap_result.get("amap_id"),
-                        "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
-                        "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
-                        "parse_reason": parse_reason_bg,
-                        "data_source": "background_scan",
-                        "api_cost": api_cost_bg,
-                        "api_cost_note": api_cost_note_bg,
-                    })
-                    result = _save_video_restaurant(video_url, vid, author_id, real_extracted[0])
-                    if result["status"] == "saved":
-                        saved_count += 1
-                else:
-                    # 高德搜不到，更新缓存记录失败原因
-                    upsert_video_cache({
-                        "video_url": video_url,
-                        "video_id": vid,
-                        "author_id": author_id,
-                        "status": "failed",
-                        "restaurant_name": real_extracted[0].get("name", ""),
-                        "error_message": "高德地图未找到该店铺",
-                        "parse_reason": parse_reason_bg or f"AI识别到店铺「{real_extracted[0].get('name')}」但高德地图未找到",
-                        "data_source": "background_scan",
-                        "api_cost": api_cost_bg,
-                        "api_cost_note": api_cost_note_bg,
-                    })
+                        amap_result = search_results[0]
+                        real_extracted[0].update({
+                            "address": amap_result.get("address", ""),
+                            "latitude": amap_result.get("latitude"),
+                            "longitude": amap_result.get("longitude"),
+                            "amap_id": amap_result.get("amap_id"),
+                            "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
+                            "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
+                            "parse_reason": parse_reason_bg,
+                            "data_source": "background_scan",
+                            "api_cost": api_cost_bg,
+                            "api_cost_note": api_cost_note_bg,
+                        })
+                        result = _save_video_restaurant(video_url, vid, author_id, real_extracted[0])
+                        if result["status"] == "saved":
+                            saved_count += 1
+                    else:
+                        # 高德搜不到，更新缓存记录失败原因
+                        upsert_video_cache({
+                            "video_url": video_url,
+                            "video_id": vid,
+                            "author_id": author_id,
+                            "status": "failed",
+                            "restaurant_name": real_extracted[0].get("name", ""),
+                            "error_message": "高德地图未找到该店铺",
+                            "parse_reason": parse_reason_bg or f"AI识别到店铺「{real_extracted[0].get('name')}」但高德地图未找到",
+                            "data_source": "background_scan",
+                            "api_cost": api_cost_bg,
+                            "api_cost_note": api_cost_note_bg,
+                        })
             else:
                 # 未提取到店铺，更新缓存记录原因
                 upsert_video_cache({
