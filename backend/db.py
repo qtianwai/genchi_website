@@ -682,6 +682,8 @@ def admin_correct_restaurant(
     latitude: float,
     longitude: float,
     category: str,
+    avg_price: int | None = None,
+    photo_url: str | None = None,
 ) -> bool:
     """
     人工修正店铺：
@@ -694,8 +696,8 @@ def admin_correct_restaurant(
     if not cache:
         return False
 
-    # upsert restaurants
-    r_result = supabase.table("restaurants").upsert({
+    # upsert restaurants（含均价和封面图）
+    restaurant_data = {
         "name": name,
         "address": address,
         "city": city,
@@ -705,7 +707,14 @@ def admin_correct_restaurant(
         "category": category,
         "verified": True,
         "verified_at": "now()",
-    }, on_conflict="amap_id").execute()
+    }
+    if avg_price is not None:
+        restaurant_data["avg_price"] = avg_price
+    if photo_url:
+        restaurant_data["photo_url"] = photo_url
+    r_result = supabase.table("restaurants").upsert(
+        restaurant_data, on_conflict="amap_id"
+    ).execute()
 
     if not r_result.data:
         return False
@@ -728,7 +737,7 @@ def admin_correct_restaurant(
         }).execute()
 
     # 更新 video_parse_cache（人工修正后 status 统一设为 completed，即使原来是 failed）
-    supabase.table("video_parse_cache").update({
+    cache_update = {
         "status": "completed",
         "restaurant_id": restaurant_id,
         "restaurant_name": name,
@@ -742,7 +751,12 @@ def admin_correct_restaurant(
         "reviewed_by": admin_user_id,
         "reviewed_at": "now()",
         "updated_at": "now()",
-    }).eq("id", cache_id).execute()
+    }
+    if avg_price is not None:
+        cache_update["restaurant_avg_price"] = avg_price
+    if photo_url:
+        cache_update["restaurant_photo_url"] = photo_url
+    supabase.table("video_parse_cache").update(cache_update).eq("id", cache_id).execute()
 
     return True
 
@@ -777,7 +791,7 @@ def admin_correct_restaurants_multi(
     restaurant_ids = []
     corrected_list = []
     for r in restaurants:
-        r_result = supabase.table("restaurants").upsert({
+        restaurant_data = {
             "name": r["name"],
             "address": r["address"],
             "city": r["city"],
@@ -787,7 +801,14 @@ def admin_correct_restaurants_multi(
             "category": r["category"],
             "verified": True,
             "verified_at": "now()",
-        }, on_conflict="amap_id").execute()
+        }
+        if r.get("avg_price") is not None:
+            restaurant_data["avg_price"] = r["avg_price"]
+        if r.get("photo_url"):
+            restaurant_data["photo_url"] = r["photo_url"]
+        r_result = supabase.table("restaurants").upsert(
+            restaurant_data, on_conflict="amap_id"
+        ).execute()
 
         if not r_result.data:
             return False
@@ -823,7 +844,7 @@ def admin_correct_restaurants_multi(
     # 更新 video_parse_cache：第一个店铺作为主显示，corrected_restaurants 存完整数组
     first = restaurants[0]
     first_id = restaurant_ids[0]
-    supabase.table("video_parse_cache").update({
+    cache_update = {
         "status": "completed",
         "restaurant_id": first_id,
         "restaurant_name": first["name"],
@@ -838,7 +859,12 @@ def admin_correct_restaurants_multi(
         "reviewed_by": admin_user_id,
         "reviewed_at": "now()",
         "updated_at": "now()",
-    }).eq("id", cache_id).execute()
+    }
+    if first.get("avg_price") is not None:
+        cache_update["restaurant_avg_price"] = first["avg_price"]
+    if first.get("photo_url"):
+        cache_update["restaurant_photo_url"] = first["photo_url"]
+    supabase.table("video_parse_cache").update(cache_update).eq("id", cache_id).execute()
 
     return True
 
@@ -880,7 +906,13 @@ def add_user_restaurant(user_id: str, restaurant_id: str, note: str = "") -> dic
     """
     添加用户自建推荐店铺
     若该用户已添加过同一家店（unique 约束），则直接返回已有记录
+    同时清除该店铺的删除标记（user_deleted_restaurants），确保重新添加后地图能正常显示
     """
+    # 清除删除标记，确保重新添加的店铺不会被地图过滤
+    supabase.table("user_deleted_restaurants").delete().eq(
+        "user_id", user_id
+    ).eq("restaurant_id", restaurant_id).execute()
+
     data = {"user_id": user_id, "restaurant_id": restaurant_id}
     if note:
         data["note"] = note

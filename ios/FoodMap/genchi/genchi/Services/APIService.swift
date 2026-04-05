@@ -334,6 +334,8 @@ class APIService {
             let latitude: Double
             let longitude: Double
             let category: String
+            let avg_price: Int?
+            let photo_url: String?
         }
         struct Resp: Codable { let status: String }
         _ = try await adminPost(
@@ -346,7 +348,9 @@ class APIService {
                 city: candidate.city,
                 latitude: candidate.latitude,
                 longitude: candidate.longitude,
-                category: category
+                category: category,
+                avg_price: candidate.avg_price,
+                photo_url: candidate.photo_url
             ),
             userId: userId,
             responseType: Resp.self
@@ -368,6 +372,8 @@ class APIService {
             let latitude: Double
             let longitude: Double
             let category: String
+            let avg_price: Int?
+            let photo_url: String?
         }
         struct Body: Codable {
             let cache_id: String
@@ -383,7 +389,9 @@ class APIService {
                 city: r.candidate.city,
                 latitude: r.candidate.latitude,
                 longitude: r.candidate.longitude,
-                category: r.category
+                category: r.category,
+                avg_price: r.candidate.avg_price,
+                photo_url: r.candidate.photo_url
             )
         }
         _ = try await adminPost(

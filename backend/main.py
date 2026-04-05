@@ -1697,6 +1697,8 @@ class AdminCorrectRequest(BaseModel):
     latitude: float
     longitude: float
     category: str   # 管理员最终确认的分类
+    avg_price: int | None = None      # 人均消费（元），来自高德 biz_ext.cost
+    photo_url: str | None = None      # 店铺封面图 URL，来自高德 photos[0].url
 
 class AdminSkipRequest(BaseModel):
     cache_id: str
@@ -1710,6 +1712,8 @@ class AdminCorrectMultiRestaurantItem(BaseModel):
     latitude: float
     longitude: float
     category: str
+    avg_price: int | None = None
+    photo_url: str | None = None
 
 class AdminCorrectMultiRequest(BaseModel):
     cache_id: str
@@ -1818,6 +1822,8 @@ async def review_correct(
         latitude=req.latitude,
         longitude=req.longitude,
         category=req.category,
+        avg_price=req.avg_price,
+        photo_url=req.photo_url,
     )
     if not success:
         raise HTTPException(status_code=404, detail="未找到该复核记录")
@@ -1846,6 +1852,8 @@ async def review_correct_multi(
             "latitude": r.latitude,
             "longitude": r.longitude,
             "category": r.category,
+            "avg_price": r.avg_price,
+            "photo_url": r.photo_url,
         }
         for r in req.restaurants
     ]
