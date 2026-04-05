@@ -12,9 +12,12 @@
 │   ├── main.py                 # API 路由主程序
 │   ├── douyin_parser.py        # 抖音链接解析
 │   ├── ai_extractor.py         # 通义千问 AI 提取店铺信息
-│   ├── amap_service.py         # 高德地图地址搜索
+│   ├── amap_service.py         # 高德地图地址搜索 + 周边餐饮搜索
+│   ├── weather_service.py      # 和风天气 API 接入（v8.0 新增）
 │   ├── db.py                   # Supabase 数据库操作
-│   ├── supabase_schema.sql     # 数据库建表 SQL
+│   ├── supabase_schema.sql     # 数据库建表 SQL（含 v8.0 新增 6 张表）
+│   ├── migrations/             # 数据库迁移脚本
+│   │   └── v8.0_gacha_system.sql  # 饭团系统建表迁移
 │   ├── requirements.txt        # Python 依赖
 │   ├── Procfile                # Railway 部署配置
 │   ├── runtime.txt             # Python 版本
@@ -22,13 +25,23 @@
 └── ios/FoodMap/genchi/genchi/  # SwiftUI iOS App（Xcode 项目位于 ios/FoodMap/genchi/）
     ├── FoodMapApp.swift         # App 入口
     ├── DesignSystem.swift       # 统一设计 token（间距/圆角/阴影/颜色）
-    ├── Models/Models.swift      # 数据模型
+    ├── Models/Models.swift      # 数据模型（含 v8.0 抽卡/成就/打卡模型）
     ├── Services/
-    │   ├── APIService.swift     # 后端 API 调用
+    │   ├── APIService.swift     # 后端 API 调用（含 v8.0 饭团系统 API）
     │   └── AuthState.swift      # 用户认证状态
+    ├── ViewModels/
+    │   ├── MapViewModel.swift       # 地图 ViewModel
+    │   ├── FanTuanViewModel.swift   # 饭团状态管理（v8.0 新增）
+    │   ├── GachaViewModel.swift     # 抽卡流程管理（v8.0 新增）
+    │   └── QARecommendViewModel.swift # 问答推荐管理（v8.0 新增）
     └── Views/
         ├── MainTabView.swift    # Tab 导航（v5.0：地图、+、收藏、我的）
-        ├── MapView.swift        # 地图主页面（v5.0：右上角添加+筛选按钮）
+        ├── MapView.swift        # 地图主页面（v8.0：集成饭团浮动组件）
+        ├── FanTuanView.swift    # 饭团浮动组件 + 能力菜单（v8.0 新增）
+        ├── GachaView.swift      # 抽卡主页面（v8.0 新增）
+        ├── QARecommendView.swift # 问答推荐页面（v8.0 新增）
+        ├── CheckinSheet.swift   # 打卡弹窗（v8.0 新增）
+        ├── AchievementsView.swift # 成就列表页（v8.0 新增）
         ├── ParseLinkSheet.swift # 粘贴链接弹窗
         ├── UserAddRestaurantSheet.swift # 手动添加店铺
         ├── FavoritesView.swift  # 收藏页（v5.0：合并博主+收藏）
@@ -37,7 +50,7 @@
         ├── RestaurantListView.swift   # 店铺列表分组管理页（v5.0 新增）
         ├── GroupDetailView.swift      # 分组详情页（v5.0 新增）
         ├── AuthorsView.swift    # 博主列表（v5.0 已从 Tab 移除）
-        ├── ProfileView.swift    # 个人中心
+        ├── ProfileView.swift    # 个人中心（v8.0：新增成就入口）
         └── LoginView.swift      # 登录页面
 ```
 
@@ -160,6 +173,19 @@ python main.py
 | POST | `/api/groups/{id}/restaurants` | 添加店铺到分组（v5.0 新增） |
 | DELETE | `/api/groups/{id}/restaurants/{rid}` | 从分组移除店铺（v5.0 新增） |
 | GET | `/api/groups/{id}/restaurants` | 获取分组内店铺（v5.0 新增） |
+| GET | `/api/weather` | 获取天气信息（v8.0 新增） |
+| GET | `/api/gacha/remaining` | 查询今日剩余抽卡次数（v8.0 新增） |
+| POST | `/api/gacha/draw` | 执行抽卡，AI 推荐 6 张卡片（v8.0 新增） |
+| POST | `/api/gacha/select` | 用户选中卡片 + 成就检测（v8.0 新增） |
+| POST | `/api/recommend/questions` | 问答模式：AI 生成动态问题（v8.0 新增） |
+| POST | `/api/recommend/result` | 问答模式：基于回答生成推荐（v8.0 新增） |
+| POST | `/api/checkins` | 创建打卡记录（v8.0 新增） |
+| GET | `/api/checkins/restaurant/{id}` | 获取店铺打卡记录（v8.0 新增） |
+| GET | `/api/checkins/user` | 获取用户打卡历史（v8.0 新增） |
+| GET | `/api/achievements` | 获取所有成就定义（v8.0 新增） |
+| GET | `/api/achievements/user` | 获取用户已解锁成就（v8.0 新增） |
+| POST | `/api/behavior/log` | 记录用户行为日志（v8.0 新增） |
+| GET | `/api/restaurants/{id}/reviews-summary` | 收藏留言 AI 摘要（v8.0 新增） |
 
 ---
 
@@ -2206,3 +2232,144 @@ Python FastAPI、Supabase PostgreSQL（JSONB）、JustOneAPI、httpx
 
 ### 会话时间
 2026-04-05
+
+### 会话目的
+修复 Xcode 编译错误：`MapView` 初始化器因访问级别无法在 `MainTabView` 中使用。
+
+### 完成的主要任务
+1. 为 `MapView` 增加显式 `init(refreshTrigger: Binding<Int>)`，使跨文件构造为 internal 可见
+2. 将雷达动画用的 `Timer` 改为 `@State` 存储，避免在 `View` 方法中修改普通存储属性导致编译失败
+3. 修正 `primaryDouyinAuthorUID` 中对非可选 `douyin_uid` 的错误可选绑定
+
+### 关键决策和解决方案
+- **原因**：结构体内含 `private` 存储属性时，编译器生成的成员初始化器为 `private`，`MainTabView` 在其他文件无法调用
+- **方案**：手写与默认值等价的初始化器，并初始化各 Property Wrapper 的底层存储（`StateObject` / `State` / `AppStorage` / `FocusState` / `EnvironmentObject`）
+- **Timer**：`private var radarTimer` 在 `startRadarAnimation` 中赋值会触发「self 不可变」，改为 `@State private var radarTimer`
+
+### 技术栈
+Swift / SwiftUI / Xcode
+
+### 修改的文件
+- `ios/FoodMap/genchi/genchi/Views/MapView.swift`
+- `README.md`（本会话记录）
+
+### 会话时间
+2026-04-05
+
+---
+
+## 会话记录 - 2026-04-05：美团/饿了么开放平台 C 端外卖搜索 API 可行性评估
+
+### 会话目的
+评估美团开放平台和饿了么开放平台是否提供面向 C 端消费者的外卖店铺搜索 API，以及企业资质能否直接开通。
+
+### 完成的主要任务
+对美团开放平台、饿了么开放平台、大众点评开放平台、以及海外第三方聚合 API（MealMe、Bright Data、GetPlace 等）进行了全面调研。
+
+### 关键结论
+1. 美团开放平台只提供 B 端能力（商家订单/门店/菜品/配送管理），不提供 C 端搜索附近外卖店铺的 API
+2. 饿了么开放平台能力收缩中（已整合到阿里/淘宝生态），同样不提供 C 端搜索 API
+3. 大众点评开放平台已于 2020 年前后关闭，不再接受新开发者
+4. 海外聚合 API（MealMe）只覆盖美国/加拿大，不支持中国市场
+5. Bright Data 提供美团爬虫方案但有法律风险
+6. 有营业执照可以申请入驻美团开放平台，但只能获得 B 端能力，无法获得 C 端搜索数据
+7. 建议继续使用高德地图 POI 搜索作为店铺数据源
+
+### 技术栈
+无（调研评估，无代码变更）
+
+### 修改的文件
+- `帮助文档/会话记录.md`（追加会话记录）
+- `README.md`（追加本会话总结）
+
+---
+
+## 会话记录 - 2026-04-05：修复新店铺缺少门店图片和人均消费问题
+
+### 会话目的
+排查最近新增店铺没有门店图片的问题。
+
+### 完成的主要任务
+1. 定位到两个根因：iOS 端 `createUserRestaurant` 的请求体缺少 `photo_url` 和 `avg_price` 字段（本地已修改但未提交部署）；高德地图 API 将 `biz_ext.avgprice` 字段名改为 `cost`，导致人均消费始终解析为 None
+2. 修复 `backend/amap_service.py` 中 3 处 `avgprice` 引用，改为优先读取 `cost` 并兼容旧字段名，同时支持带小数的价格格式（如 "101.00"）
+3. 回填数据库中 7 家缺图店铺的 photo_url 和 avg_price，以及 28 家缺 avg_price 的店铺数据
+
+### 关键决策和解决方案
+- 高德 API 字段变更：`biz_ext.get("cost", "") or biz_ext.get("avgprice", "")` 兼容新旧格式
+- iOS 端 `createUserRestaurant` Body 需要加入 `avg_price` 和 `photo_url` 字段（本地代码已有修改，需重新编译部署到设备）
+- 马厂老火锅（无分店名）在高德详情接口确实无图片，属于数据源限制
+
+### 技术栈
+Python FastAPI、高德地图 API、Supabase REST API
+
+### 修改的文件
+- `backend/amap_service.py`（修复 avgprice → cost 字段名兼容）
+- `帮助文档/会话记录.md`（追加会话记录）
+- `README.md`（追加本会话总结）
+
+---
+
+## 会话记录 - 2026-04-05：根据产品介绍更新官网并提交至 GitHub
+
+### 会话目的
+根据最新的产品介绍文档更新官网 index.html，并将更新后的官网提交至独立的 GitHub 仓库。
+
+### 完成的主要任务
+1. 对比产品介绍文档与现有官网内容，识别需要更新的部分
+2. 全面更新 `docs/index.html`：
+   - 产品名从"跟吃"更新为"干饭地图"
+   - Hero 区域定位语和描述文案更新
+   - 新增"两种方式"区块（跟随博主 / 自己创建）
+   - 功能卡片从 6 个扩展到 9 个，覆盖所有核心功能
+   - 新增使用场景区块（同城探索 / 出差旅行 / 朋友聚会）
+   - 手机模型 SVG 中新增紫色标记展示用户自建推荐
+   - 页脚版权信息更新
+3. 将更新后的 index.html 提交至 GitHub 仓库 `qtianwai/genchi_website`
+
+### 关键决策和解决方案
+- 官网内容与产品介绍文档完全对齐，确保一致性
+- 手机模型中用紫色标记区分用户自建推荐（与 App 内紫色标注一致）
+- 保持原有暗色主题设计风格，新增区块沿用相同的卡片和排版样式
+
+### 技术栈
+HTML/CSS、Git
+
+### 修改的文件
+- `docs/index.html`（全面更新官网内容）
+- `README.md`（追加本会话总结）
+
+---
+
+## 会话记录 - 2026-04-05：全局添加人均消费显示
+
+### 会话目的
+在地图卡片、店铺列表、店铺详情、手动添加搜索结果 4 个页面统一增加人均消费标签显示。
+
+### 完成的主要任务
+在 MapView 地图卡片标签行、RestaurantDetailView 详情页分类标签旁、FavoritesRestaurantRow 收藏列表卡片（影响所有使用该组件的页面）添加"人均¥XX"标签，并统一 UserAddRestaurantSheet 中已有的均价格式（去掉多余空格）。
+
+### 关键决策和解决方案
+- 复用各页面已有的标签组件（MiniTag / FavoritesPill / CandidateTag），保持视觉一致
+- 均价标签使用 `.secondary` 颜色，与分类标签区分
+- 仅在 `avg_price > 0` 时显示，避免无数据时出现空标签
+
+### 技术栈
+SwiftUI
+
+### 修改的文件
+- `ios/.../Views/MapView.swift`（地图卡片标签行添加均价）
+- `ios/.../Views/RestaurantDetailView.swift`（详情页添加均价）
+- `ios/.../Views/FavoritesModuleUI.swift`（收藏列表卡片添加均价）
+- `ios/.../Views/UserAddRestaurantSheet.swift`（统一均价格式）
+- `帮助文档/会话记录.md`（追加会话记录）
+- `README.md`（追加本会话总结）
+
+### 2026-04-05 AI 美食决策助手（饭团）v8.0
+- 主要目的：新增 AI 美食决策助手功能，通过卡通形象"饭团"承载游戏化抽卡 + 智能问答推荐能力，解决用户就餐选择困难，提升 APP 高频交互
+- 完成的主要任务：
+  - 后端：新增 6 张数据库表（打卡/抽卡记录/成就/行为日志/每日次数）；db.py 新增 ~25 个操作函数；main.py 新增 12 个 API 端点；新建 weather_service.py 接入和风天气；amap_service.py 新增周边餐饮搜索
+  - iOS：Models.swift 新增 ~15 个数据模型；APIService.swift 新增 ~15 个 API 方法；新建 3 个 ViewModel + 5 个页面；MapView 集成饭团组件；ProfileView 新增成就入口
+  - 文档：实施计划写入需求文档目录；更新产品功能清单和 README
+- 关键决策：第一版仅做到店场景；外部推荐池用高德 POI；AI 用 qwen-plus 实时推理；四档稀有度纯随机无保底；每日 15 次限制；卡通形象 MVP 用 Emoji+SF Symbol
+- 技术栈：SwiftUI、FastAPI、qwen-plus、和风天气 API、高德地图周边搜索、Supabase PostgreSQL
+- 修改的文件：`backend/main.py`、`backend/db.py`、`backend/amap_service.py`、`backend/supabase_schema.sql`、`backend/.env`、新建 `backend/weather_service.py`、`backend/migrations/v8.0_gacha_system.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Views/MapView.swift`、`ios/.../Views/ProfileView.swift`、新建 `ios/.../ViewModels/FanTuanViewModel.swift`、`GachaViewModel.swift`、`QARecommendViewModel.swift`、`ios/.../Views/FanTuanView.swift`、`GachaView.swift`、`QARecommendView.swift`、`CheckinSheet.swift`、`AchievementsView.swift`、`需求文档&技术方案/AI美食决策助手实施计划.md`

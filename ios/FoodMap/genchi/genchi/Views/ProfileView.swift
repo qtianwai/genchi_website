@@ -126,6 +126,11 @@ struct ProfileView: View {
 
                 // 功能区
                 Section("设置") {
+                    // v8.0 成就入口
+                    NavigationLink(destination: AchievementsView().environmentObject(authState)) {
+                        Label("我的成就", systemImage: "trophy")
+                            .foregroundColor(.orange)
+                    }
                     Label("关于 App", systemImage: "info.circle")
                     Label("意见反馈", systemImage: "bubble.left")
                 }

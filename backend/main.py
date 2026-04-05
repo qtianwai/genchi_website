@@ -52,6 +52,16 @@ from db import (
     get_user_map_info, get_user_map_restaurants_public,
     upsert_user_map, subscribe_user_map, unsubscribe_user_map,
     toggle_map_subscription, get_map_subscriptions,
+    # 新增：v8.0 饭团系统相关
+    create_checkin, get_checkins_by_restaurant, get_checkins_by_user, get_user_checkin_count,
+    get_user_checkin_restaurant_ids,
+    save_gacha_records, mark_gacha_selected, get_user_gacha_count,
+    get_user_rare_card_count, get_user_limited_card_count,
+    get_daily_gacha_count, increment_daily_gacha_count,
+    get_all_achievements, get_user_achievements, unlock_achievement,
+    log_user_behavior, get_recent_user_behaviors, get_user_gacha_streak,
+    get_platform_popular_restaurants, get_user_all_restaurants,
+    get_restaurant_recommend_count, get_favorite_notes_for_restaurant,
 )
 
 load_dotenv()
@@ -62,6 +72,10 @@ DEBUG_MAX_VIDEOS = int(os.getenv("DEBUG_MAX_VIDEOS", "5"))
 
 # 读取评论回复调用限制配置
 COMMENT_REPLY_DAILY_LIMIT = int(os.getenv("COMMENT_REPLY_DAILY_LIMIT", "100"))
+
+# v8.0 饭团系统配置（环境变量可配置）
+DAILY_GACHA_LIMIT = int(os.getenv("DAILY_GACHA_LIMIT", "15"))  # 每日抽卡次数上限
+GACHA_INSERT_QA_THRESHOLD = int(os.getenv("GACHA_INSERT_QA_THRESHOLD", "3"))  # 连续换一批 N 次后插入提问
 
 # 全局计数器：评论回复接口每日调用次数（内存存储，重启后重置）
 _comment_reply_calls_today = 0
@@ -154,6 +168,45 @@ class AddToGroupRequest(BaseModel):
     user_id: str
     group_id: str
     restaurant_id: str
+
+
+# v8.0 新增：饭团系统相关请求模型
+
+class GachaDrawRequest(BaseModel):
+    user_id: str
+    latitude: float             # 用户当前纬度
+    longitude: float            # 用户当前经度
+    qa_answers: list = None     # 问答回答（连续换一批后插入提问的答案）
+
+class GachaSelectRequest(BaseModel):
+    user_id: str
+    session_id: str             # 抽卡会话 ID
+    restaurant_id: str          # 用户选中的店铺 ID
+
+class CheckinRequest(BaseModel):
+    user_id: str
+    restaurant_id: str
+    rating: int = None          # 评分 1-5（可选）
+    comment: str = None         # 评价文字（可选）
+    photo_urls: list = None     # 照片 URL 数组（可选）
+
+class QAQuestionsRequest(BaseModel):
+    user_id: str
+    latitude: float
+    longitude: float
+
+class QAResultRequest(BaseModel):
+    user_id: str
+    latitude: float
+    longitude: float
+    answers: list               # [{question: str, answer: str}]
+
+class LogBehaviorRequest(BaseModel):
+    user_id: str
+    action: str                 # view / favorite / checkin / gacha / navigate
+    target_type: str = None     # restaurant / author / card
+    target_id: str = None
+    metadata: dict = None
 
 
 # ─────────────────────────────────────────
@@ -1097,21 +1150,36 @@ async def get_map_restaurants(user_id: str):
 # ─────────────────────────────────────────
 
 @app.get("/api/user-restaurants/search")
-async def search_user_restaurant(name: str, city: str):
+async def search_user_restaurant(
+    name: str,
+    city: str = "",
+    lat: float | None = None,
+    lng: float | None = None,
+    limit: int = 50,
+):
     """
     搜索高德 POI 候选店铺（用于用户自建推荐时选择）
-    返回最多 5 条候选结果
+    返回候选结果列表。
+    - city：可选，限制搜索城市/省份
+    - lat/lng：可选，传入后会补充与用户当前位置距离，并优先按近到远排序
+    - limit：返回结果上限，默认 50
     """
     try:
         if not name or len(name.strip()) < 2:
             raise HTTPException(status_code=400, detail="店铺名称至少需要 2 个字符")
-        if not city or len(city.strip()) < 2:
-            raise HTTPException(status_code=400, detail="请选择所在城市")
 
-        # 复用 search_restaurant_for_review，返回多条候选（最多 5 条）
-        results = await search_restaurant_for_review(name.strip(), city.strip())
+        safe_limit = min(max(limit, 1), 50)
+        city_value = city.strip()
 
-        return {"results": results[:5]}
+        results = await search_restaurant_for_review(
+            name=name.strip(),
+            city=city_value,
+            user_lat=lat,
+            user_lng=lng,
+            max_results=safe_limit,
+        )
+
+        return {"results": results}
     except HTTPException:
         raise
     except Exception as e:
@@ -2097,6 +2165,627 @@ async def toggle_subscription(target_user_id: str, req: ToggleMapSubscriptionReq
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统 API
+# ─────────────────────────────────────────
+
+from weather_service import get_weather
+from amap_service import batch_search_restaurants as amap_search
+import uuid as uuid_lib
+import json
+import httpx
+
+
+# ── AI 推荐核心：调用 qwen-plus 大模型 ──
+
+QWEN_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")  # 通义千问 API Key
+QWEN_MODEL = os.getenv("QWEN_MODEL", "qwen-plus")
+
+
+async def _call_qwen(system_prompt: str, user_prompt: str) -> str:
+    """
+    调用通义千问大模型，返回文本响应。
+    使用 OpenAI 兼容接口格式。
+    """
+    url = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {QWEN_API_KEY}",
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "model": QWEN_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.8,
+        "response_format": {"type": "json_object"},
+    }
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    return data["choices"][0]["message"]["content"]
+
+
+def _build_recommendation_pool(user_id: str, lat: float, lng: float) -> list[dict]:
+    """
+    构建推荐池：用户已有店铺 + 高德 POI 外部店铺 + 平台热门池。
+    排除用户已打卡的店铺。
+    返回去重后的店铺列表，每个店铺附带 source 字段。
+    """
+    # 获取用户已打卡的店铺（排除已去过的）
+    checkin_ids = get_user_checkin_restaurant_ids(user_id)
+
+    # 1. 用户已有店铺
+    user_restaurants = get_user_all_restaurants(user_id)
+    pool = [r for r in user_restaurants if r.get("id") not in checkin_ids]
+
+    # 2. 平台热门池（补充）
+    if len(pool) < 20:
+        popular = get_platform_popular_restaurants(limit=30)
+        seen_ids = {r["id"] for r in pool}
+        for r in popular:
+            if r["id"] not in seen_ids and r["id"] not in checkin_ids:
+                r["source"] = "platform_popular"
+                pool.append(r)
+                seen_ids.add(r["id"])
+
+    # 3. 高德 POI 补充（当用户自有店铺不足时）
+    if len(pool) < 10:
+        try:
+            # 搜索附近 3km 内的餐饮 POI
+            from amap_service import search_nearby_restaurants
+            nearby = search_nearby_restaurants(lat, lng, radius=3000, limit=20)
+            seen_ids = {r["id"] for r in pool}
+            for poi in nearby:
+                poi_id = poi.get("id") or poi.get("amap_id")
+                if poi_id and poi_id not in seen_ids:
+                    pool.append({
+                        "id": poi_id,
+                        "name": poi.get("name", ""),
+                        "address": poi.get("address", ""),
+                        "city": poi.get("city", ""),
+                        "category": poi.get("category", ""),
+                        "latitude": poi.get("latitude"),
+                        "longitude": poi.get("longitude"),
+                        "amap_id": poi_id,
+                        "avg_price": poi.get("avg_price"),
+                        "source": "amap_nearby",
+                    })
+                    seen_ids.add(poi_id)
+        except Exception as e:
+            print(f"[推荐池] 高德 POI 搜索失败: {e}")
+
+    return pool
+
+
+def _determine_rarity(restaurant: dict, weather_category: str, hour: int) -> str:
+    """
+    判定卡片稀有度。
+    - limited：天气/时段限定触发
+    - rare：平台收藏 TOP / 多达人推荐
+    - quality：高评分 / 达人推荐
+    - normal：默认
+    """
+    import random
+
+    # 限定卡判定（天气+时段）
+    category = restaurant.get("category", "")
+    # 雨天 + 火锅/汤类 → 限定
+    if weather_category == "rainy" and any(k in category for k in ["火锅", "汤", "砂锅", "炖"]):
+        return "limited"
+    # 深夜（22-4点）+ 烧烤/夜宵 → 限定
+    if (hour >= 22 or hour <= 4) and any(k in category for k in ["烧烤", "夜宵", "串", "小龙虾"]):
+        return "limited"
+    # 下午茶时段 + 甜品/奶茶/咖啡 → 限定
+    if 14 <= hour <= 16 and any(k in category for k in ["甜品", "奶茶", "咖啡", "茶", "蛋糕", "面包"]):
+        return "limited"
+
+    # 稀有卡判定
+    source = restaurant.get("source", "")
+    fav_count = restaurant.get("favorite_count", 0)
+    if fav_count >= 5:  # 平台收藏数 >= 5
+        return "rare"
+
+    # 优质卡判定
+    recommend_count = 0
+    if source in ("author", "subscription"):
+        try:
+            recommend_count = get_restaurant_recommend_count(restaurant.get("id", ""))
+        except Exception:
+            pass
+    if recommend_count >= 3:
+        return "quality"
+    if restaurant.get("avg_price") and int(restaurant.get("avg_price", 0)) > 0:
+        return "quality"  # 有人均价格数据的店铺视为优质
+
+    # 随机小概率出稀有/优质（增加惊喜感）
+    roll = random.random()
+    if roll < 0.03:
+        return "rare"
+    if roll < 0.15:
+        return "quality"
+
+    return "normal"
+
+
+def _check_and_unlock_achievements(user_id: str) -> list[dict]:
+    """
+    检测并解锁成就，返回本次新解锁的成就列表。
+    在抽卡/打卡后调用。
+    """
+    newly_unlocked = []
+    all_achievements = get_all_achievements()
+
+    for ach in all_achievements:
+        ctype = ach["condition_type"]
+        cvalue = ach["condition_value"]
+        should_unlock = False
+
+        if ctype == "total_gacha":
+            should_unlock = get_user_gacha_count(user_id) >= cvalue
+        elif ctype == "rare_count":
+            should_unlock = get_user_rare_card_count(user_id) >= cvalue
+        elif ctype == "limited_card":
+            should_unlock = get_user_limited_card_count(user_id) >= cvalue
+        elif ctype == "daily_streak":
+            should_unlock = get_user_gacha_streak(user_id) >= cvalue
+        elif ctype == "checkin_count":
+            should_unlock = get_user_checkin_count(user_id) >= cvalue
+
+        if should_unlock:
+            result = unlock_achievement(user_id, ach["id"])
+            if result:  # 新解锁（非重复）
+                newly_unlocked.append(ach)
+
+    return newly_unlocked
+
+
+# ── 天气 API ──
+
+@app.get("/api/weather")
+async def api_get_weather(lat: float, lng: float):
+    """
+    获取当前天气信息（代理和风天气 API，30 分钟缓存）。
+    参数：lat, lng（查询参数）
+    返回：{ text, temp, icon, wind_dir, humidity, precip, category }
+    """
+    weather = await get_weather(lat, lng)
+    return weather
+
+
+# ── 抽卡 API ──
+
+@app.get("/api/gacha/remaining")
+async def api_gacha_remaining(user_id: str):
+    """
+    查询今日剩余抽卡次数。
+    返回：{ used, limit, remaining }
+    """
+    used = get_daily_gacha_count(user_id)
+    return {
+        "used": used,
+        "limit": DAILY_GACHA_LIMIT,
+        "remaining": max(0, DAILY_GACHA_LIMIT - used),
+    }
+
+
+@app.post("/api/gacha/draw")
+async def api_gacha_draw(req: GachaDrawRequest):
+    """
+    执行一次抽卡：AI 生成 6 张推荐卡片。
+    流程：检查次数 → 构建推荐池 → 获取天气 → 调用大模型 → 判定稀有度 → 保存记录 → 返回
+    返回：{ session_id, cards: [{restaurant_id, name, address, category, distance_km, rarity, recommend_reason, source}], remaining }
+    """
+    # 1. 检查每日次数
+    used = get_daily_gacha_count(req.user_id)
+    if used >= DAILY_GACHA_LIMIT:
+        raise HTTPException(status_code=429, detail=f"今日抽卡次数已用完（{DAILY_GACHA_LIMIT}次/天）")
+
+    # 2. 获取天气
+    weather = await get_weather(req.latitude, req.longitude)
+
+    # 3. 构建推荐池
+    pool = _build_recommendation_pool(req.user_id, req.latitude, req.longitude)
+    if not pool:
+        raise HTTPException(status_code=404, detail="推荐池为空，请先添加一些店铺")
+
+    # 4. 获取用户近期行为偏好
+    recent_behaviors = get_recent_user_behaviors(req.user_id, limit=30)
+    # 提取最近偏好的品类
+    recent_categories = []
+    for b in recent_behaviors:
+        meta = b.get("metadata") or {}
+        if meta.get("category"):
+            recent_categories.append(meta["category"])
+
+    # 5. 构建大模型 prompt
+    from datetime import datetime
+    now = datetime.now()
+    hour = now.hour
+
+    # 简化推荐池信息给大模型（最多 40 家）
+    pool_summary = []
+    for r in pool[:40]:
+        pool_summary.append({
+            "id": r.get("id") or r.get("amap_id"),
+            "name": r.get("name", ""),
+            "category": r.get("category", ""),
+            "address": r.get("address", ""),
+            "avg_price": r.get("avg_price"),
+            "source": r.get("source", "unknown"),
+        })
+
+    # 问答反馈（如果有）
+    qa_context = ""
+    if req.qa_answers:
+        qa_context = f"\n用户刚才回答了以下问题：{json.dumps(req.qa_answers, ensure_ascii=False)}"
+
+    system_prompt = """你是「饭团」，一个贪吃又可爱的美食推荐助手。
+你需要从推荐池中选出 6 家最适合用户当前场景的店铺，并为每家写一句简短俏皮的推荐理由。
+
+选择策略：
+- 结合当前时间、天气、用户口味偏好来选择
+- 优先选择和当前场景匹配的店铺（如雨天推荐火锅/热汤，深夜推荐烧烤/夜宵）
+- 兼顾多样性，不要全选同一品类
+- 如果用户有问答反馈，优先匹配用户表达的偏好
+
+返回 JSON 格式：
+{"picks": [{"id": "店铺ID", "reason": "一句话推荐理由（15字以内，俏皮风格）"}, ...]}
+必须返回恰好 6 个。id 必须是推荐池中存在的。"""
+
+    user_prompt = f"""当前时间：{now.strftime('%Y-%m-%d %H:%M')}（{'工作日' if now.weekday() < 5 else '周末'}）
+天气：{weather['text']}，{weather['temp']}°C
+用户最近偏好品类：{', '.join(recent_categories[:5]) if recent_categories else '暂无数据'}{qa_context}
+
+推荐池（{len(pool_summary)}家店铺）：
+{json.dumps(pool_summary, ensure_ascii=False)}"""
+
+    # 6. 调用大模型
+    try:
+        ai_response = await _call_qwen(system_prompt, user_prompt)
+        ai_result = json.loads(ai_response)
+        picks = ai_result.get("picks", [])[:6]
+    except Exception as e:
+        print(f"[抽卡] AI 调用失败: {e}，使用随机推荐兜底")
+        # 兜底：随机选 6 家
+        import random
+        picks = [{"id": r.get("id") or r.get("amap_id"), "reason": "饭团随机推荐~"} for r in random.sample(pool, min(6, len(pool)))]
+
+    # 7. 构建卡片结果
+    from math import radians, cos, sin, asin, sqrt
+    def haversine(lon1, lat1, lon2, lat2):
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+        dlon = lon2 - lon1; dlat = lat2 - lat1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        return 2 * asin(sqrt(a)) * 6371
+
+    # 建立 ID → 店铺映射
+    pool_map = {}
+    for r in pool:
+        rid = r.get("id") or r.get("amap_id")
+        if rid:
+            pool_map[rid] = r
+
+    session_id = str(uuid_lib.uuid4())
+    cards = []
+    gacha_records = []
+
+    for pick in picks:
+        rid = pick.get("id", "")
+        restaurant = pool_map.get(rid)
+        if not restaurant:
+            continue
+
+        # 计算距离
+        r_lat = restaurant.get("latitude")
+        r_lng = restaurant.get("longitude")
+        distance_km = None
+        if r_lat and r_lng:
+            distance_km = round(haversine(req.longitude, req.latitude, r_lng, r_lat), 1)
+
+        # 判定稀有度
+        rarity = _determine_rarity(restaurant, weather["category"], hour)
+
+        card = {
+            "restaurant_id": rid,
+            "name": restaurant.get("name", ""),
+            "address": restaurant.get("address", ""),
+            "city": restaurant.get("city", ""),
+            "category": restaurant.get("category", ""),
+            "avg_price": restaurant.get("avg_price"),
+            "photo_url": restaurant.get("photo_url"),
+            "distance_km": distance_km,
+            "rarity": rarity,
+            "recommend_reason": pick.get("reason", ""),
+            "source": restaurant.get("source", "unknown"),
+        }
+        cards.append(card)
+
+        # 准备抽卡记录
+        gacha_records.append({
+            "user_id": req.user_id,
+            "restaurant_id": rid,
+            "rarity": rarity,
+            "is_selected": False,
+            "session_id": session_id,
+            "trigger_type": "gacha",
+            "recommend_reason": pick.get("reason", ""),
+        })
+
+    # 8. 保存记录 + 增加次数
+    if gacha_records:
+        save_gacha_records(gacha_records)
+    new_count = increment_daily_gacha_count(req.user_id)
+
+    # 记录行为日志
+    log_user_behavior(req.user_id, "gacha", "card", session_id, {"weather": weather["category"], "hour": hour})
+
+    return {
+        "session_id": session_id,
+        "cards": cards,
+        "remaining": max(0, DAILY_GACHA_LIMIT - new_count),
+    }
+
+
+@app.post("/api/gacha/select")
+async def api_gacha_select(req: GachaSelectRequest):
+    """
+    用户选中某张卡片。
+    记录选择 + 检测成就解锁。
+    返回：{ status, newly_unlocked_achievements: [...] }
+    """
+    mark_gacha_selected(req.session_id, req.restaurant_id)
+
+    # 记录行为日志
+    log_user_behavior(req.user_id, "gacha_select", "restaurant", req.restaurant_id)
+
+    # 检测成就
+    newly_unlocked = _check_and_unlock_achievements(req.user_id)
+
+    return {
+        "status": "ok",
+        "newly_unlocked_achievements": newly_unlocked,
+    }
+
+
+# ── 问答推荐 API ──
+
+@app.post("/api/recommend/questions")
+async def api_recommend_questions(req: QAQuestionsRequest):
+    """
+    问答模式第一步：AI 生成 3-5 个动态问题。
+    基于用户行为和当前上下文生成个性化问题。
+    返回：{ questions: [{id, text, options: [str]}] }
+    """
+    weather = await get_weather(req.latitude, req.longitude)
+    recent_behaviors = get_recent_user_behaviors(req.user_id, limit=20)
+
+    from datetime import datetime
+    now = datetime.now()
+
+    system_prompt = """你是「饭团」，一个贪吃又可爱的美食推荐助手。
+你需要生成 3-5 个轻量问题来了解用户当前的就餐需求。
+
+问题要求：
+- 简短俏皮，不要生硬
+- 每个问题提供 2-4 个选项，用户可以快速选择
+- 问题之间有递进关系（先大方向，再细节）
+- 结合当前时间和天气自然融入
+- 不要超过 5 个问题
+
+返回 JSON 格式：
+{"questions": [{"id": 1, "text": "问题文本", "options": ["选项1", "选项2", ...]}, ...]}"""
+
+    user_prompt = f"""当前时间：{now.strftime('%H:%M')}（{'工作日' if now.weekday() < 5 else '周末'}）
+天气：{weather['text']}，{weather['temp']}°C
+用户最近行为：{json.dumps([b.get('action') for b in recent_behaviors[:10]], ensure_ascii=False)}"""
+
+    try:
+        ai_response = await _call_qwen(system_prompt, user_prompt)
+        result = json.loads(ai_response)
+        return result
+    except Exception as e:
+        print(f"[问答] AI 生成问题失败: {e}")
+        # 兜底：返回预设问题
+        return {"questions": [
+            {"id": 1, "text": "今天想吃什么类型？", "options": ["大餐", "简餐", "小吃", "甜品"]},
+            {"id": 2, "text": "口味偏好？", "options": ["清淡", "重口", "辣", "不辣"]},
+            {"id": 3, "text": "预算大概多少？", "options": ["30以内", "30-80", "80-150", "不限"]},
+        ]}
+
+
+@app.post("/api/recommend/result")
+async def api_recommend_result(req: QAResultRequest):
+    """
+    问答模式第二步：基于用户回答生成推荐列表。
+    返回：{ recommendations: [{restaurant_id, name, address, category, distance_km, recommend_reason, source}] }
+    """
+    weather = await get_weather(req.latitude, req.longitude)
+    pool = _build_recommendation_pool(req.user_id, req.latitude, req.longitude)
+
+    if not pool:
+        raise HTTPException(status_code=404, detail="推荐池为空，请先添加一些店铺")
+
+    from datetime import datetime
+    now = datetime.now()
+
+    pool_summary = []
+    for r in pool[:40]:
+        pool_summary.append({
+            "id": r.get("id") or r.get("amap_id"),
+            "name": r.get("name", ""),
+            "category": r.get("category", ""),
+            "address": r.get("address", ""),
+            "avg_price": r.get("avg_price"),
+        })
+
+    system_prompt = """你是「饭团」，一个贪吃又可爱的美食推荐助手。
+根据用户的问答回答，从推荐池中选出最匹配的 3-5 家店铺。
+
+返回 JSON 格式：
+{"recommendations": [{"id": "店铺ID", "reason": "推荐理由（20字以内）", "match_score": 0.9}, ...]}
+按匹配度从高到低排序。id 必须是推荐池中存在的。"""
+
+    user_prompt = f"""用户回答：{json.dumps(req.answers, ensure_ascii=False)}
+天气：{weather['text']}，{weather['temp']}°C
+时间：{now.strftime('%H:%M')}
+
+推荐池：
+{json.dumps(pool_summary, ensure_ascii=False)}"""
+
+    try:
+        ai_response = await _call_qwen(system_prompt, user_prompt)
+        ai_result = json.loads(ai_response)
+        recommendations = ai_result.get("recommendations", [])
+    except Exception as e:
+        print(f"[问答推荐] AI 调用失败: {e}")
+        import random
+        recommendations = [{"id": r.get("id") or r.get("amap_id"), "reason": "饭团推荐~", "match_score": 0.5} for r in random.sample(pool, min(3, len(pool)))]
+
+    # 构建结果
+    from math import radians, cos, sin, asin, sqrt
+    def haversine(lon1, lat1, lon2, lat2):
+        lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
+        dlon = lon2 - lon1; dlat = lat2 - lat1
+        a = sin(dlat/2)**2 + cos(lat1) * cos(lat2) * sin(dlon/2)**2
+        return 2 * asin(sqrt(a)) * 6371
+
+    pool_map = {(r.get("id") or r.get("amap_id")): r for r in pool}
+    results = []
+    for rec in recommendations:
+        rid = rec.get("id", "")
+        restaurant = pool_map.get(rid)
+        if not restaurant:
+            continue
+        r_lat = restaurant.get("latitude")
+        r_lng = restaurant.get("longitude")
+        distance_km = None
+        if r_lat and r_lng:
+            distance_km = round(haversine(req.longitude, req.latitude, r_lng, r_lat), 1)
+
+        results.append({
+            "restaurant_id": rid,
+            "name": restaurant.get("name", ""),
+            "address": restaurant.get("address", ""),
+            "city": restaurant.get("city", ""),
+            "category": restaurant.get("category", ""),
+            "avg_price": restaurant.get("avg_price"),
+            "photo_url": restaurant.get("photo_url"),
+            "distance_km": distance_km,
+            "recommend_reason": rec.get("reason", ""),
+            "match_score": rec.get("match_score", 0),
+            "source": restaurant.get("source", "unknown"),
+        })
+
+    # 记录行为日志
+    log_user_behavior(req.user_id, "qa_recommend", metadata={"answers": req.answers})
+
+    return {"recommendations": results}
+
+
+# ── 打卡 API ──
+
+@app.post("/api/checkins")
+async def api_create_checkin(req: CheckinRequest):
+    """
+    创建打卡记录。
+    返回：{ checkin, newly_unlocked_achievements }
+    """
+    checkin = create_checkin(
+        user_id=req.user_id,
+        restaurant_id=req.restaurant_id,
+        rating=req.rating,
+        comment=req.comment,
+        photo_urls=req.photo_urls,
+    )
+
+    # 记录行为日志
+    log_user_behavior(req.user_id, "checkin", "restaurant", req.restaurant_id, {
+        "rating": req.rating,
+        "has_comment": bool(req.comment),
+        "photo_count": len(req.photo_urls) if req.photo_urls else 0,
+    })
+
+    # 检测成就
+    newly_unlocked = _check_and_unlock_achievements(req.user_id)
+
+    return {
+        "checkin": checkin,
+        "newly_unlocked_achievements": newly_unlocked,
+    }
+
+
+@app.get("/api/checkins/restaurant/{restaurant_id}")
+async def api_get_restaurant_checkins(restaurant_id: str, limit: int = 20):
+    """获取某店铺的打卡记录"""
+    return get_checkins_by_restaurant(restaurant_id, limit)
+
+
+@app.get("/api/checkins/user")
+async def api_get_user_checkins(user_id: str, limit: int = 50):
+    """获取用户自己的打卡历史"""
+    return get_checkins_by_user(user_id, limit)
+
+
+# ── 成就 API ──
+
+@app.get("/api/achievements")
+async def api_get_achievements():
+    """获取所有成就定义"""
+    return get_all_achievements()
+
+
+@app.get("/api/achievements/user")
+async def api_get_user_achievements(user_id: str):
+    """获取用户已解锁的成就"""
+    return get_user_achievements(user_id)
+
+
+# ── 行为日志 API ──
+
+@app.post("/api/behavior/log")
+async def api_log_behavior(req: LogBehaviorRequest):
+    """记录用户行为日志（前端主动上报）"""
+    log_user_behavior(
+        user_id=req.user_id,
+        action=req.action,
+        target_type=req.target_type,
+        target_id=req.target_id,
+        metadata=req.metadata,
+    )
+    return {"status": "ok"}
+
+
+# ── 收藏留言 AI 摘要 API ──
+
+@app.get("/api/restaurants/{restaurant_id}/reviews-summary")
+async def api_reviews_summary(restaurant_id: str):
+    """
+    AI 摘要：聚合其他用户对该店的收藏理由。
+    若无收藏理由则返回空。
+    返回：{ summary: str, note_count: int }
+    """
+    notes = get_favorite_notes_for_restaurant(restaurant_id)
+    if not notes:
+        return {"summary": "", "note_count": 0}
+
+    # 少于 3 条直接返回原文拼接，不调 AI
+    if len(notes) <= 2:
+        return {"summary": " | ".join(notes), "note_count": len(notes)}
+
+    try:
+        system_prompt = "你是美食推荐助手。请将以下用户对同一家店铺的收藏理由，总结为一句简洁的推荐语（30字以内）。返回 JSON：{\"summary\": \"...\"}"
+        user_prompt = f"收藏理由：{json.dumps(notes, ensure_ascii=False)}"
+        ai_response = await _call_qwen(system_prompt, user_prompt)
+        result = json.loads(ai_response)
+        return {"summary": result.get("summary", ""), "note_count": len(notes)}
+    except Exception as e:
+        print(f"[AI摘要] 失败: {e}")
+        return {"summary": notes[0], "note_count": len(notes)}
 
 
 # ─────────────────────────────────────────

@@ -1354,3 +1354,408 @@ def get_map_subscriptions(subscriber_id: str) -> list[dict]:
         })
 
     return subscriptions
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统：打卡相关操作
+# ─────────────────────────────────────────
+
+def create_checkin(user_id: str, restaurant_id: str, rating: int = None, comment: str = None, photo_urls: list = None) -> dict:
+    """创建打卡记录（含可选的评分、评价、照片）"""
+    data = {"user_id": user_id, "restaurant_id": restaurant_id}
+    if rating is not None:
+        data["rating"] = rating
+    if comment is not None:
+        data["comment"] = comment
+    if photo_urls is not None:
+        data["photo_urls"] = photo_urls
+    result = supabase.table("user_checkins").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_checkins_by_restaurant(restaurant_id: str, limit: int = 20) -> list[dict]:
+    """获取某店铺的打卡记录（含用户 profile）"""
+    result = (
+        supabase.table("user_checkins")
+        .select("*, user_profiles(nickname, avatar_url)")
+        .eq("restaurant_id", restaurant_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_checkins_by_user(user_id: str, limit: int = 50) -> list[dict]:
+    """获取用户自己的打卡历史（含店铺信息）"""
+    result = (
+        supabase.table("user_checkins")
+        .select("*, restaurants(id, name, address, city, category, photo_url)")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_user_checkin_count(user_id: str) -> int:
+    """获取用户打卡总数（用于成就检测）"""
+    result = (
+        supabase.table("user_checkins")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return result.count or 0
+
+
+def get_user_checkin_restaurant_ids(user_id: str) -> set:
+    """获取用户已打卡的店铺 ID 集合（用于推荐时排除已去过的店）"""
+    result = (
+        supabase.table("user_checkins")
+        .select("restaurant_id")
+        .eq("user_id", user_id)
+        .execute()
+    )
+    return {row["restaurant_id"] for row in (result.data or []) if row.get("restaurant_id")}
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统：抽卡记录相关操作
+# ─────────────────────────────────────────
+
+def save_gacha_records(records: list[dict]) -> list[dict]:
+    """
+    批量保存一次抽卡的 6 张卡片记录。
+    records: [{user_id, restaurant_id, rarity, is_selected, session_id, trigger_type, recommend_reason}]
+    """
+    result = supabase.table("gacha_records").insert(records).execute()
+    return result.data or []
+
+
+def mark_gacha_selected(session_id: str, restaurant_id: str) -> dict:
+    """用户选中某张卡片，更新 is_selected"""
+    result = (
+        supabase.table("gacha_records")
+        .update({"is_selected": True})
+        .eq("session_id", session_id)
+        .eq("restaurant_id", restaurant_id)
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+def get_user_gacha_count(user_id: str) -> int:
+    """获取用户累计抽卡次数（按 session 去重，用于成就检测）"""
+    result = (
+        supabase.table("gacha_records")
+        .select("session_id")
+        .eq("user_id", user_id)
+        .eq("is_selected", True)
+        .execute()
+    )
+    return len(result.data or [])
+
+
+def get_user_rare_card_count(user_id: str) -> int:
+    """获取用户抽中的稀有卡数量（is_selected=true 且 rarity=rare）"""
+    result = (
+        supabase.table("gacha_records")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("is_selected", True)
+        .eq("rarity", "rare")
+        .execute()
+    )
+    return result.count or 0
+
+
+def get_user_limited_card_count(user_id: str) -> int:
+    """获取用户抽中的限定卡数量"""
+    result = (
+        supabase.table("gacha_records")
+        .select("id", count="exact")
+        .eq("user_id", user_id)
+        .eq("is_selected", True)
+        .eq("rarity", "limited")
+        .execute()
+    )
+    return result.count or 0
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统：每日抽卡次数管理
+# ─────────────────────────────────────────
+
+def get_daily_gacha_count(user_id: str) -> int:
+    """获取用户今日已使用的抽卡次数"""
+    from datetime import date
+    today = date.today().isoformat()
+    result = (
+        supabase.table("daily_gacha_counts")
+        .select("count")
+        .eq("user_id", user_id)
+        .eq("date", today)
+        .execute()
+    )
+    if result.data:
+        return result.data[0].get("count", 0)
+    return 0
+
+
+def increment_daily_gacha_count(user_id: str) -> int:
+    """
+    增加用户今日抽卡次数，返回更新后的次数。
+    若今日无记录则创建（count=1），有记录则 +1。
+    """
+    from datetime import date
+    today = date.today().isoformat()
+    current = get_daily_gacha_count(user_id)
+    new_count = current + 1
+    supabase.table("daily_gacha_counts").upsert(
+        {"user_id": user_id, "date": today, "count": new_count},
+        on_conflict="user_id,date"
+    ).execute()
+    return new_count
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统：成就相关操作
+# ─────────────────────────────────────────
+
+def get_all_achievements() -> list[dict]:
+    """获取所有成就定义"""
+    result = supabase.table("achievements").select("*").order("condition_value").execute()
+    return result.data or []
+
+
+def get_user_achievements(user_id: str) -> list[dict]:
+    """获取用户已解锁的成就（含成就定义详情）"""
+    result = (
+        supabase.table("user_achievements")
+        .select("*, achievements(*)")
+        .eq("user_id", user_id)
+        .order("unlocked_at", desc=True)
+        .execute()
+    )
+    return result.data or []
+
+
+def unlock_achievement(user_id: str, achievement_id: str) -> dict | None:
+    """
+    解锁成就（幂等操作，已解锁则跳过）。
+    返回新解锁的记录，若已存在返回 None。
+    """
+    # 检查是否已解锁
+    existing = (
+        supabase.table("user_achievements")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("achievement_id", achievement_id)
+        .execute()
+    )
+    if existing.data:
+        return None
+
+    result = supabase.table("user_achievements").insert({
+        "user_id": user_id,
+        "achievement_id": achievement_id,
+    }).execute()
+    return result.data[0] if result.data else None
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统：用户行为日志
+# ─────────────────────────────────────────
+
+def log_user_behavior(user_id: str, action: str, target_type: str = None, target_id: str = None, metadata: dict = None) -> dict:
+    """
+    记录用户行为日志，用于 AI 推荐的偏好分析。
+    action: view / favorite / checkin / gacha / navigate / unfavorite
+    target_type: restaurant / author / card
+    """
+    data = {"user_id": user_id, "action": action}
+    if target_type:
+        data["target_type"] = target_type
+    if target_id:
+        data["target_id"] = target_id
+    if metadata:
+        data["metadata"] = metadata
+    result = supabase.table("user_behavior_logs").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_recent_user_behaviors(user_id: str, limit: int = 50) -> list[dict]:
+    """获取用户最近的行为日志（用于 AI 推荐分析偏好）"""
+    result = (
+        supabase.table("user_behavior_logs")
+        .select("*")
+        .eq("user_id", user_id)
+        .order("created_at", desc=True)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_user_gacha_streak(user_id: str) -> int:
+    """
+    计算用户连续抽卡天数（用于成就检测）。
+    从今天往前数，连续有抽卡记录的天数。
+    """
+    from datetime import date, timedelta
+    result = (
+        supabase.table("daily_gacha_counts")
+        .select("date, count")
+        .eq("user_id", user_id)
+        .gt("count", 0)
+        .order("date", desc=True)
+        .limit(60)  # 最多查 60 天
+        .execute()
+    )
+    if not result.data:
+        return 0
+
+    dates = sorted([row["date"] for row in result.data], reverse=True)
+    streak = 0
+    today = date.today()
+    for i, d in enumerate(dates):
+        expected = (today - timedelta(days=i)).isoformat()
+        if d == expected:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+# ─────────────────────────────────────────
+# v8.0 饭团系统：推荐池构建辅助查询
+# ─────────────────────────────────────────
+
+def get_platform_popular_restaurants(limit: int = 50) -> list[dict]:
+    """
+    获取平台热门店铺（全平台收藏数最多的店铺）。
+    用于冷启动和推荐池补充。
+    """
+    # 统计每个店铺的收藏数
+    fav_result = (
+        supabase.table("user_favorites")
+        .select("restaurant_id")
+        .execute()
+    )
+    # 计数
+    counts: dict[str, int] = {}
+    for row in (fav_result.data or []):
+        rid = row.get("restaurant_id")
+        if rid:
+            counts[rid] = counts.get(rid, 0) + 1
+
+    if not counts:
+        return []
+
+    # 按收藏数排序取 top N
+    sorted_ids = sorted(counts.keys(), key=lambda x: counts[x], reverse=True)[:limit]
+
+    # 查询店铺详情
+    result = (
+        supabase.table("restaurants")
+        .select("*")
+        .in_("id", sorted_ids)
+        .execute()
+    )
+    restaurants = result.data or []
+
+    # 附加收藏数并排序
+    for r in restaurants:
+        r["favorite_count"] = counts.get(r["id"], 0)
+    restaurants.sort(key=lambda x: x.get("favorite_count", 0), reverse=True)
+
+    return restaurants
+
+
+def get_user_all_restaurants(user_id: str) -> list[dict]:
+    """
+    获取用户所有可推荐的店铺（达人推荐 + 自建 + 订阅用户的店铺）。
+    去重后返回，用于推荐池构建。
+    """
+    seen_ids = set()
+    all_restaurants = []
+
+    # 1. 用户关注的博主推荐的店铺
+    follows = get_user_followed_authors(user_id)
+    if follows:
+        author_ids = [f["author_id"] for f in follows]
+        result = (
+            supabase.table("author_restaurants")
+            .select("restaurant_id, restaurants(*)")
+            .in_("author_id", author_ids)
+            .execute()
+        )
+        for item in (result.data or []):
+            r = item.get("restaurants")
+            if r and r["id"] not in seen_ids:
+                seen_ids.add(r["id"])
+                r["source"] = "author"
+                all_restaurants.append(r)
+
+    # 2. 用户自建推荐
+    user_created = get_user_created_restaurants(user_id)
+    for item in user_created:
+        r = item.get("restaurants")
+        if r and r["id"] not in seen_ids:
+            seen_ids.add(r["id"])
+            r["source"] = "user_created"
+            all_restaurants.append(r)
+
+    # 3. 订阅用户的店铺
+    subs = get_map_subscriptions(user_id)
+    for sub in subs:
+        if not sub.get("is_enabled", True):
+            continue
+        target_id = sub.get("target_user_id")
+        if not target_id:
+            continue
+        # 获取被订阅用户的博主推荐
+        target_follows = get_user_followed_authors(target_id)
+        if target_follows:
+            target_author_ids = [f["author_id"] for f in target_follows]
+            result = (
+                supabase.table("author_restaurants")
+                .select("restaurant_id, restaurants(*)")
+                .in_("author_id", target_author_ids)
+                .execute()
+            )
+            for item in (result.data or []):
+                r = item.get("restaurants")
+                if r and r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    r["source"] = "subscription"
+                    all_restaurants.append(r)
+
+    return all_restaurants
+
+
+def get_restaurant_recommend_count(restaurant_id: str) -> int:
+    """获取某店铺被多少个达人推荐过（用于稀有度判定）"""
+    result = (
+        supabase.table("author_restaurants")
+        .select("author_id", count="exact")
+        .eq("restaurant_id", restaurant_id)
+        .execute()
+    )
+    return result.count or 0
+
+
+def get_favorite_notes_for_restaurant(restaurant_id: str, limit: int = 10) -> list[str]:
+    """获取某店铺的所有收藏理由（用于 AI 摘要）"""
+    result = (
+        supabase.table("user_favorites")
+        .select("note")
+        .eq("restaurant_id", restaurant_id)
+        .not_is("note", "null")
+        .neq("note", "")
+        .limit(limit)
+        .execute()
+    )
+    return [row["note"] for row in (result.data or []) if row.get("note")]

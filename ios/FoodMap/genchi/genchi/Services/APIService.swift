@@ -2,6 +2,7 @@
 // 封装所有与后端通信的接口，iOS App 通过此文件调用后端 API
 
 import Foundation
+import CoreLocation
 
 // 后端服务地址，部署到 Railway 后替换为真实地址
 // 本地开发时使用 http://localhost:8000
@@ -369,10 +370,27 @@ class APIService {
     // ─────────────────────────────────────────
 
     // 搜索高德候选店铺（用于用户自建推荐时选择）
-    func searchUserRestaurant(name: String, city: String) async throws -> [RestaurantCandidate] {
+    func searchUserRestaurant(
+        name: String,
+        city: String,
+        location: CLLocationCoordinate2D? = nil,
+        limit: Int = 50
+    ) async throws -> [RestaurantCandidate] {
+        var params = [
+            "name": name,
+            "limit": "\(limit)"
+        ]
+        if !city.isEmpty {
+            params["city"] = city
+        }
+        if let location {
+            params["lat"] = "\(location.latitude)"
+            params["lng"] = "\(location.longitude)"
+        }
+
         let resp = try await get(
             path: "/api/user-restaurants/search",
-            params: ["name": name, "city": city],
+            params: params,
             responseType: UserRestaurantSearchResponse.self
         )
         return resp.results
@@ -394,6 +412,8 @@ class APIService {
             let longitude: Double
             let category: String
             let note: String
+            let avg_price: Int?
+            let photo_url: String
         }
         return try await post(
             path: "/api/user-restaurants",
@@ -406,7 +426,9 @@ class APIService {
                 latitude: candidate.latitude,
                 longitude: candidate.longitude,
                 category: candidate.category_mapped,
-                note: note
+                note: note,
+                avg_price: candidate.avg_price,
+                photo_url: candidate.photo_url ?? ""
             ),
             responseType: CreateUserRestaurantResponse.self
         )
@@ -737,6 +759,173 @@ class APIService {
         }
 
         return try JSONDecoder().decode(R.self, from: data)
+    }
+
+    // ─────────────────────────────────────────
+    // v8.0 饭团系统 API
+    // ─────────────────────────────────────────
+
+    // MARK: - 天气
+
+    /// 获取当前天气信息
+    func getWeather(lat: Double, lng: Double) async throws -> WeatherInfo {
+        try await get(
+            path: "/api/weather",
+            params: ["lat": String(lat), "lng": String(lng)],
+            responseType: WeatherInfo.self
+        )
+    }
+
+    // MARK: - 抽卡
+
+    /// 查询今日剩余抽卡次数
+    func getGachaRemaining(userId: String) async throws -> GachaRemainingResponse {
+        try await get(
+            path: "/api/gacha/remaining",
+            params: ["user_id": userId],
+            responseType: GachaRemainingResponse.self
+        )
+    }
+
+    /// 执行一次抽卡（返回 6 张卡片）
+    func gachaDraw(userId: String, lat: Double, lng: Double, qaAnswers: [[String: String]]? = nil) async throws -> GachaDrawResponse {
+        struct Body: Codable {
+            let user_id: String
+            let latitude: Double
+            let longitude: Double
+            let qa_answers: [[String: String]]?
+        }
+        return try await post(
+            path: "/api/gacha/draw",
+            body: Body(user_id: userId, latitude: lat, longitude: lng, qa_answers: qaAnswers),
+            responseType: GachaDrawResponse.self
+        )
+    }
+
+    /// 用户选中某张卡片
+    func gachaSelect(userId: String, sessionId: String, restaurantId: String) async throws -> GachaSelectResponse {
+        struct Body: Codable {
+            let user_id: String
+            let session_id: String
+            let restaurant_id: String
+        }
+        return try await post(
+            path: "/api/gacha/select",
+            body: Body(user_id: userId, session_id: sessionId, restaurant_id: restaurantId),
+            responseType: GachaSelectResponse.self
+        )
+    }
+
+    // MARK: - 问答推荐
+
+    /// 问答模式：获取动态问题
+    func getRecommendQuestions(userId: String, lat: Double, lng: Double) async throws -> QAQuestionsResponse {
+        struct Body: Codable {
+            let user_id: String
+            let latitude: Double
+            let longitude: Double
+        }
+        return try await post(
+            path: "/api/recommend/questions",
+            body: Body(user_id: userId, latitude: lat, longitude: lng),
+            responseType: QAQuestionsResponse.self
+        )
+    }
+
+    /// 问答模式：基于回答生成推荐
+    func getRecommendResult(userId: String, lat: Double, lng: Double, answers: [[String: String]]) async throws -> QAResultResponse {
+        struct Body: Codable {
+            let user_id: String
+            let latitude: Double
+            let longitude: Double
+            let answers: [[String: String]]
+        }
+        return try await post(
+            path: "/api/recommend/result",
+            body: Body(user_id: userId, latitude: lat, longitude: lng, answers: answers),
+            responseType: QAResultResponse.self
+        )
+    }
+
+    // MARK: - 打卡
+
+    /// 创建打卡记录
+    func createCheckin(userId: String, restaurantId: String, rating: Int? = nil, comment: String? = nil, photoUrls: [String]? = nil) async throws -> CheckinResponse {
+        struct Body: Codable {
+            let user_id: String
+            let restaurant_id: String
+            let rating: Int?
+            let comment: String?
+            let photo_urls: [String]?
+        }
+        return try await post(
+            path: "/api/checkins",
+            body: Body(user_id: userId, restaurant_id: restaurantId, rating: rating, comment: comment, photo_urls: photoUrls),
+            responseType: CheckinResponse.self
+        )
+    }
+
+    /// 获取某店铺的打卡记录
+    func getRestaurantCheckins(restaurantId: String, limit: Int = 20) async throws -> [Checkin] {
+        try await get(
+            path: "/api/checkins/restaurant/\(restaurantId)",
+            params: ["limit": String(limit)],
+            responseType: [Checkin].self
+        )
+    }
+
+    /// 获取用户打卡历史
+    func getUserCheckins(userId: String, limit: Int = 50) async throws -> [Checkin] {
+        try await get(
+            path: "/api/checkins/user",
+            params: ["user_id": userId, "limit": String(limit)],
+            responseType: [Checkin].self
+        )
+    }
+
+    // MARK: - 成就
+
+    /// 获取所有成就定义
+    func getAllAchievements() async throws -> [Achievement] {
+        try await get(path: "/api/achievements", responseType: [Achievement].self)
+    }
+
+    /// 获取用户已解锁的成就
+    func getUserAchievements(userId: String) async throws -> [UserAchievement] {
+        try await get(
+            path: "/api/achievements/user",
+            params: ["user_id": userId],
+            responseType: [UserAchievement].self
+        )
+    }
+
+    // MARK: - 行为日志
+
+    /// 记录用户行为
+    func logBehavior(userId: String, action: String, targetType: String? = nil, targetId: String? = nil, metadata: [String: String]? = nil) async throws {
+        struct Body: Codable {
+            let user_id: String
+            let action: String
+            let target_type: String?
+            let target_id: String?
+            let metadata: [String: String]?
+        }
+        struct Resp: Codable { let status: String }
+        _ = try await post(
+            path: "/api/behavior/log",
+            body: Body(user_id: userId, action: action, target_type: targetType, target_id: targetId, metadata: metadata),
+            responseType: Resp.self
+        )
+    }
+
+    // MARK: - 收藏留言 AI 摘要
+
+    /// 获取店铺收藏留言 AI 摘要
+    func getReviewsSummary(restaurantId: String) async throws -> ReviewsSummaryResponse {
+        try await get(
+            path: "/api/restaurants/\(restaurantId)/reviews-summary",
+            responseType: ReviewsSummaryResponse.self
+        )
     }
 }
 

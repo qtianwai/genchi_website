@@ -46,9 +46,54 @@ struct MapView: View {
     @AppStorage("map_last_clipboard_prompt_at") private var lastClipboardPromptAt = 0.0
     @AppStorage("map_recent_searches") private var searchHistoryStore = ""
 
-    // 距离筛选雷达动画
+    // 距离筛选雷达动画（Timer 需放在 @State 中，否则在 View 实例方法里无法修改普通存储属性）
     @State private var radarPhase: Double = 0
-    private var radarTimer: Timer? = nil
+    @State private var radarTimer: Timer? = nil
+
+    // v8.0 饭团系统
+    @StateObject private var fanTuanVM = FanTuanViewModel()
+    @State private var showGachaView = false
+    @State private var showQAView = false
+    @State private var showCheckinSheet = false
+    @State private var checkinRestaurantId: String = ""
+    @State private var checkinRestaurantName: String = ""
+
+    /// 跨文件构造入口（如 MainTabView）。
+    /// 说明：结构体内存在 `private` 存储属性时，编译器生成的成员初始化器为 `private`，
+    /// 其他源码文件无法调用 `MapView(refreshTrigger:)`，故提供显式 internal 初始化器。
+    init(refreshTrigger: Binding<Int>) {
+        _viewModel = StateObject(wrappedValue: MapViewModel())
+        _locationManager = StateObject(wrappedValue: LocationManager())
+        _refreshTrigger = refreshTrigger
+        _selectedItem = State(initialValue: nil)
+        _showFilterPanel = State(initialValue: false)
+        _showSearchField = State(initialValue: false)
+        _showAddMenu = State(initialValue: false)
+        _showParseSheet = State(initialValue: false)
+        _showUserAddSheet = State(initialValue: false)
+        _showNavSheet = State(initialValue: false)
+        _pendingParseLink = State(initialValue: nil)
+        _parseAutoStart = State(initialValue: false)
+        _showClipboardPrompt = State(initialValue: false)
+        _clipboardLink = State(initialValue: "")
+        _lastSelectedRestaurantId = State(initialValue: nil)
+        _stagedDeletionRestaurantIds = State(initialValue: [])
+        _hiddenRestaurantIds = State(initialValue: [])
+        _selectedVideos = State(initialValue: [])
+        _videoCache = State(initialValue: [:])
+        _isLoadingVideos = State(initialValue: false)
+        _showImagePreview = State(initialValue: false)
+        _previewImageURL = State(initialValue: nil)
+        _toastMessage = State(initialValue: nil)
+        _searchHistory = State(initialValue: [])
+        _isSearchFocused = FocusState()
+        _lastHandledClipboardLink = AppStorage(wrappedValue: "", "map_last_handled_clipboard_link")
+        _lastClipboardPromptAt = AppStorage(wrappedValue: 0.0, "map_last_clipboard_prompt_at")
+        _searchHistoryStore = AppStorage(wrappedValue: "", "map_recent_searches")
+        _radarPhase = State(initialValue: 0)
+        _radarTimer = State(initialValue: nil)
+        _authState = EnvironmentObject()
+    }
 
     private var windowSafeAreaInsets: UIEdgeInsets {
         UIApplication.shared.connectedScenes
@@ -59,6 +104,18 @@ struct MapView: View {
     }
 
     var body: some View {
+        mapRootView
+    }
+
+    private var mapRootView: some View {
+        configuredAlerts(
+            for: configuredSheets(
+                for: baseMapScene
+            )
+        )
+    }
+
+    private var baseMapScene: some View {
         ZStack {
             mapLayer
                 .zIndex(0)
@@ -86,6 +143,18 @@ struct MapView: View {
                     .zIndex(4)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
+
+            // v8.0 饭团浮动组件（右下角）
+            VStack {
+                Spacer()
+                HStack {
+                    Spacer()
+                    FanTuanView(viewModel: fanTuanVM)
+                        .padding(.trailing, 16)
+                        .padding(.bottom, 120) // 避开底部卡片和 Tab 栏
+                }
+            }
+            .zIndex(5)
         }
         .ignoresSafeArea()
         .task {
@@ -94,6 +163,10 @@ struct MapView: View {
             loadSearchHistory()
             if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
                 viewModel.centerMapOnUserLocation(location)
+            }
+            // v8.0 饭团：获取天气
+            if let loc = locationManager.userLocation {
+                await fanTuanVM.fetchWeather(lat: loc.coordinate.latitude, lng: loc.coordinate.longitude)
             }
         }
         .onAppear {
@@ -125,6 +198,10 @@ struct MapView: View {
         .onReceive(NotificationCenter.default.publisher(for: .restaurantStateDidChange)) { _ in
             Task { await reloadAllData() }
         }
+    }
+
+    private func configuredSheets<Content: View>(for content: Content) -> some View {
+        content
         .sheet(isPresented: $showAddMenu) {
             MapAddEntrySheet(
                 onParseLink: {
@@ -151,7 +228,7 @@ struct MapView: View {
             .environmentObject(authState)
         }
         .sheet(isPresented: $showUserAddSheet) {
-            UserAddRestaurantSheet(onSuccess: {
+            UserAddRestaurantSheet(locationManager: locationManager, onSuccess: {
                 refreshTrigger += 1
             })
             .environmentObject(authState)
@@ -159,6 +236,72 @@ struct MapView: View {
         .sheet(isPresented: $showImagePreview) {
             ImagePreviewSheet(imageURL: previewImageURL)
         }
+        // v8.0 饭团菜单
+        .sheet(isPresented: $fanTuanVM.isMenuOpen) {
+            FanTuanMenuSheet(
+                onSelectGacha: { showGachaView = true },
+                onSelectQA: { showQAView = true }
+            )
+        }
+        // v8.0 抽卡全屏页
+        .fullScreenCover(isPresented: $showGachaView) {
+            GachaView(
+                fanTuanVM: fanTuanVM,
+                latitude: locationManager.userLocation?.coordinate.latitude ?? 39.9,
+                longitude: locationManager.userLocation?.coordinate.longitude ?? 116.4,
+                onNavigate: { restaurantId in
+                    showGachaView = false
+                    // TODO: 跳转导航
+                },
+                onFavorite: { restaurantId in
+                    Task {
+                        guard let userId = authState.userId else { return }
+                        try? await APIService.shared.addFavorite(userId: userId, restaurantId: restaurantId)
+                    }
+                },
+                onViewVideos: { restaurantId in
+                    // TODO: 跳转视频列表
+                },
+                onCheckin: { restaurantId in
+                    checkinRestaurantId = restaurantId
+                    checkinRestaurantName = ""
+                    showCheckinSheet = true
+                }
+            )
+            .environmentObject(authState)
+        }
+        // v8.0 问答推荐全屏页
+        .fullScreenCover(isPresented: $showQAView) {
+            QARecommendView(
+                latitude: locationManager.userLocation?.coordinate.latitude ?? 39.9,
+                longitude: locationManager.userLocation?.coordinate.longitude ?? 116.4,
+                onNavigate: { _ in showQAView = false },
+                onFavorite: { restaurantId in
+                    Task {
+                        guard let userId = authState.userId else { return }
+                        try? await APIService.shared.addFavorite(userId: userId, restaurantId: restaurantId)
+                    }
+                },
+                onCheckin: { restaurantId in
+                    checkinRestaurantId = restaurantId
+                    checkinRestaurantName = ""
+                    showCheckinSheet = true
+                }
+            )
+            .environmentObject(authState)
+        }
+        // v8.0 打卡弹窗
+        .sheet(isPresented: $showCheckinSheet) {
+            CheckinSheet(
+                restaurantId: checkinRestaurantId,
+                restaurantName: checkinRestaurantName
+            )
+            .environmentObject(authState)
+        }
+    }
+
+    private func configuredAlerts<Content: View>(for content: Content) -> some View {
+        content
         .confirmationDialog("选择导航应用", isPresented: $showNavSheet, titleVisibility: .visible) {
             if let item = selectedItem {
                 Button("高德地图") { openAmap(for: item) }
@@ -281,6 +424,7 @@ struct MapView: View {
                         groups: viewModel.userGroups,
                         subscriptions: viewModel.mapSubscriptions,  // v6.0 新增：订阅用户列表
                         filter: $viewModel.filter,
+                        maxHeight: max(proxy.size.height - topInset - 120, 360),
                         onReset: {
                             viewModel.clearFilters()
                         }
@@ -404,21 +548,9 @@ struct MapView: View {
     }
 
     private var addButton: some View {
-        Button {
+        MapToolCircleButton(icon: "plus", style: .neutral) {
             showAddMenu = true
-        } label: {
-            Image(systemName: "plus")
-                .font(.system(size: 18, weight: .semibold))
-                .foregroundColor(.primary)
-                .frame(width: 44, height: 44)
-                .background(DS.Color.surfaceAlt.opacity(0.95), in: Circle())
-                .overlay {
-                    Circle()
-                        .stroke(DS.Color.separator.opacity(0.18), lineWidth: 0.6)
-                }
-                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
         }
-        .buttonStyle(PressableScaleButtonStyle())
     }
 
     private var locateButton: some View {
@@ -797,8 +929,8 @@ struct MapView: View {
     /// 从推荐来源链中提取首个有 douyin_uid 的博主（与 MapQuickActionCard.primaryDouyinAuthor 保持一致）
     private func primaryDouyinAuthorUID(for item: MapDisplayItem) -> String? {
         for source in item.recommendedBy {
-            if case .author(let author) = source, let uid = author.douyin_uid, !uid.isEmpty {
-                return uid
+            if case .author(let author) = source, !author.douyin_uid.isEmpty {
+                return author.douyin_uid
             }
         }
         return item.author?.douyin_uid
@@ -1076,96 +1208,79 @@ struct ClusterPinView: View {
 
 // MARK: - Filter Panel
 struct FilterPanelView: View {
+    private enum Section: String, CaseIterable, Identifiable {
+        case authors
+        case groups
+        case distance
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .authors: return "关注的人"
+            case .groups: return "店铺分组"
+            case .distance: return "距离"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .authors: return "person.2.fill"
+            case .groups: return "square.grid.2x2.fill"
+            case .distance: return "location.circle.fill"
+            }
+        }
+    }
+
     let authors: [Author]
     let groups: [RestaurantGroup]
     let subscriptions: [MapSubscription]  // v6.0 新增：订阅用户列表
     @Binding var filter: MapFilterState
+    let maxHeight: CGFloat
     let onReset: () -> Void
+    @State private var activeSection: Section
+    @State private var customDistanceValue: Double
+
+    init(
+        authors: [Author],
+        groups: [RestaurantGroup],
+        subscriptions: [MapSubscription],
+        filter: Binding<MapFilterState>,
+        maxHeight: CGFloat,
+        onReset: @escaping () -> Void
+    ) {
+        self.authors = authors
+        self.groups = groups
+        self.subscriptions = subscriptions
+        self._filter = filter
+        self.maxHeight = maxHeight
+        self.onReset = onReset
+        self._activeSection = State(initialValue: Self.initialSection(for: filter.wrappedValue))
+        self._customDistanceValue = State(initialValue: filter.wrappedValue.distance.kilometers ?? 10)
+    }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: DS.Spacing.md) {
-            HStack {
-                Text("筛选")
-                    .font(.system(size: 18, weight: .bold))
-                Spacer()
-                Button("重置") { onReset() }
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(DS.Color.brand)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .background(DS.Color.brand.opacity(0.10), in: Capsule())
-            }
-
-            sectionCard("关注的人", systemImage: "person.2.fill") {
-                VStack(alignment: .leading, spacing: DS.Spacing.sm) {
-                    LazyVGrid(
-                        columns: [GridItem(.flexible(), spacing: DS.Spacing.sm), GridItem(.flexible(), spacing: DS.Spacing.sm)],
-                        alignment: .leading,
-                        spacing: DS.Spacing.sm
-                    ) {
-                        SourceFilterPill(
-                            name: "全部店铺",
-                            avatarURL: nil,
-                            systemIcon: "square.grid.2x2.fill",
-                            isSelected: filter.author == .all
-                        ) {
-                            filter.author = .all
-                        }
-
-                        ForEach(sourceOptions) { option in
-                            SourceFilterPill(
-                                name: option.name,
-                                avatarURL: option.avatarURL,
-                                systemIcon: nil,
-                                isSelected: isSourceSelected(option)
-                            ) {
-                                filter.author = option.filter
-                            }
-                        }
-                    }
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: DS.Spacing.md) {
+                HStack {
+                    Text("筛选")
+                        .font(.system(size: 18, weight: .bold))
+                    Spacer()
+                    Button("重置") { onReset() }
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(DS.Color.brand)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(DS.Color.brand.opacity(0.10), in: Capsule())
                 }
-            }
 
-            sectionCard("店铺分组", systemImage: "square.grid.2x2.fill") {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 78), spacing: DS.Spacing.sm)],
-                    alignment: .leading,
-                    spacing: DS.Spacing.sm
-                ) {
-                    Group {
-                        SingleChip(title: "全部", selected: filter.group == .all) {
-                            filter.group = .all
-                        }
-                        SingleChip(title: "收藏", selected: filter.group == .favorites) {
-                            filter.group = .favorites
-                        }
-                        SingleChip(title: "避雷", selected: filter.group == .avoided, tint: .orange) {
-                            filter.group = .avoided
-                        }
-                        ForEach(groups) { group in
-                            SingleChip(title: group.name, selected: filter.group == .custom(group.id)) {
-                                filter.group = .custom(group.id)
-                            }
-                        }
-                    }
-                }
-            }
+                primarySectionList
 
-            sectionCard("距离范围", systemImage: "location.circle.fill") {
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 64), spacing: DS.Spacing.sm)],
-                    alignment: .leading,
-                    spacing: DS.Spacing.sm
-                ) {
-                    ForEach(MapDistanceFilter.allCases) { option in
-                        SingleChip(title: option.title, selected: filter.distance == option) {
-                            filter.distance = option
-                        }
-                    }
-                }
+                secondarySectionCard
             }
         }
         .padding(DS.Spacing.lg)
+        .frame(maxHeight: maxHeight, alignment: .top)
         .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 24, style: .continuous)
@@ -1197,31 +1312,308 @@ struct FilterPanelView: View {
             .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
     }
 
-    private func isSourceSelected(_ option: MapSourceOption) -> Bool {
-        filter.author == option.filter
+    private var primarySectionList: some View {
+        VStack(spacing: 10) {
+            ForEach(Section.allCases) { section in
+                FilterSectionRow(
+                    title: section.title,
+                    systemImage: section.systemImage,
+                    summary: summary(for: section),
+                    isSelected: activeSection == section
+                ) {
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        activeSection = section
+                    }
+                }
+            }
+        }
+        .padding(12)
+        .background(DS.Color.surfaceAlt.opacity(0.56), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+        }
     }
 
-    private func sectionCard<Content: View>(
-        _ title: String,
-        systemImage: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
+    private var secondarySectionCard: some View {
         VStack(alignment: .leading, spacing: DS.Spacing.sm) {
             HStack(spacing: 8) {
-                Image(systemName: systemImage)
+                Image(systemName: activeSection.systemImage)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(DS.Color.brand)
-                Text(title)
+                Text(activeSection.title)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.primary)
             }
-            content()
+            secondarySectionContent
         }
         .padding(DS.Spacing.md)
         .background(DS.Color.surfaceAlt.opacity(0.72), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
                 .stroke(DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+        }
+    }
+
+    @ViewBuilder
+    private var secondarySectionContent: some View {
+        switch activeSection {
+        case .authors:
+            VStack(spacing: 10) {
+                FilterOptionRow(
+                    title: "全部",
+                    subtitle: nil,
+                    systemImage: "square.grid.2x2.fill",
+                    avatarURL: nil,
+                    isSelected: filter.author == .all
+                ) {
+                    filter.author = .all
+                }
+
+                ForEach(sourceOptions) { option in
+                    FilterOptionRow(
+                        title: option.name,
+                        subtitle: nil,
+                        systemImage: nil,
+                        avatarURL: option.avatarURL,
+                        isSelected: filter.author == option.filter
+                    ) {
+                        filter.author = option.filter
+                    }
+                }
+            }
+
+        case .groups:
+            VStack(spacing: 10) {
+                FilterOptionRow(title: "全部", subtitle: nil, systemImage: "circle.grid.2x2.fill", avatarURL: nil, isSelected: filter.group == .all) {
+                    filter.group = .all
+                }
+                FilterOptionRow(title: "收藏", subtitle: nil, systemImage: "heart.fill", avatarURL: nil, isSelected: filter.group == .favorites) {
+                    filter.group = .favorites
+                }
+                FilterOptionRow(title: "避雷", subtitle: nil, systemImage: "exclamationmark.triangle.fill", avatarURL: nil, isSelected: filter.group == .avoided, tint: .orange) {
+                    filter.group = .avoided
+                }
+                ForEach(groups) { group in
+                    FilterOptionRow(title: group.name, subtitle: nil, systemImage: "folder.fill", avatarURL: nil, isSelected: filter.group == .custom(group.id)) {
+                        filter.group = .custom(group.id)
+                    }
+                }
+            }
+
+        case .distance:
+            VStack(spacing: 10) {
+                ForEach(MapDistanceFilter.allCases) { option in
+                    FilterOptionRow(
+                        title: option.title,
+                        subtitle: option == .all ? "不限制附近范围" : nil,
+                        systemImage: "location.circle.fill",
+                        avatarURL: nil,
+                        isSelected: filter.distance == option
+                    ) {
+                        filter.distance = option
+                    }
+                }
+
+                FilterOptionRow(
+                    title: "自定义范围",
+                    subtitle: "\(Int(customDistanceValue.rounded()))km",
+                    systemImage: "slider.horizontal.3",
+                    avatarURL: nil,
+                    isSelected: filter.distance.isCustom
+                ) {
+                    filter.distance = .custom(customDistanceValue)
+                }
+
+                if filter.distance.isCustom {
+                    VStack(spacing: 10) {
+                        HStack {
+                            Text("10km")
+                            Spacer()
+                            Text("\(Int(customDistanceValue.rounded()))km")
+                                .fontWeight(.semibold)
+                                .foregroundColor(DS.Color.brand)
+                            Spacer()
+                            Text("100km")
+                        }
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+
+                        Slider(
+                            value: Binding(
+                                get: { customDistanceValue },
+                                set: { newValue in
+                                    let rounded = newValue.rounded()
+                                    customDistanceValue = rounded
+                                    filter.distance = .custom(rounded)
+                                }
+                            ),
+                            in: 10...100,
+                            step: 1
+                        )
+                        .tint(DS.Color.brand)
+                    }
+                    .padding(12)
+                    .background(DS.Color.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(DS.Color.separator.opacity(0.12), lineWidth: 0.8)
+                    }
+                }
+            }
+        }
+    }
+
+    private func summary(for section: Section) -> String {
+        switch section {
+        case .authors:
+            switch filter.author {
+            case .all:
+                return "全部"
+            case .mine:
+                return "我的推荐"
+            case .author(let authorId):
+                return authors.first(where: { $0.id == authorId })?.name ?? "已选择博主"
+            case .subscribedUser(let userId):
+                return subscriptions.first(where: { $0.target_user_id == userId })?.nickname ?? "已选择用户"
+            }
+        case .groups:
+            switch filter.group {
+            case .all:
+                return "全部"
+            case .favorites:
+                return "收藏"
+            case .avoided:
+                return "避雷"
+            case .custom(let groupId):
+                return groups.first(where: { $0.id == groupId })?.name ?? "已选择分组"
+            }
+        case .distance:
+            return filter.distance.title
+        }
+    }
+
+    private static func initialSection(for filter: MapFilterState) -> Section {
+        if filter.group != .all { return .groups }
+        if filter.distance != .all { return .distance }
+        return .authors
+    }
+}
+
+private struct FilterSectionRow: View {
+    let title: String
+    let systemImage: String
+    let summary: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(isSelected ? DS.Color.brand : .secondary)
+                    .frame(width: 18)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text(summary)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
+                Spacer()
+
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(isSelected ? DS.Color.brand : .secondary)
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(isSelected ? DS.Color.brand.opacity(0.10) : DS.Color.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isSelected ? DS.Color.brand.opacity(0.20) : DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct FilterOptionRow: View {
+    let title: String
+    let subtitle: String?
+    let systemImage: String?
+    let avatarURL: String?
+    let isSelected: Bool
+    var tint: Color = DS.Color.brand
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                leadingView
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(isSelected ? tint : .primary)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+
+                    if let subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                if isSelected {
+                    Image(systemName: "checkmark.circle.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(tint)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .background(isSelected ? tint.opacity(0.10) : DS.Color.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(isSelected ? tint.opacity(0.20) : DS.Color.separator.opacity(0.10), lineWidth: 0.8)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    @ViewBuilder
+    private var leadingView: some View {
+        if let avatarURL {
+            AsyncImage(url: URL(string: avatarURL)) { image in
+                image
+                    .resizable()
+                    .scaledToFill()
+            } placeholder: {
+                Circle()
+                    .fill(DS.Color.surfaceAlt)
+                    .overlay(Image(systemName: "person.fill").foregroundColor(.secondary))
+            }
+            .frame(width: 34, height: 34)
+            .clipShape(Circle())
+        } else if let systemImage {
+            Circle()
+                .fill((isSelected ? tint.opacity(0.14) : DS.Color.surfaceAlt))
+                .frame(width: 34, height: 34)
+                .overlay(
+                    Image(systemName: systemImage)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(isSelected ? tint : .secondary)
+                )
         }
     }
 }
@@ -1625,6 +2017,9 @@ struct MapQuickActionCard: View {
                         }
                         if let category = item.restaurant.category, !category.isEmpty {
                             MiniTag(text: category, color: DS.Color.brand)
+                        }
+                        if let avgPrice = item.restaurant.avg_price, avgPrice > 0 {
+                            MiniTag(text: "人均¥\(avgPrice)", color: .secondary)
                         }
                     }
                 }

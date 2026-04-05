@@ -3,6 +3,7 @@
 
 import os
 import re
+import math
 import httpx
 from dotenv import load_dotenv
 
@@ -43,7 +44,12 @@ def _name_similarity(query: str, result: str) -> float:
     return overlap
 
 
-async def _search_amap(keywords: str, city: str, offset: int = 5) -> list[dict]:
+async def _search_amap(
+    keywords: str,
+    city: str,
+    offset: int = 20,
+    page: int = 1
+) -> list[dict]:
     """
     调用高德 POI 搜索接口，返回原始 POI 列表。
     city 为空时不传城市参数（全国搜索）。
@@ -54,8 +60,8 @@ async def _search_amap(keywords: str, city: str, offset: int = 5) -> list[dict]:
         "types": "050000",  # 050000 = 餐饮服务类别
         "output": "json",
         "offset": offset,
-        "page": 1,
-        "extensions": "all",   # all 模式可返回人均消费(biz_ext.avgprice)和图片(photos)
+        "page": page,
+        "extensions": "all",   # all 模式可返回人均消费(biz_ext.cost)和图片(photos)
     }
     # 城市有效时才加城市限制（"未知"/"" 不传，避免搜索范围错误）
     if city and city not in ("未知", "unknown"):
@@ -74,6 +80,32 @@ async def _search_amap(keywords: str, city: str, offset: int = 5) -> list[dict]:
             return []
 
 
+async def _search_amap_pages(
+    keywords: str,
+    city: str,
+    offset: int = 20,
+    max_pages: int = 3
+) -> list[dict]:
+    """
+    连续拉取多页高德文本搜索结果。
+    用于候选列表搜索，尽量避免热门连锁店因第一页截断而找不到目标分店。
+    """
+    all_pois: list[dict] = []
+
+    for page in range(1, max_pages + 1):
+        pois = await _search_amap(keywords, city, offset=offset, page=page)
+        if not pois:
+            break
+
+        all_pois.extend(pois)
+
+        # 高德返回数量不足一页时，说明已经到底。
+        if len(pois) < offset:
+            break
+
+    return all_pois
+
+
 def _parse_poi(poi: dict, city: str) -> dict | None:
     """将高德 POI 对象解析为标准格式，坐标无效时返回 None。"""
     location = poi.get("location", "")
@@ -81,10 +113,15 @@ def _parse_poi(poi: dict, city: str) -> dict | None:
         return None
     lng, lat = location.split(",", 1)
     try:
-        # 提取人均消费（extensions=all 时 biz_ext.avgprice 有值，单位：元）
+        # 提取人均消费（extensions=all 时 biz_ext.cost 有值，单位：元）
+        # 注意：高德 API 已将字段名从 avgprice 改为 cost，此处兼容两种格式
         biz_ext = poi.get("biz_ext", {}) or {}
-        avg_price_raw = biz_ext.get("avgprice", "")
-        avg_price = int(avg_price_raw) if avg_price_raw and avg_price_raw.isdigit() else None
+        avg_price_raw = biz_ext.get("cost", "") or biz_ext.get("avgprice", "")
+        # cost 字段可能带小数（如 "101.00"），取整数部分
+        try:
+            avg_price = int(float(avg_price_raw)) if avg_price_raw else None
+        except (ValueError, TypeError):
+            avg_price = None
 
         # 提取第一张图片 URL（extensions=all 时 photos 为列表）
         photos = poi.get("photos", []) or []
@@ -102,6 +139,70 @@ def _parse_poi(poi: dict, city: str) -> dict | None:
         }
     except ValueError:
         return None
+
+
+async def search_nearby_restaurants(lat: float, lng: float, radius: int = 3000, limit: int = 20) -> list[dict]:
+    """
+    搜索附近餐饮 POI（v8.0 新增，用于推荐池补充）。
+    使用高德周边搜索 API（/v3/place/around）。
+    返回标准格式的店铺列表。
+    """
+    url = "https://restapi.amap.com/v3/place/around"
+    params = {
+        "key": AMAP_API_KEY,
+        "location": f"{lng},{lat}",  # 高德格式：经度,纬度
+        "types": "050000",           # 餐饮服务
+        "radius": radius,
+        "offset": limit,
+        "page": 1,
+        "extensions": "all",
+        "sortrule": "weight",        # 按综合排序
+    }
+    async with httpx.AsyncClient(timeout=10) as client:
+        try:
+            resp = await client.get(url, params=params)
+            data = resp.json()
+            if data.get("status") != "1":
+                print(f"[高德周边搜索] 接口返回错误: {data.get('info')}")
+                return []
+            pois = data.get("pois", []) or []
+            results = []
+            for poi in pois:
+                parsed = _parse_poi(poi, "")
+                if parsed:
+                    # 补充品类信息（高德 typecode 转可读分类）
+                    type_name = poi.get("type", "")
+                    if type_name:
+                        # 取最后一级分类（如"餐饮服务;中餐厅;川菜" → "川菜"）
+                        parts = type_name.split(";")
+                        parsed["category"] = parts[-1] if parts else ""
+                    results.append(parsed)
+            return results
+        except Exception as e:
+            print(f"[高德周边搜索] 请求失败: {e}")
+            return []
+
+
+def _distance_meters(
+    from_lat: float,
+    from_lng: float,
+    to_lat: float,
+    to_lng: float,
+) -> float:
+    """使用 haversine 公式计算两点间直线距离（米）。"""
+    earth_radius = 6371000
+
+    lat1 = math.radians(from_lat)
+    lat2 = math.radians(to_lat)
+    delta_lat = math.radians(to_lat - from_lat)
+    delta_lng = math.radians(to_lng - from_lng)
+
+    a = (
+        math.sin(delta_lat / 2) ** 2 +
+        math.cos(lat1) * math.cos(lat2) * math.sin(delta_lng / 2) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return earth_radius * c
 
 
 async def search_restaurant(name: str, city: str) -> dict | None:
@@ -123,7 +224,7 @@ async def search_restaurant(name: str, city: str) -> dict | None:
     core_name = re.sub(r'[（(][^）)]*[）)]', '', name).strip()
 
     # ── 第一级：精确名称 + 城市 ──
-    pois = await _search_amap(name, city, offset=5)
+    pois = await _search_amap(name, city, offset=20)
     best = _pick_best_poi(pois, name, city)
     if best:
         print(f"[高德搜索] 精确匹配成功: {name} → {best['name']} ({best['city']})")
@@ -131,7 +232,7 @@ async def search_restaurant(name: str, city: str) -> dict | None:
 
     # ── 第二级：核心名称（去分店）+ 城市 ──
     if core_name and core_name != name:
-        pois = await _search_amap(core_name, city, offset=5)
+        pois = await _search_amap(core_name, city, offset=20)
         best = _pick_best_poi(pois, core_name, city)
         if best:
             print(f"[高德搜索] 核心名称匹配成功: {core_name} → {best['name']} ({best['city']})")
@@ -139,7 +240,7 @@ async def search_restaurant(name: str, city: str) -> dict | None:
 
     # ── 第三级：核心名称 + 不限城市 ──
     if city and city not in ("未知", "unknown", ""):
-        pois = await _search_amap(core_name or name, "", offset=5)
+        pois = await _search_amap(core_name or name, "", offset=20)
         best = _pick_best_poi(pois, core_name or name, city, strict=False)
         if best:
             print(f"[高德搜索] 全国搜索匹配成功: {core_name or name} → {best['name']} ({best['city']})")
@@ -270,7 +371,13 @@ def map_amap_category(amap_type: str) -> str:
     return "餐饮"
 
 
-async def search_restaurant_for_review(name: str, city: str) -> list[dict]:
+async def search_restaurant_for_review(
+    name: str,
+    city: str,
+    user_lat: float | None = None,
+    user_lng: float | None = None,
+    max_results: int = 50,
+) -> list[dict]:
     """
     复核功能专用：搜索店铺候选列表，返回最多 10 条结果。
     每条结果附加 category_raw（高德原始分类）和 category_mapped（映射后分类）。
@@ -280,37 +387,87 @@ async def search_restaurant_for_review(name: str, city: str) -> list[dict]:
     - 不做相似度过滤，让管理员自行判断
     - 每条结果包含分类信息
     """
-    pois = await _search_amap(name, city, offset=10)
+    core_name = re.sub(r'[（(][^）)]*[）)]', '', name).strip()
+    keyword_candidates = [name.strip()]
+    if core_name and core_name not in keyword_candidates:
+        keyword_candidates.append(core_name)
+
+    deduped_pois: dict[str, dict] = {}
+    for keyword in keyword_candidates:
+        pois = await _search_amap_pages(keyword, city, offset=20, max_pages=3)
+        for poi in pois:
+            poi_id = poi.get("id", "")
+            if poi_id and poi_id not in deduped_pois:
+                deduped_pois[poi_id] = poi
 
     candidates = []
-    for poi in pois:
+    for poi in deduped_pois.values():
         location = poi.get("location", "")
         if "," not in location:
             continue
         lng, lat = location.split(",", 1)
         try:
-            amap_type = poi.get("type", "")
-            biz_ext = poi.get("biz_ext", {}) or {}
-            avg_price_raw = biz_ext.get("avgprice", "")
-            avg_price = int(avg_price_raw) if avg_price_raw and avg_price_raw.isdigit() else None
-            photos = poi.get("photos", []) or []
-            photo_url = photos[0].get("url", "") if photos else ""
-            candidates.append({
-                "amap_id": poi.get("id", ""),
-                "name": poi.get("name", ""),
-                "address": poi.get("address", ""),
-                "city": poi.get("cityname", city) or city,
-                "latitude": float(lat),
-                "longitude": float(lng),
-                "category_raw": amap_type,
-                "category_mapped": map_amap_category(amap_type),
-                "avg_price": avg_price,   # 人均消费（元）
-                "photo_url": photo_url,   # 店铺封面图 URL
-            })
+            latitude = float(lat)
+            longitude = float(lng)
         except ValueError:
             continue
 
-    return candidates
+        amap_type = poi.get("type", "")
+        biz_ext = poi.get("biz_ext", {}) or {}
+        avg_price_raw = biz_ext.get("cost", "") or biz_ext.get("avgprice", "")
+        try:
+            avg_price = int(float(avg_price_raw)) if avg_price_raw else None
+        except (ValueError, TypeError):
+            avg_price = None
+        photos = poi.get("photos", []) or []
+        photo_url = photos[0].get("url", "") if photos else ""
+        similarity = _name_similarity(name, poi.get("name", ""))
+        distance_meters = None
+        if user_lat is not None and user_lng is not None:
+            distance_meters = round(
+                _distance_meters(user_lat, user_lng, latitude, longitude),
+                1
+            )
+
+        candidates.append({
+            "amap_id": poi.get("id", ""),
+            "name": poi.get("name", ""),
+            "address": poi.get("address", ""),
+            "city": poi.get("cityname", city) or city,
+            "latitude": latitude,
+            "longitude": longitude,
+            "category_raw": amap_type,
+            "category_mapped": map_amap_category(amap_type),
+            "avg_price": avg_price,           # 人均消费（元）
+            "photo_url": photo_url,           # 店铺封面图 URL
+            "distance_meters": distance_meters,
+            "_similarity": similarity,
+        })
+
+    def _sort_key(candidate: dict) -> tuple:
+        similarity = candidate.get("_similarity", 0.0)
+        # 先保证名称足够接近，再在同层里按距离由近到远。
+        if similarity >= 0.95:
+            similarity_bucket = 0
+        elif similarity >= 0.75:
+            similarity_bucket = 1
+        elif similarity >= 0.5:
+            similarity_bucket = 2
+        else:
+            similarity_bucket = 3
+
+        distance = candidate.get("distance_meters")
+        distance_sort = distance if distance is not None else float("inf")
+        return (similarity_bucket, distance_sort, -similarity, candidate.get("name", ""))
+
+    candidates.sort(key=_sort_key)
+
+    cleaned_results = []
+    for candidate in candidates[:max_results]:
+        candidate.pop("_similarity", None)
+        cleaned_results.append(candidate)
+
+    return cleaned_results
 
 
 async def get_poi_detail(amap_id: str) -> dict | None:
@@ -335,8 +492,11 @@ async def get_poi_detail(amap_id: str) -> dict | None:
                 return None
             poi = pois[0]
             biz_ext = poi.get("biz_ext", {}) or {}
-            avg_price_raw = biz_ext.get("avgprice", "")
-            avg_price = int(avg_price_raw) if avg_price_raw and avg_price_raw.isdigit() else None
+            avg_price_raw = biz_ext.get("cost", "") or biz_ext.get("avgprice", "")
+            try:
+                avg_price = int(float(avg_price_raw)) if avg_price_raw else None
+            except (ValueError, TypeError):
+                avg_price = None
             photos = poi.get("photos", []) or []
             photo_url = photos[0].get("url", "") if photos else ""
             return {"avg_price": avg_price, "photo_url": photo_url}

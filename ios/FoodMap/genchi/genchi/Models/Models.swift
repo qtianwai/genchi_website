@@ -251,9 +251,22 @@ struct RestaurantCandidate: Identifiable, Codable {
     let category_mapped: String // 后端映射后的分类，如"火锅"
     let avg_price: Int?         // 人均消费（元），来自高德 biz_ext.avgprice（v5.0 新增）
     let photo_url: String?      // 店铺封面图 URL，来自高德 photos[0].url（v5.0 新增）
+    let distance_meters: Double? // 与当前用户位置的直线距离（米）
 
     // Identifiable 使用 amap_id
     var id: String { amap_id }
+
+    var coordinate: CLLocationCoordinate2D {
+        CLLocationCoordinate2D(latitude: latitude, longitude: longitude)
+    }
+
+    var distanceText: String? {
+        guard let distance_meters else { return nil }
+        if distance_meters < 1000 {
+            return "距你 \(Int(distance_meters.rounded()))m"
+        }
+        return String(format: "距你 %.1fkm", distance_meters / 1000)
+    }
 }
 
 // 候选店铺搜索响应
@@ -402,4 +415,191 @@ struct UserMapRestaurantsResponse: Codable {
     let restaurants: [UserMapRestaurantItem]
     let total: Int
     let has_more: Bool
+}
+
+
+// ─────────────────────────────────────────
+// v8.0 饭团系统 - 数据模型
+// ─────────────────────────────────────────
+
+// 天气信息
+struct WeatherInfo: Codable {
+    let text: String        // 天气状况文字（晴/多云/小雨等）
+    let temp: String        // 温度（摄氏度）
+    let icon: String        // 天气图标代码
+    let wind_dir: String    // 风向
+    let humidity: String    // 湿度百分比
+    let precip: String      // 降水量 mm
+    let category: String    // 简化分类：sunny/cloudy/rainy/snowy/hot/cold/normal
+}
+
+// 抽卡卡片稀有度
+enum CardRarity: String, Codable, CaseIterable {
+    case normal = "normal"      // 普通（白/绿）
+    case quality = "quality"    // 优质（蓝/紫）
+    case rare = "rare"          // 稀有（金）
+    case limited = "limited"    // 限定（彩虹）
+
+    // 稀有度对应的显示名称
+    var displayName: String {
+        switch self {
+        case .normal: return "普通"
+        case .quality: return "优质"
+        case .rare: return "稀有"
+        case .limited: return "限定"
+        }
+    }
+
+    // 稀有度对应的主色调
+    var color: String {
+        switch self {
+        case .normal: return "gray"
+        case .quality: return "purple"
+        case .rare: return "orange"
+        case .limited: return "rainbow"
+        }
+    }
+}
+
+// 抽卡卡片（后端返回的单张卡片数据）
+struct GachaCard: Identifiable, Codable {
+    let restaurant_id: String
+    let name: String
+    let address: String?
+    let city: String?
+    let category: String?
+    let avg_price: Int?
+    let photo_url: String?
+    let distance_km: Double?
+    let rarity: CardRarity
+    let recommend_reason: String
+    let source: String          // author / user_created / subscription / platform_popular / amap_nearby
+
+    var id: String { restaurant_id }
+
+    // 距离文本
+    var distanceText: String? {
+        guard let km = distance_km else { return nil }
+        if km < 1 {
+            return "\(Int(km * 1000))m"
+        }
+        return String(format: "%.1fkm", km)
+    }
+
+    // 来源文本
+    var sourceText: String {
+        switch source {
+        case "author": return "达人推荐"
+        case "user_created": return "我的推荐"
+        case "subscription": return "好友推荐"
+        case "platform_popular": return "平台热门"
+        case "amap_nearby": return "附近发现"
+        default: return "推荐"
+        }
+    }
+}
+
+// 抽卡响应
+struct GachaDrawResponse: Codable {
+    let session_id: String
+    let cards: [GachaCard]
+    let remaining: Int          // 今日剩余次数
+}
+
+// 抽卡选择响应
+struct GachaSelectResponse: Codable {
+    let status: String
+    let newly_unlocked_achievements: [Achievement]?
+}
+
+// 每日抽卡次数
+struct GachaRemainingResponse: Codable {
+    let used: Int
+    let limit: Int
+    let remaining: Int
+}
+
+// 问答推荐 - 问题
+struct QAQuestion: Identifiable, Codable {
+    let id: Int
+    let text: String
+    let options: [String]
+}
+
+// 问答推荐 - 问题列表响应
+struct QAQuestionsResponse: Codable {
+    let questions: [QAQuestion]
+}
+
+// 问答推荐 - 推荐结果
+struct QARecommendation: Identifiable, Codable {
+    let restaurant_id: String
+    let name: String
+    let address: String?
+    let city: String?
+    let category: String?
+    let avg_price: Int?
+    let photo_url: String?
+    let distance_km: Double?
+    let recommend_reason: String
+    let match_score: Double?
+    let source: String
+
+    var id: String { restaurant_id }
+
+    var distanceText: String? {
+        guard let km = distance_km else { return nil }
+        if km < 1 { return "\(Int(km * 1000))m" }
+        return String(format: "%.1fkm", km)
+    }
+}
+
+// 问答推荐响应
+struct QAResultResponse: Codable {
+    let recommendations: [QARecommendation]
+}
+
+// 成就定义
+struct Achievement: Identifiable, Codable {
+    let id: String
+    let name: String
+    let description: String
+    let icon_name: String?      // SF Symbol 图标名
+    let category: String        // collection / streak / limited
+    let condition_type: String
+    let condition_value: Int
+}
+
+// 用户已解锁成就
+struct UserAchievement: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let achievement_id: String
+    let unlocked_at: String?
+    let achievements: Achievement?  // join 查询
+}
+
+// 打卡记录
+struct Checkin: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let restaurant_id: String
+    let rating: Int?
+    let comment: String?
+    let photo_urls: [String]?
+    let created_at: String?
+    let restaurants: Restaurant?        // join 查询（用户打卡历史）
+    let user_profiles: UserProfile?     // join 查询（店铺打卡列表）
+}
+
+// 打卡响应
+struct CheckinResponse: Codable {
+    let checkin: Checkin
+    let newly_unlocked_achievements: [Achievement]?
+}
+
+// 收藏留言 AI 摘要
+struct ReviewsSummaryResponse: Codable {
+    let summary: String
+    let note_count: Int
 }
