@@ -82,6 +82,11 @@ GACHA_INSERT_QA_THRESHOLD = int(os.getenv("GACHA_INSERT_QA_THRESHOLD", "3"))  # 
 # v10.0：评论回复接口相关的全局计数器已移除
 # 原因：去掉了 get-video-sub-comment 接口调用，不再需要限流
 
+# v11.0：解析算法版本号
+# 每次优化 AI prompt / 规则提取 / 高德搜索策略时递增
+# 用于判断 failed 记录是否值得重试（算法升级后自动重试）
+PARSE_ALGORITHM_VERSION = "v11.0"
+
 app = FastAPI(title="跟吃 API", version="1.0.0")
 
 # 允许跨域（iOS App 调用需要）
@@ -415,6 +420,8 @@ async def parse_single_video_fast(
     video_info: dict,
     author_id: str,
     data_source: str = "user_submit",  # 数据来源标识
+    previous_api_cost: float = 0,       # v11.0：上次解析的累计成本（算法升级重试时传入）
+    previous_api_cost_note: str = "",   # v11.0：上次解析的成本说明
 ) -> dict:
     """
     快速解析单个视频的核心逻辑（v10.0 优化版）。
@@ -425,6 +432,9 @@ async def parse_single_video_fast(
     - 去掉评论回复接口（get-video-sub-comment），降低成本
     - low 置信度不入库但缓存供人工复核参考
     - AI 结果搜不到高德时，用规则候选兜底搜索
+
+    v11.0 变化：
+    - 新增 previous_api_cost / previous_api_cost_note 参数，支持算法升级重试时成本累加
     """
     vid = video_info.get("video_id", "")
     title = video_info.get("title", "")
@@ -438,14 +448,18 @@ async def parse_single_video_fast(
     all_comments = video_info.get("all_comments", [])
     hot_search_keywords = video_info.get("hot_search_keywords", [])  # 抖音热搜词
 
-    # API 成本统计
+    # API 成本统计（v11.0：根据是否跳过短链转换动态计算）
     COST_PER_CALL = 0.1  # 元/次
-    api_calls = [
-        "share-url-transfer/v1（解析短链）",
-        "get-video-detail/v2（获取视频详情+话题标签+城市）",
-        "get-video-comment/v1（获取评论）",
-    ]
-    api_cost = len(api_calls) * COST_PER_CALL
+    skipped_transfer = video_info.get("skipped_share_transfer", False)
+    api_calls = []
+    if not skipped_transfer:
+        api_calls.append("share-url-transfer/v1（解析短链）")
+    api_calls.append("get-video-detail/v2（获取视频详情+话题标签+城市）")
+    api_calls.append("get-video-comment/v1（获取评论）")
+    api_cost_this_time = len(api_calls) * COST_PER_CALL
+
+    # v11.0：算法升级重试时，累加上次的成本
+    api_cost = previous_api_cost + api_cost_this_time
 
     # ── 第一层：规则预提取候选（零 API 成本）──
     from rule_extractor import extract_candidates
@@ -483,8 +497,15 @@ async def parse_single_video_fast(
             parse_reason = extracted[0].get("reason", "")
             ai_confidence = extracted[0].get("confidence", "low")
 
-    # 构建 API 成本说明
-    api_cost_note = "；".join(api_calls) + f"；合计 {len(api_calls)} 次调用，约 ¥{api_cost:.4f}"
+    # 构建 API 成本说明（v11.0：支持分次记录）
+    this_time_note = "；".join(api_calls) + f"；本次 {len(api_calls)} 次调用，¥{api_cost_this_time:.4f}"
+    if previous_api_cost_note:
+        api_cost_note = (
+            f"[第1次] {previous_api_cost_note}\n"
+            f"[第2次({PARSE_ALGORITHM_VERSION})] {this_time_note}；累计 ¥{api_cost:.4f}"
+        )
+    else:
+        api_cost_note = "；".join(api_calls) + f"；合计 {len(api_calls)} 次调用，约 ¥{api_cost:.4f}"
 
     # 过滤掉 _no_result 标记
     real_extracted = [r for r in extracted if not r.get("_no_result")] if extracted else []
@@ -500,6 +521,7 @@ async def parse_single_video_fast(
             "data_source": data_source,
             "api_cost": api_cost,
             "api_cost_note": api_cost_note,
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
         })
         return {"restaurant": None, "status": "not_found"}
 
@@ -542,6 +564,7 @@ async def parse_single_video_fast(
             "data_source": data_source,
             "api_cost": api_cost,
             "api_cost_note": api_cost_note,
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
         })
         return {"restaurant": None, "status": "amap_not_found"}
 
@@ -568,6 +591,7 @@ async def parse_single_video_fast(
             "data_source": data_source,
             "api_cost": api_cost,
             "api_cost_note": api_cost_note,
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
         })
         return {"restaurant": None, "status": "low_confidence"}
 
@@ -585,6 +609,7 @@ async def parse_single_video_fast(
         "data_source": data_source,
         "api_cost": api_cost,
         "api_cost_note": api_cost_note,
+        "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
     })
 
     result = _save_video_restaurant(video_url, vid, author_id, restaurant_data)
@@ -693,6 +718,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
             "video_id": vid,
             "author_id": author_id,
             "status": "parsing",
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
         })
 
         try:
@@ -777,6 +803,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                         "data_source": "background_scan",
                         "api_cost": api_cost_bg,
                         "api_cost_note": api_cost_note_bg,
+                        "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
                     })
                 else:
                     # 高德搜索
@@ -809,6 +836,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                             "data_source": "background_scan",
                             "api_cost": api_cost_bg,
                             "api_cost_note": api_cost_note_bg,
+                            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
                         })
                         result = _save_video_restaurant(video_url, vid, author_id, real_extracted[0])
                         if result["status"] == "saved":
@@ -838,6 +866,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
                     "data_source": "background_scan",
                     "api_cost": api_cost_bg,
                     "api_cost_note": api_cost_note_bg,
+                    "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
                 })
 
             # 更新缓存状态（如果已有记录但未完成）
@@ -880,41 +909,106 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         # 第一步：尝试从 URL 提取 video_id（优化2：支持同一视频多个分享格式）
         vid = extract_video_id_from_url(clean_url)
 
-        # 第二步：检查视频缓存
-        # 优先用 video_id 精确匹配（同一视频多链接共享缓存）
+        # 第二步（v11.0 重写）：智能缓存命中决策树
+        # 优先 video_id 查，兜底 URL 查
+        cached = None
         if vid:
             cached = get_video_cache_by_id(vid)
-            if cached and cached.get("status") == "completed":
-                # 命中缓存，直接返回（同时更新该 URL 的缓存记录）
-                print(f"[解析链接] 视频 ID 缓存命中，直接返回: video_id={vid}")
-                update_video_cache_restaurant(clean_url, cached.get("restaurant_id", ""), {
-                    "name": cached.get("restaurant_name", ""),
-                })
+        if not cached:
+            cached = get_video_cache_by_url(clean_url)
+
+        # v11.0：用于算法升级重试时的成本累加
+        _previous_api_cost = 0
+        _previous_api_cost_note = ""
+
+        if cached:
+            review_status = cached.get("review_status") or "pending"
+            status = cached.get("status", "")
+
+            # ── 分支1：已人工审核（approved/corrected/confirmed/skipped）→ 不再重试 ──
+            if review_status in ("approved", "corrected", "confirmed", "skipped"):
+                if status == "completed" and review_status in ("approved", "corrected", "confirmed"):
+                    # 有店铺 → 返回结果
+                    print(f"[解析链接] 已审核记录命中（{review_status}），返回店铺结果")
+                    return {
+                        "status": "cached",
+                        "video_cache_id": cached.get("id"),
+                        "restaurant": _cache_to_restaurant(cached),
+                        "author": None,
+                        "author_id": cached.get("author_id", ""),
+                        "message": "已从缓存加载",
+                        "is_background_running": False,
+                        "background_progress": None,
+                    }
+                else:
+                    # 无店铺（skipped 或 failed 但已审核）→ 直接告知
+                    print(f"[解析链接] 已审核记录命中（{review_status}），无店铺信息")
+                    return {
+                        "status": "reviewed_empty",
+                        "video_cache_id": cached.get("id"),
+                        "restaurant": None,
+                        "author": None,
+                        "author_id": cached.get("author_id", ""),
+                        "message": "该条视频无法获悉明确店铺信息",
+                        "is_background_running": False,
+                        "background_progress": None,
+                    }
+
+            # ── 分支2：未人工审核 + completed → 返回店铺结果 ──
+            if status == "completed":
+                print(f"[解析链接] 缓存命中（completed），返回店铺结果")
                 return {
                     "status": "cached",
+                    "video_cache_id": cached.get("id"),
                     "restaurant": _cache_to_restaurant(cached),
+                    "author": None,
                     "author_id": cached.get("author_id", ""),
                     "message": "已从缓存加载",
                     "is_background_running": False,
                     "background_progress": None,
                 }
 
-        # 第三步：检查 URL 精确匹配（兜底）
-        cached = get_video_cache_by_url(clean_url)
-        if cached and cached.get("status") == "completed":
-            print(f"[解析链接] 视频地址缓存命中，直接返回: {clean_url}")
-            return {
-                "status": "cached",
-                "restaurant": _cache_to_restaurant(cached),
-                "author_id": cached.get("author_id", ""),
-                "message": "已从缓存加载",
-                "is_background_running": False,
-                "background_progress": None,
-            }
+            # ── 分支3：未人工审核 + parsing → 返回已有 video_cache_id，不重复解析 ──
+            if status == "parsing":
+                print(f"[解析链接] 视频正在解析中，返回已有 video_cache_id")
+                return {
+                    "status": "parsing",
+                    "video_cache_id": cached.get("id"),
+                    "restaurant": None,
+                    "author": None,
+                    "author_id": cached.get("author_id", ""),
+                    "message": "该视频正在解析中，请稍候...",
+                    "is_background_running": False,
+                    "background_progress": None,
+                }
 
-        # 第四步：解析抖音链接获取视频和博主信息
+            # ── 分支4：未人工审核 + failed → 比较算法版本 ──
+            if status == "failed":
+                old_version = cached.get("parse_algorithm_version") or ""
+                if old_version != PARSE_ALGORITHM_VERSION:
+                    # 算法有更新 → 重新解析（记录旧成本用于累加）
+                    _previous_api_cost = cached.get("api_cost") or 0
+                    _previous_api_cost_note = cached.get("api_cost_note") or ""
+                    print(f"[解析链接] 算法版本升级（{old_version} → {PARSE_ALGORITHM_VERSION}），重新解析")
+                    # 不 return，继续往下走标准解析流程
+                else:
+                    # 算法无更新 → 不重试
+                    print(f"[解析链接] 算法版本未变（{old_version}），不重试")
+                    return {
+                        "status": "failed",
+                        "video_cache_id": cached.get("id"),
+                        "restaurant": None,
+                        "author": None,
+                        "author_id": cached.get("author_id", ""),
+                        "message": "未能识别到店铺，后台将人工复核",
+                        "is_background_running": False,
+                        "background_progress": None,
+                    }
+
+        # 第三步：解析抖音链接获取视频和博主信息
         # 优化1：parse_douyin_link 一次调用获取完整信息（基础+扩展+评论）
-        video_info = await parse_douyin_link(raw_url)
+        # v11.0 优化：如果已从 URL 提取到 video_id（长链场景），跳过 share-url-transfer 省 ¥0.1
+        video_info = await parse_douyin_link(raw_url, known_video_id=vid)
         author_douyin_id = video_info.get("author_id", "")
         author_sec_uid = video_info.get("author_sec_uid", "")
         vid = video_info.get("video_id", "")
@@ -965,6 +1059,7 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             "video_id": vid,
             "author_id": author_id,
             "status": "parsing",
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
         })
         # 获取 video_cache_id（用于前端轮询）
         video_cache_id = cache_record.get("id", "") if cache_record else ""
@@ -993,6 +1088,7 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
             _async_parse_and_save,
             clean_url, video_info, author_id, author_record,
             req.scope, req.user_id, author_sec_uid, vid,
+            _previous_api_cost, _previous_api_cost_note,
         )
 
         # 立即返回博主信息 + video_cache_id（前端用于轮询）
@@ -1018,6 +1114,7 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
                 "video_url": extract_url_from_text(req.url.strip()),
                 "status": "failed",
                 "parse_reason": f"JustOneAPI 解析失败: {err_msg}",
+                "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
             })
         except Exception:
             pass
@@ -1045,14 +1142,21 @@ async def _async_parse_and_save(
     user_id: str,
     author_sec_uid: str,
     vid: str,
+    previous_api_cost: float = 0,       # v11.0：算法升级重试时的累计成本
+    previous_api_cost_note: str = "",   # v11.0：上次解析的成本说明
 ):
     """
     v10.0 半异步：后台执行店铺解析+入库+后台任务启动。
     由 /api/parse-link 的 BackgroundTasks 调用。
     """
     try:
-        # 解析当前视频
-        parse_result = await parse_single_video_fast(clean_url, video_info, author_id, data_source="user_submit")
+        # 解析当前视频（v11.0：传入累计成本参数）
+        parse_result = await parse_single_video_fast(
+            clean_url, video_info, author_id,
+            data_source="user_submit",
+            previous_api_cost=previous_api_cost,
+            previous_api_cost_note=previous_api_cost_note,
+        )
         restaurant = parse_result.get("restaurant")
 
         # 建立博主-店铺关联
@@ -1115,6 +1219,7 @@ async def _async_parse_and_save(
             "author_id": author_id,
             "status": "failed",
             "error_message": f"异步解析出错: {str(e)}",
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
         })
 
 

@@ -268,7 +268,7 @@ def update_video_cache_restaurant(video_url: str, restaurant_id: str, restaurant
         "restaurant_category": restaurant_data.get("category"),
         "updated_at": "now()",
     }
-    # 可选字段：解析说明、数据来源、API 成本
+    # 可选字段：解析说明、数据来源、API 成本、算法版本
     if restaurant_data.get("parse_reason") is not None:
         update_data["parse_reason"] = restaurant_data["parse_reason"]
     if restaurant_data.get("data_source") is not None:
@@ -277,6 +277,8 @@ def update_video_cache_restaurant(video_url: str, restaurant_id: str, restaurant
         update_data["api_cost"] = restaurant_data["api_cost"]
     if restaurant_data.get("api_cost_note") is not None:
         update_data["api_cost_note"] = restaurant_data["api_cost_note"]
+    if restaurant_data.get("parse_algorithm_version") is not None:
+        update_data["parse_algorithm_version"] = restaurant_data["parse_algorithm_version"]
 
     result = supabase.table("video_parse_cache").update(update_data).eq("video_url", video_url).execute()
     return result.data[0] if result.data else {}

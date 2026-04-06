@@ -158,7 +158,9 @@ create table if not exists video_parse_cache (
   reviewed_by     uuid,                -- 复核操作人（管理员 user_id）
   reviewed_at     timestamptz,         -- 复核时间
   -- v9.0 新增：多店铺修正记录（JSON 数组）
-  corrected_restaurants jsonb           -- [{restaurant_id, amap_id, name, address, city, lat, lng, category}]
+  corrected_restaurants jsonb,           -- [{restaurant_id, amap_id, name, address, city, lat, lng, category}]
+  -- v11.0 新增：解析算法版本号（用于判断 failed 记录是否值得重试）
+  parse_algorithm_version text           -- 如 "v11.0"，每次优化 AI prompt/规则/搜索策略时递增
 );
 
 -- 索引：按视频 URL 精确查询（唯一索引保证每个 URL 只有一条记录）

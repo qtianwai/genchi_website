@@ -2551,3 +2551,15 @@ SwiftUI
 - 关键决策：成功路径完全绕过弹框，直接复用 `selectedItem` 机制弹出店铺卡片；失败路径保持原有弹框提示不变
 - 技术栈：SwiftUI、iOS
 - 修改的文件：`ios/.../Views/ParseLinkSheet.swift`、`ios/.../Views/MapView.swift`、`README.md`
+
+### 2026-04-06 会话：解析流程优化（智能缓存命中 + 省去短链转换）
+- 主要目的：减少无意义的 API 调用成本，优化重复提交链接的处理逻辑
+- 完成的主要任务：
+  - 优化项1：重写 `/api/parse-link` 缓存命中决策树 — 已审核记录不重试、parsing 不重复解析、failed 按算法版本判断是否重试
+  - 优化项2：`parse_douyin_link` 新增 `known_video_id` 参数，长链场景跳过 `share-url-transfer/v1`（省 ¥0.1/次）
+  - 新增 `PARSE_ALGORITHM_VERSION` 常量和 `parse_algorithm_version` 数据库字段
+  - api_cost 累加机制：算法升级重试时成本累加，api_cost_note 分次记录
+  - 前端 ParseLinkSheet 适配 `reviewed_empty` 状态
+- 关键决策：算法版本号放在 main.py 而非 ai_extractor.py，因为版本涵盖整个解析流程；已审核无店铺的记录直接告知用户而非提示"人工复核"
+- 技术栈：Python FastAPI、Supabase PostgreSQL、SwiftUI
+- 修改的文件：`backend/main.py`、`backend/douyin_parser.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Views/ParseLinkSheet.swift`、`需求文档&技术方案/解析算法优化方案.md`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/产品功能清单.md`

@@ -65,43 +65,55 @@ def extract_url_from_text(text: str) -> str:
     return text.strip()
 
 
-async def parse_douyin_link(url: str) -> dict:
+async def parse_douyin_link(url: str, known_video_id: str = None) -> dict:
     """
     主入口：解析抖音分享链接，返回视频信息（优化版：合并获取扩展信息）。
 
-    三步流程：
-    1. share-url-transfer/v1：将分享短链转换为 redirect_url，从中提取视频 ID
-    2. get-video-detail/v2：获取完整视频信息、博主信息、扩展信息（话题标签、城市）
-       （优化1：一次调用获取所有信息，避免重复调用）
-    3. 提取评论中博主点赞的评论（用于 AI 识别店铺）
+    流程：
+    1. 如果 known_video_id 已知（长链已提取到 video_id），跳过 share-url-transfer，省 ¥0.1
+    2. 否则调用 share-url-transfer/v1 将短链转为 redirect_url，提取 video_id
+    3. get-video-detail/v2：获取完整视频信息、博主信息、扩展信息（话题标签、城市）
+    4. 提取评论中博主点赞的评论（用于 AI 识别店铺）
 
     输入：抖音分享链接或包含链接的分享文字
     输出：{
         video_id, title, author_id, author_name, author_avatar,
         author_sec_uid, hashtags, city_name, author_liked_comments,
-        hot_comments, hot_comments_raw, all_comments
+        hot_comments, hot_comments_raw, all_comments,
+        skipped_share_transfer  # 是否跳过了短链转换（用于成本统计）
     }
     """
     # 第一步：从文本中提取纯链接（兼容用户粘贴整段分享文字的情况）
     share_url = extract_url_from_text(url)
     print(f"[抖音解析] 提取到链接: {share_url}")
 
-    # 第二步：调用 share-url-transfer/v1，拿到 redirect_url
-    result = await _aget("/api/douyin/share-url-transfer/v1", {"shareUrl": share_url})
-    print(f"[抖音解析] share-url-transfer 返回 code={result.get('code')}")
+    # 第二步：获取 video_id
+    # v11.0 优化：如果调用方已提取到 video_id（长链场景），跳过 share-url-transfer 省 ¥0.1
+    redirect_url = ""
+    skipped_share_transfer = False
 
-    if result.get("code") != 0 or not result.get("data"):
-        raise ValueError(f"JustOneAPI 解析失败: {result.get('message', '未知错误')} (code={result.get('code')})")
+    if known_video_id:
+        # 已知 video_id，跳过短链转换
+        video_id = known_video_id
+        skipped_share_transfer = True
+        print(f"[抖音解析] 已知 video_id={video_id}，跳过 share-url-transfer（省 ¥0.1）")
+    else:
+        # 短链场景，必须调用 share-url-transfer/v1 获取 redirect_url
+        result = await _aget("/api/douyin/share-url-transfer/v1", {"shareUrl": share_url})
+        print(f"[抖音解析] share-url-transfer 返回 code={result.get('code')}")
 
-    # 从 redirect_url 中提取视频 ID
-    # redirect_url 格式：https://www.iesdouyin.com/share/video/7621134274259171761/?...
-    redirect_url = result["data"].get("redirect_url", "")
-    # 匹配 /video/数字 格式（可能后面是 / 或 ? 或 &）
-    match = re.search(r'/video/(\d+)', redirect_url)
-    if not match:
-        raise ValueError(f"无法从 redirect_url 提取视频 ID: {redirect_url}")
-    video_id = match.group(1)
-    print(f"[抖音解析] 提取到视频 ID: {video_id}")
+        if result.get("code") != 0 or not result.get("data"):
+            raise ValueError(f"JustOneAPI 解析失败: {result.get('message', '未知错误')} (code={result.get('code')})")
+
+        # 从 redirect_url 中提取视频 ID
+        # redirect_url 格式：https://www.iesdouyin.com/share/video/7621134274259171761/?...
+        redirect_url = result["data"].get("redirect_url", "")
+        # 匹配 /video/数字 格式（可能后面是 / 或 ? 或 &）
+        match = re.search(r'/video/(\d+)', redirect_url)
+        if not match:
+            raise ValueError(f"无法从 redirect_url 提取视频 ID: {redirect_url}")
+        video_id = match.group(1)
+        print(f"[抖音解析] 提取到视频 ID: {video_id}")
 
     # 第三步：调用 get-video-detail/v2 获取完整信息（优化1：一次调用获取所有字段）
     detail_result = await _aget("/api/douyin/get-video-detail/v2", {"videoId": video_id})
@@ -275,7 +287,8 @@ async def parse_douyin_link(url: str) -> dict:
         publish_time = ""
 
     # 分享链接（share_url）
-    share_url = aweme.get("share_url", "") or redirect_url
+    # v11.0：跳过短链转换时 redirect_url 为空，用抖音标准格式兜底
+    share_url = aweme.get("share_url", "") or redirect_url or f"https://www.douyin.com/video/{video_id}"
 
     # 探测抖音自带 POI 地点信息（如果视频标记了地点，这是 100% 准确的店铺来源）
     # JustOneAPI 返回的字段名可能是 poi_info、poi_biz 或其他，此处尝试多种
@@ -329,6 +342,8 @@ async def parse_douyin_link(url: str) -> dict:
         "hot_comments": hot_comments,
         "hot_comments_raw": hot_comments_raw,
         "all_comments": all_comments,
+        # v11.0：是否跳过了短链转换（用于 api_cost 动态计算）
+        "skipped_share_transfer": skipped_share_transfer,
     }
 
 

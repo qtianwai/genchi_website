@@ -328,10 +328,11 @@ struct ParseLinkSheet: View {
 
                 // parsing → 通知 MapView 开始轮询，后台解析完弹框通知
                 // failed → 通知 MapView 显示失败弹框（JustOneAPI 临时错误等）
+                // reviewed_empty → 已审核无店铺，通知 MapView 显示提示
                 // cached/parsed → 直接刷新地图
                 if response.status == "parsing", let videoCacheId = response.video_cache_id, !videoCacheId.isEmpty {
                     onParsingStarted?(videoCacheId)
-                } else if response.status == "failed" {
+                } else if response.status == "failed" || response.status == "reviewed_empty" {
                     onParsingStarted?("error:\(response.message)")
                 } else {
                     onSuccess()
