@@ -762,3 +762,126 @@ struct ColdStartTaskStatusResponse: Codable {
     let api_cost: Double?
     let message: String?
 }
+
+// ─── v15.0 用户反馈相关模型 ───
+
+// 用户反馈主体
+struct UserFeedback: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let category: String          // bug_report / feature_request / other
+    let content: String
+    let image_urls: [String]?
+    let device_model: String?
+    let ios_version: String?
+    let app_version: String?
+    let status: String            // pending / in_progress / resolved
+    let created_at: String?
+    let updated_at: String?
+    let reply_count: Int?         // 列表接口返回的回复数
+
+    // 状态中文文本
+    var statusText: String {
+        switch status {
+        case "pending": return "待处理"
+        case "in_progress": return "处理中"
+        case "resolved": return "已解决"
+        default: return status
+        }
+    }
+
+    // 状态对应颜色
+    var statusColor: Color {
+        switch status {
+        case "pending": return DS.Color.brand
+        case "in_progress": return DS.Color.info
+        case "resolved": return DS.Color.success
+        default: return .secondary
+        }
+    }
+
+    // 分类中文文本
+    var categoryText: String {
+        switch category {
+        case "bug_report": return "Bug报告"
+        case "feature_request": return "功能建议"
+        case "other": return "其他"
+        default: return category
+        }
+    }
+}
+
+// 管理员回复
+struct FeedbackReply: Identifiable, Codable {
+    let id: String
+    let feedback_id: String
+    let admin_user_id: String
+    let content: String
+    let created_at: String?
+}
+
+// 反馈详情响应（反馈 + 回复列表）
+struct FeedbackDetailResponse: Codable {
+    let feedback: UserFeedback
+    let replies: [FeedbackReply]
+}
+
+// 反馈列表响应
+struct FeedbackListResponse: Codable {
+    let items: [UserFeedback]
+    let total: Int
+    let page: Int
+    let page_size: Int
+}
+
+// 管理员反馈列表项（含提交者昵称头像）
+struct AdminFeedbackItem: Identifiable, Codable {
+    let id: String
+    let user_id: String
+    let category: String
+    let content: String
+    let image_urls: [String]?
+    let status: String
+    let created_at: String?
+    let reply_count: Int?
+    let nickname: String?
+    let avatar_url: String?
+    let device_model: String?
+    let ios_version: String?
+    let app_version: String?
+
+    var statusText: String {
+        switch status {
+        case "pending": return "待处理"
+        case "in_progress": return "处理中"
+        case "resolved": return "已解决"
+        default: return status
+        }
+    }
+
+    var statusColor: Color {
+        switch status {
+        case "pending": return DS.Color.brand
+        case "in_progress": return DS.Color.info
+        case "resolved": return DS.Color.success
+        default: return .secondary
+        }
+    }
+
+    var categoryText: String {
+        switch category {
+        case "bug_report": return "Bug报告"
+        case "feature_request": return "功能建议"
+        case "other": return "其他"
+        default: return category
+        }
+    }
+}
+
+// 管理员反馈列表响应
+struct AdminFeedbackListResponse: Codable {
+    let items: [AdminFeedbackItem]
+    let total: Int
+    let page: Int
+    let page_size: Int
+}

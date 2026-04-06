@@ -1073,6 +1073,114 @@ class APIService {
             responseType: FanTuanPetResponse.self
         )
     }
+
+    // ─── v15.0 用户反馈 ───
+
+    /// 提交反馈（multipart/form-data，支持多图上传）
+    func submitFeedback(
+        userId: String,
+        category: String,
+        content: String,
+        images: [Data],
+        deviceModel: String,
+        iosVersion: String,
+        appVersion: String
+    ) async throws {
+        guard let url = URL(string: "\(BASE_URL)/api/feedback/submit") else {
+            throw URLError(.badURL)
+        }
+
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 60
+
+        var body = Data()
+
+        // 文本字段辅助函数
+        func appendField(_ name: String, _ value: String) {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n".data(using: .utf8)!)
+        }
+
+        appendField("user_id", userId)
+        appendField("category", category)
+        appendField("content", content)
+        appendField("device_model", deviceModel)
+        appendField("ios_version", iosVersion)
+        appendField("app_version", appVersion)
+
+        // 图片文件
+        for (i, imageData) in images.enumerated() {
+            body.append("--\(boundary)\r\nContent-Disposition: form-data; name=\"files\"; filename=\"screenshot_\(i).jpg\"\r\nContent-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+            body.append(imageData)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode != 200 {
+            if let errorBody = try? JSONDecoder().decode([String: String].self, from: data),
+               let detail = errorBody["detail"] {
+                throw APIError.serverError(detail)
+            }
+            throw APIError.serverError("提交失败")
+        }
+    }
+
+    /// 用户反馈列表
+    func getFeedbackList(userId: String, page: Int = 1) async throws -> FeedbackListResponse {
+        try await get(
+            path: "/api/feedback/list",
+            params: ["user_id": userId, "page": String(page)],
+            responseType: FeedbackListResponse.self
+        )
+    }
+
+    /// 反馈详情（含回复）
+    func getFeedbackDetail(feedbackId: String, userId: String) async throws -> FeedbackDetailResponse {
+        try await get(
+            path: "/api/feedback/\(feedbackId)",
+            params: ["user_id": userId],
+            responseType: FeedbackDetailResponse.self
+        )
+    }
+
+    /// 管理员反馈列表
+    func adminGetFeedbackList(page: Int = 1, status: String = "all", userId: String) async throws -> AdminFeedbackListResponse {
+        try await adminGet(
+            path: "/api/admin/feedback/list",
+            params: ["page": String(page), "status": status],
+            userId: userId,
+            responseType: AdminFeedbackListResponse.self
+        )
+    }
+
+    /// 管理员回复反馈
+    func adminReplyFeedback(feedbackId: String, content: String, userId: String) async throws {
+        struct Body: Codable { let feedback_id: String; let content: String }
+        struct Resp: Codable { let status: String }
+        _ = try await adminPost(
+            path: "/api/admin/feedback/reply",
+            body: Body(feedback_id: feedbackId, content: content),
+            userId: userId,
+            responseType: Resp.self
+        )
+    }
+
+    /// 管理员更新反馈状态
+    func adminUpdateFeedbackStatus(feedbackId: String, status: String, userId: String) async throws {
+        struct Body: Codable { let feedback_id: String; let status: String }
+        struct Resp: Codable { let status: String }
+        _ = try await adminPost(
+            path: "/api/admin/feedback/update-status",
+            body: Body(feedback_id: feedbackId, status: status),
+            userId: userId,
+            responseType: Resp.self
+        )
+    }
 }
 
 // 自定义错误类型

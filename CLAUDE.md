@@ -140,6 +140,18 @@ curl "https://ygsxhvsmivcckmjmjmhr.supabase.co/rest/v1/video_parse_cache?select=
 - 对于复杂的 DDL 操作（如 ALTER TABLE），建议通过 Supabase Dashboard 的 SQL Editor 执行
 - 简单的查询和 DML 操作可以直接通过 REST API 完成
 
+## 环境变量配置规则
+
+当本次改动涉及到环境变量配置时，必须同步更新 `backend/.env` 文件。
+
+**具体要求：**
+- 新增环境变量 → 同时写入 `backend/.env`
+- 修改环境变量值 → 同时更新 `backend/.env`
+- 删除环境变量 → 同时从 `backend/.env` 中移除
+- 确保 `backend/.env` 与代码中使用的环境变量保持一致
+
+**注意**：`backend/.env` 为本地开发配置文件，若涉及 Railway 部署，还需同步在 Railway 控制台更新对应的环境变量。
+
 ## 遇阻放弃规则
 
 执行任务时，若某个问题尝试了 **3 种不同方法**仍无法解决，必须立即停止尝试，避免陷入死循环浪费 token。

@@ -3505,6 +3505,160 @@ async def api_fantuan_pet(req: FanTuanUserRequest):
     """
     return fantuan_pet(req.user_id)
 
+# ─────────────────────────────────────────
+# v15.0 用户反馈系统 API
+# ─────────────────────────────────────────
+
+class AdminFeedbackReplyRequest(BaseModel):
+    feedback_id: str
+    content: str
+
+class AdminFeedbackStatusRequest(BaseModel):
+    feedback_id: str
+    status: str  # in_progress / resolved
+
+
+@app.post("/api/feedback/submit")
+async def submit_feedback(
+    user_id: str = Form(...),
+    category: str = Form(...),
+    content: str = Form(...),
+    device_model: str = Form(None),
+    ios_version: str = Form(None),
+    app_version: str = Form(None),
+    files: list[UploadFile] = File(default=[]),
+):
+    """
+    用户提交反馈（multipart/form-data，支持最多 3 张截图）。
+    category: bug_report / feature_request / other
+    content: 反馈文字（≤1000字）
+    files: 截图文件（0~3 张，每张 ≤5MB，JPG/PNG/WebP）
+    自动上下文通过 device_model / ios_version / app_version 字段传入。
+    """
+    # 校验分类
+    if category not in ("bug_report", "feature_request", "other"):
+        raise HTTPException(status_code=400, detail="无效的反馈分类")
+    # 校验内容
+    if not content or not content.strip():
+        raise HTTPException(status_code=400, detail="反馈内容不能为空")
+    if len(content) > 1000:
+        raise HTTPException(status_code=400, detail="反馈内容不能超过 1000 字")
+    # 校验截图数量
+    if len(files) > 3:
+        raise HTTPException(status_code=400, detail="最多上传 3 张截图")
+
+    import uuid
+    feedback_id = str(uuid.uuid4())
+    image_urls = []
+
+    # 上传截图到 Supabase Storage feedback bucket
+    if files:
+        from db import supabase as _supabase
+        for i, file in enumerate(files):
+            if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+                raise HTTPException(status_code=400, detail=f"第 {i+1} 张图片格式不支持，仅支持 JPG/PNG/WebP")
+            file_content = await file.read()
+            if len(file_content) > 5 * 1024 * 1024:
+                raise HTTPException(status_code=400, detail=f"第 {i+1} 张图片超过 5MB 限制")
+            path = f"{feedback_id}/{i}.jpg"
+            _supabase.storage.from_("feedback").upload(
+                path, file_content,
+                file_options={"content-type": "image/jpeg", "upsert": "true"}
+            )
+            url = _supabase.storage.from_("feedback").get_public_url(path)
+            image_urls.append(url)
+
+    # 写入数据库
+    from db import create_feedback
+    data = {
+        "id": feedback_id,
+        "user_id": user_id,
+        "category": category,
+        "content": content.strip(),
+        "image_urls": image_urls if image_urls else None,
+        "device_model": device_model,
+        "ios_version": ios_version,
+        "app_version": app_version,
+        "status": "pending",
+    }
+    result = create_feedback(data)
+    return {"status": "ok", "feedback_id": feedback_id}
+
+
+@app.get("/api/feedback/list")
+async def get_feedback_list(user_id: str, page: int = 1, page_size: int = 20):
+    """用户反馈列表（按时间倒序，含回复数）"""
+    from db import get_feedback_list_by_user
+    items, total = get_feedback_list_by_user(user_id, page, page_size)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@app.get("/api/feedback/{feedback_id}")
+async def get_feedback_detail(feedback_id: str, user_id: str):
+    """反馈详情（含管理员回复列表）"""
+    from db import get_feedback_by_id, get_feedback_replies
+    feedback = get_feedback_by_id(feedback_id)
+    if not feedback:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+    if feedback["user_id"] != user_id:
+        raise HTTPException(status_code=403, detail="无权查看此反馈")
+    replies = get_feedback_replies(feedback_id)
+    return {"feedback": feedback, "replies": replies}
+
+
+@app.get("/api/admin/feedback/list")
+async def admin_feedback_list(
+    page: int = 1,
+    page_size: int = 20,
+    status: str = "all",
+    admin_user_id: str = Depends(require_admin),
+):
+    """管理员反馈列表（含用户昵称头像，按状态优先级排序）"""
+    from db import get_admin_feedback_list
+    items, total = get_admin_feedback_list(page, page_size, status)
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
+
+
+@app.post("/api/admin/feedback/reply")
+async def admin_feedback_reply(
+    req: AdminFeedbackReplyRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """管理员回复反馈。回复后自动将 pending 状态改为 in_progress。"""
+    from db import get_feedback_by_id, create_feedback_reply, update_feedback_status
+    feedback = get_feedback_by_id(req.feedback_id)
+    if not feedback:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+    if not req.content or not req.content.strip():
+        raise HTTPException(status_code=400, detail="回复内容不能为空")
+
+    reply = create_feedback_reply({
+        "feedback_id": req.feedback_id,
+        "admin_user_id": admin_user_id,
+        "content": req.content.strip(),
+    })
+    # 如果当前是 pending，自动改为 in_progress
+    if feedback["status"] == "pending":
+        update_feedback_status(req.feedback_id, "in_progress")
+    return {"status": "ok", "reply": reply}
+
+
+@app.post("/api/admin/feedback/update-status")
+async def admin_feedback_update_status(
+    req: AdminFeedbackStatusRequest,
+    admin_user_id: str = Depends(require_admin),
+):
+    """管理员更新反馈状态（in_progress / resolved）"""
+    if req.status not in ("in_progress", "resolved"):
+        raise HTTPException(status_code=400, detail="无效的状态值")
+    from db import get_feedback_by_id, update_feedback_status
+    feedback = get_feedback_by_id(req.feedback_id)
+    if not feedback:
+        raise HTTPException(status_code=404, detail="反馈不存在")
+    result = update_feedback_status(req.feedback_id, req.status)
+    return {"status": "ok", "feedback": result}
+
+
 if __name__ == "__main__":
     import uvicorn
     # 本地开发时运行：python main.py

@@ -111,6 +111,12 @@ final class genchiUITests: XCTestCase {
         XCTAssertEqual(followAllOption.value as? String, "selected")
         XCTAssertTrue(app.staticTexts["parse-scope-follow-all-badge"].exists)
         XCTAssertFalse(app.staticTexts["parse-scope-single-badge"].exists)
+
+        singleOption.tap()
+        XCTAssertEqual(singleOption.value as? String, "selected")
+        XCTAssertEqual(followAllOption.value as? String, "unselected")
+        XCTAssertTrue(app.staticTexts["parse-scope-follow-all-badge"].exists)
+        XCTAssertFalse(app.staticTexts["parse-scope-single-badge"].exists)
     }
 
     @MainActor

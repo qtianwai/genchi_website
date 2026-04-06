@@ -2628,3 +2628,15 @@ SwiftUI
 - 关键决策：status 使用新增的 `cold_start` 枚举值而非复用 pending/completed；首次获取博主 sec_uid 仅调用 get-video-detail/v2（¥0.1）而非完整 parse_douyin_link；不写入 user_follows 关注关系
 - 技术栈：Python FastAPI、Supabase PostgreSQL、SwiftUI
 - 修改的文件：`backend/main.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../ViewModels/ColdStartViewModel.swift`（新建）、`ios/.../Views/Admin/ColdStartView.swift`（新建）、`ios/.../Views/Admin/ColdStartSubmitSheet.swift`（新建）、`ios/.../Views/MainTabView.swift`、`ios/.../Views/Admin/ReviewListView.swift`、`ios/.../Views/Admin/ReviewDetailView.swift`、`需求文档&技术方案/冷启动博主录入模块实施计划.md`（新建）、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/产品功能清单.md`
+
+### 2026-04-06 会话：微信登录配置咨询 + 域名注册
+- 主要目的：微信开放平台申请过程中的 Bundle ID 和 Universal Links 配置咨询，以及域名选择
+- 完成的主要任务：
+  - 确认 Bundle ID 为 `com.qtianwai.genchi`（来自 Xcode 项目配置）
+  - 说明 Universal Links 需要自有域名 + apple-app-site-association 文件配置
+  - 推荐并注册域名 `chimap.cn`，用于 Universal Links 配置
+  - 说明域名备案策略：现阶段 DNS 解析到 Railway 无需备案，迁移国内服务器时再备案
+  - 更新 `帮助文档/微信登录配置指南.md`，新增开发前待办项清单（域名配置、微信平台申请、iOS集成、后端配置、上线备案）
+- 关键决策：先买域名 DNS 指向 Railway，后续迁移国内只改 DNS 指向，Universal Links 和微信配置无需修改
+- 技术栈：DNS 配置、Universal Links、微信开放平台
+- 修改的文件：`帮助文档/微信登录配置指南.md`

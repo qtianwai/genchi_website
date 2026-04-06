@@ -703,3 +703,38 @@ create table if not exists fantuan_status (
 );
 
 create index if not exists idx_fantuan_status_user on fantuan_status(user_id);
+
+
+-- ─────────────────────────────────────────
+-- 22. 用户反馈表（v15.0 新增）
+-- 用户提交问题反馈（Bug报告/功能建议/其他），管理员在 App 内处理和回复
+-- ─────────────────────────────────────────
+create table if not exists user_feedback (
+  id              uuid primary key default uuid_generate_v4(),
+  user_id         uuid not null,                          -- 提交反馈的用户
+  category        text not null,                          -- bug_report / feature_request / other
+  content         text not null,                          -- 反馈文字内容（≤1000字）
+  image_urls      text[],                                 -- 截图 URL 数组（最多3张）
+  device_model    text,                                   -- 设备型号，如 "iPhone16,1"
+  ios_version     text,                                   -- iOS 版本，如 "17.4"
+  app_version     text,                                   -- App 版本号，如 "1.0.0 (42)"
+  status          text not null default 'pending',        -- pending / in_progress / resolved
+  created_at      timestamptz default now(),
+  updated_at      timestamptz default now()
+);
+
+create index if not exists idx_feedback_user on user_feedback(user_id);
+create index if not exists idx_feedback_status on user_feedback(status);
+create index if not exists idx_feedback_created on user_feedback(created_at desc);
+
+-- 23. 用户反馈回复表（v15.0 新增）
+-- 管理员对用户反馈的回复，一条反馈可有多条回复
+create table if not exists user_feedback_replies (
+  id              uuid primary key default uuid_generate_v4(),
+  feedback_id     uuid not null references user_feedback(id) on delete cascade,
+  admin_user_id   uuid not null,                          -- 回复的管理员
+  content         text not null,                          -- 回复文字
+  created_at      timestamptz default now()
+);
+
+create index if not exists idx_feedback_replies_fid on user_feedback_replies(feedback_id);

@@ -2501,3 +2501,114 @@ def update_fantuan_on_checkin(user_id: str) -> dict:
 def update_fantuan_on_favorite(user_id: str) -> dict:
     """收藏时附带更新：饱食度 +2"""
     return _update_fantuan_values(user_id, satiety_add=2, intimacy_add=0)
+
+
+# ─────────────────────────────────────────
+# v15.0 用户反馈系统
+# ─────────────────────────────────────────
+
+def create_feedback(data: dict) -> dict:
+    """创建用户反馈记录"""
+    result = supabase.table("user_feedback").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_feedback_list_by_user(user_id: str, page: int = 1, page_size: int = 20) -> tuple:
+    """获取用户的反馈列表（按时间倒序），返回 (items, total)"""
+    # 先查总数
+    count_result = supabase.table("user_feedback").select("id", count="exact").eq("user_id", user_id).execute()
+    total = count_result.count or 0
+
+    offset = (page - 1) * page_size
+    result = supabase.table("user_feedback").select("*").eq("user_id", user_id) \
+        .order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
+
+    items = result.data or []
+    # 为每条反馈附加回复数
+    for item in items:
+        reply_count = supabase.table("user_feedback_replies").select("id", count="exact") \
+            .eq("feedback_id", item["id"]).execute()
+        item["reply_count"] = reply_count.count or 0
+
+    return items, total
+
+
+def get_feedback_by_id(feedback_id: str) -> dict | None:
+    """根据 ID 获取单条反馈"""
+    result = supabase.table("user_feedback").select("*").eq("id", feedback_id).execute()
+    return result.data[0] if result.data else None
+
+
+def get_feedback_replies(feedback_id: str) -> list:
+    """获取某条反馈的所有回复（按时间正序）"""
+    result = supabase.table("user_feedback_replies").select("*") \
+        .eq("feedback_id", feedback_id).order("created_at", desc=False).execute()
+    return result.data or []
+
+
+def create_feedback_reply(data: dict) -> dict:
+    """创建管理员回复"""
+    result = supabase.table("user_feedback_replies").insert(data).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_feedback_status(feedback_id: str, status: str) -> dict:
+    """更新反馈状态（pending / in_progress / resolved）"""
+    result = supabase.table("user_feedback").update({
+        "status": status,
+        "updated_at": datetime.utcnow().isoformat(),
+    }).eq("id", feedback_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def get_admin_feedback_list(page: int = 1, page_size: int = 20, status_filter: str = "all") -> tuple:
+    """管理员获取反馈列表（含用户昵称头像），返回 (items, total)
+    排序：pending > in_progress > resolved，同状态按时间倒序
+    """
+    query = supabase.table("user_feedback").select("*", count="exact")
+    if status_filter != "all":
+        query = query.eq("status", status_filter)
+
+    # 先查总数
+    count_result = query.execute()
+    total = count_result.count or 0
+
+    # 分页查询
+    offset = (page - 1) * page_size
+    query = supabase.table("user_feedback").select("*")
+    if status_filter != "all":
+        query = query.eq("status", status_filter)
+    result = query.order("created_at", desc=True).range(offset, offset + page_size - 1).execute()
+
+    items = result.data or []
+
+    # 批量获取用户昵称和头像
+    user_ids = list(set(item["user_id"] for item in items))
+    profiles = {}
+    if user_ids:
+        profile_result = supabase.table("user_profiles").select("user_id, nickname, avatar_url") \
+            .in_("user_id", user_ids).execute()
+        for p in (profile_result.data or []):
+            profiles[p["user_id"]] = p
+
+    # 附加用户信息和回复数
+    for item in items:
+        profile = profiles.get(item["user_id"], {})
+        item["nickname"] = profile.get("nickname", "美食探索者")
+        item["avatar_url"] = profile.get("avatar_url")
+        reply_count = supabase.table("user_feedback_replies").select("id", count="exact") \
+            .eq("feedback_id", item["id"]).execute()
+        item["reply_count"] = reply_count.count or 0
+
+    # 按状态优先级排序：pending > in_progress > resolved
+    status_order = {"pending": 0, "in_progress": 1, "resolved": 2}
+    items.sort(key=lambda x: (status_order.get(x["status"], 9), x.get("created_at", "") == "", x.get("created_at", "")))
+    # 由于 created_at 倒序在同状态内，需要反转时间排序
+    from itertools import groupby
+    sorted_items = []
+    for _, group in groupby(items, key=lambda x: status_order.get(x["status"], 9)):
+        group_list = list(group)
+        group_list.sort(key=lambda x: x.get("created_at", ""), reverse=True)
+        sorted_items.extend(group_list)
+
+    return sorted_items, total
