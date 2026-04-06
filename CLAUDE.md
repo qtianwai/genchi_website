@@ -20,7 +20,7 @@
 - 将当前代码变更提交至 GitHub 仓库
 - Railway 检测到 GitHub 更新后自动触发部署
 
-无需额外确认，直接执行 git add → git commit → git push 流程。
+无需额外确认，直接执行 git add → git commit → git push 流程（push 到远程是默认行为，无需特别说明）
 
 ## 会话总结
 每一次会话请求结束后进行会话总结，无论生成新文件还是修改已有文件都需要总结，并将总结内容 Append 写入到 README.md 文件中（内容是累积增加的）。总结内容应包括：

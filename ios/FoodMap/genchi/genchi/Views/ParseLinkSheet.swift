@@ -126,6 +126,8 @@ struct ParseLinkSheet: View {
                                 title: "仅添加本店铺",
                                 subtitle: "只添加这条视频的店铺，不关注博主",
                                 badgeText: lastSelectedScopeBadge(for: .singleOnly),
+                                accessibilityIdentifier: "parse-scope-single",
+                                badgeAccessibilityIdentifier: "parse-scope-single-badge",
                                 isSelected: selectedScope == .singleOnly
                             ) { updateSelectedScope(.singleOnly) }
 
@@ -134,6 +136,8 @@ struct ParseLinkSheet: View {
                                 title: "关注博主全部推荐",
                                 subtitle: "关注这个博主后，地图会补齐他推荐过的店，后续新推荐也会自动更新",
                                 badgeText: lastSelectedScopeBadge(for: .followAll),
+                                accessibilityIdentifier: "parse-scope-follow-all",
+                                badgeAccessibilityIdentifier: "parse-scope-follow-all-badge",
                                 isSelected: selectedScope == .followAll
                             ) { updateSelectedScope(.followAll) }
                         }
@@ -232,6 +236,7 @@ struct ParseLinkSheet: View {
             bgProgressTimer?.invalidate()
         }
         .onAppear {
+            applyUITestScopeOverridesIfNeeded()
             selectedScope = restoredScope
             if let initialLink, !initialLink.isEmpty {
                 linkText = initialLink
@@ -392,6 +397,19 @@ struct ParseLinkSheet: View {
 
     private func lastSelectedScopeBadge(for scope: ParseScope) -> String? {
         lastSelectedScopeRawValue == scope.rawValue ? "上次选择" : nil
+    }
+
+    private func applyUITestScopeOverridesIfNeeded() {
+        let environment = ProcessInfo.processInfo.environment
+
+        if environment["UITEST_CLEAR_PARSE_LAST_SCOPE"] == "1" {
+            lastSelectedScopeRawValue = ""
+        }
+
+        if let rawValue = environment["UITEST_PARSE_LAST_SCOPE"],
+           let scope = ParseScope(rawValue: rawValue) {
+            lastSelectedScopeRawValue = scope.rawValue
+        }
     }
 }
 
@@ -593,6 +611,8 @@ struct ScopeOptionRow: View {
     let title: String      // 主标题
     let subtitle: String   // 副标题说明
     let badgeText: String?
+    let accessibilityIdentifier: String
+    let badgeAccessibilityIdentifier: String?
     let isSelected: Bool   // 是否选中
     let onTap: () -> Void  // 点击回调
 
@@ -621,6 +641,7 @@ struct ScopeOptionRow: View {
                                 .padding(.horizontal, 8)
                                 .padding(.vertical, 3)
                                 .background(DS.Color.brand.opacity(0.12), in: Capsule())
+                                .accessibilityIdentifier(badgeAccessibilityIdentifier ?? "")
                         }
                     }
                     Text(subtitle)
@@ -649,5 +670,7 @@ struct ScopeOptionRow: View {
             }
         }
         .buttonStyle(.plain)
+        .accessibilityIdentifier(accessibilityIdentifier)
+        .accessibilityValue(isSelected ? "selected" : "unselected")
     }
 }

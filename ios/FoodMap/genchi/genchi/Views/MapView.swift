@@ -77,6 +77,7 @@ struct MapView: View {
     @State private var correctionRestaurantId: String? = nil     // 勘误的店铺 ID
     @State private var correctionVideoCacheId: String? = nil     // 勘误的视频缓存 ID
     @State private var hasAutoOpenedCorrectionSheetForUITest = false
+    @State private var hasAutoOpenedParseSheetForUITest = false
 
     /// 跨文件构造入口（如 MainTabView）。
     /// 说明：结构体内存在 `private` 存储属性时，编译器生成的成员初始化器为 `private`，
@@ -122,6 +123,7 @@ struct MapView: View {
         _correctionRestaurantId = State(initialValue: nil)
         _correctionVideoCacheId = State(initialValue: nil)
         _hasAutoOpenedCorrectionSheetForUITest = State(initialValue: false)
+        _hasAutoOpenedParseSheetForUITest = State(initialValue: false)
         _authState = EnvironmentObject()
     }
 
@@ -135,6 +137,10 @@ struct MapView: View {
 
     private var isUITestAutoOpenCorrectionEnabled: Bool {
         ProcessInfo.processInfo.arguments.contains("UITEST_AUTO_OPEN_CORRECTION")
+    }
+
+    private var isUITestAutoOpenParseLinkEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("UITEST_AUTO_OPEN_PARSE_LINK")
     }
 
     private var shouldDisableLocationPromptForUITest: Bool {
@@ -204,6 +210,7 @@ struct MapView: View {
             detectClipboardLink()
             startRadarAnimation()
             autoOpenCorrectionSheetForUITestIfNeeded()
+            autoOpenParseSheetForUITestIfNeeded()
         }
         .onDisappear {
             viewModel.stopAutoRefresh()
@@ -1196,6 +1203,16 @@ struct MapView: View {
         correctionRestaurantId = "ui-test-restaurant"
         correctionVideoCacheId = nil
         showCorrectionSheet = true
+    }
+
+    private func autoOpenParseSheetForUITestIfNeeded() {
+        guard isUITestAutoOpenParseLinkEnabled else { return }
+        guard !hasAutoOpenedParseSheetForUITest else { return }
+
+        hasAutoOpenedParseSheetForUITest = true
+        pendingParseLink = nil
+        parseAutoStart = false
+        showParseSheet = true
     }
 
     private func openAppleMaps(for item: MapDisplayItem) {
