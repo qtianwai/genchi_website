@@ -94,6 +94,10 @@ class APIService {
 
     // v10.0 新增：提交用户勘误
     func submitCorrection(userId: String, restaurantId: String?, videoCacheId: String?, correctionType: String, correctionDetail: String?) async throws -> CorrectionResponse {
+        if ProcessInfo.processInfo.environment["UITEST_FORCE_CORRECTION_SUCCESS"] == "1" {
+            return CorrectionResponse(status: "success", message: "UI test mocked success")
+        }
+
         struct Body: Codable {
             let user_id: String
             let restaurant_id: String?
@@ -447,12 +451,14 @@ class APIService {
     func searchUserRestaurant(
         name: String,
         city: String,
+        userId: String,
         location: CLLocationCoordinate2D? = nil,
         limit: Int = 50
     ) async throws -> [RestaurantCandidate] {
         var params = [
             "name": name,
-            "limit": "\(limit)"
+            "limit": "\(limit)",
+            "user_id": userId
         ]
         if !city.isEmpty {
             params["city"] = city

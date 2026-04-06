@@ -30,6 +30,7 @@ struct Restaurant: Identifiable, Codable, Hashable {
     let verified: Bool?      // 是否经过人工验证（v3.0 新增，可选兼容旧数据）
     let avg_price: Int?      // 人均消费（元），来自高德 biz_ext.avgprice（v5.0 新增）
     let photo_url: String?   // 店铺封面图 URL，来自高德 photos[0].url（v5.0 新增）
+    let tel: String?         // 商家联系电话，来自高德 tel 字段
 
     // 计算属性：转换为 CoreLocation 坐标（地图标注用）
     var coordinate: CLLocationCoordinate2D? {
@@ -308,7 +309,9 @@ struct RestaurantCandidate: Identifiable, Codable {
     let category_mapped: String // 后端映射后的分类，如"火锅"
     let avg_price: Int?         // 人均消费（元），来自高德 biz_ext.avgprice（v5.0 新增）
     let photo_url: String?      // 店铺封面图 URL，来自高德 photos[0].url（v5.0 新增）
+    let tel: String?            // 商家联系电话，来自高德 tel 字段
     let distance_meters: Double? // 与当前用户位置的直线距离（米）
+    let is_added: Bool?         // 当前用户是否已添加到“我的推荐”
 
     // Identifiable 使用 amap_id
     var id: String { amap_id }

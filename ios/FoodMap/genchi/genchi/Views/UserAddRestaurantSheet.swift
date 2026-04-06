@@ -359,6 +359,7 @@ struct UserAddRestaurantSheet: View {
             candidates = try await APIService.shared.searchUserRestaurant(
                 name: trimmedRestaurantName,
                 city: selectedSearchCity,
+                userId: authState.userId,
                 location: locationManager.userLocation,
                 limit: 50
             )
@@ -373,6 +374,11 @@ struct UserAddRestaurantSheet: View {
 
     @MainActor
     private func addRestaurant(_ candidate: RestaurantCandidate) async {
+        guard candidate.is_added != true else {
+            searchError = "该店铺已在我的推荐中，无需重复添加"
+            return
+        }
+
         isSubmitting = true
         searchError = nil
 
@@ -381,6 +387,24 @@ struct UserAddRestaurantSheet: View {
                 userId: authState.userId,
                 candidate: candidate
             )
+            if let index = candidates.firstIndex(where: { $0.id == candidate.id }) {
+                let updated = RestaurantCandidate(
+                    amap_id: candidate.amap_id,
+                    name: candidate.name,
+                    address: candidate.address,
+                    city: candidate.city,
+                    latitude: candidate.latitude,
+                    longitude: candidate.longitude,
+                    category_raw: candidate.category_raw,
+                    category_mapped: candidate.category_mapped,
+                    avg_price: candidate.avg_price,
+                    photo_url: candidate.photo_url,
+                    tel: candidate.tel,
+                    distance_meters: candidate.distance_meters,
+                    is_added: true
+                )
+                candidates[index] = updated
+            }
             successMessage = resp.message
             updateRecentCities(with: candidate.city)
             onSuccess(resp.restaurant_id)
@@ -457,6 +481,10 @@ private struct UserRestaurantCandidateCard: View {
     let onPreviewImage: () -> Void
     let onSelect: () -> Void
 
+    private var isAdded: Bool {
+        candidate.is_added == true
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 14) {
             CandidateImageView(
@@ -482,23 +510,23 @@ private struct UserRestaurantCandidateCard: View {
 
             Button(action: onSelect) {
                 ZStack {
-                    Circle()
-                        .fill(DS.Color.brand)
-                        .frame(width: 42, height: 42)
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(isAdded ? Color(.systemGray5) : DS.Color.brand)
+                        .frame(width: 64, height: 42)
 
-                    if isSubmitting {
+                    if isSubmitting && !isAdded {
                         ProgressView()
                             .tint(.white)
                             .scaleEffect(0.8)
                     } else {
-                        Image(systemName: "plus")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(.white)
+                        Image(systemName: isAdded ? "checkmark" : "plus")
+                            .font(.system(size: 17, weight: .bold))
+                            .foregroundColor(isAdded ? .secondary : .white)
                     }
                 }
             }
             .buttonStyle(.plain)
-            .disabled(isSubmitting)
+            .disabled(isSubmitting || isAdded)
         }
         .padding(14)
         .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -512,6 +540,9 @@ private struct UserRestaurantCandidateCard: View {
     private var tags: [CandidateTag] {
         var result: [CandidateTag] = []
 
+        if candidate.is_added == true {
+            result.append(.init(text: "已添加", tint: .success))
+        }
         if !candidate.city.isEmpty {
             result.append(.init(text: candidate.city, tint: .secondary))
         }
@@ -593,6 +624,7 @@ private struct CandidateTag: Identifiable {
 private enum CandidateTagTint {
     case brand
     case secondary
+    case success
 
     var foregroundColor: Color {
         switch self {
@@ -600,6 +632,8 @@ private enum CandidateTagTint {
             return DS.Color.brand
         case .secondary:
             return .secondary
+        case .success:
+            return .green
         }
     }
 
@@ -609,6 +643,8 @@ private enum CandidateTagTint {
             return DS.Color.brand.opacity(0.10)
         case .secondary:
             return DS.Color.surfaceAlt
+        case .success:
+            return Color.green.opacity(0.12)
         }
     }
 }

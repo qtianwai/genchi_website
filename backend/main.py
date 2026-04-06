@@ -38,7 +38,8 @@ from db import (
     admin_confirm_correct, admin_confirm_empty, admin_correct_restaurant, admin_skip,
     admin_correct_restaurants_multi,  # v9.0 新增：多店铺修正
     # 新增：用户自建推荐店铺相关（v4.0）
-    get_user_created_restaurants, add_user_restaurant, remove_user_restaurant,
+    get_user_created_restaurants, get_user_created_restaurant_amap_ids,
+    has_user_restaurant, add_user_restaurant, remove_user_restaurant,
     # 新增：用户 profile 相关
     get_user_profile, upsert_user_profile,
     # 新增：避雷、删除、分组、收藏理由、博主统计（v5.0）
@@ -392,6 +393,7 @@ def _save_video_restaurant(video_url: str, video_id: str, author_id: str, restau
             "category": restaurant_data.get("category", ""),
             "avg_price": restaurant_data.get("avg_price"),    # 人均消费（元）
             "photo_url": restaurant_data.get("photo_url", ""), # 店铺封面图
+            "tel": restaurant_data.get("tel", ""),             # 商家联系电话
         })
         restaurant_id = saved["id"]
 
@@ -574,6 +576,7 @@ async def parse_single_video_fast(
         "amap_id": amap_result.get("amap_id"),
         "avg_price": amap_result.get("avg_price"),
         "photo_url": amap_result.get("photo_url", ""),
+        "tel": amap_result.get("tel", ""),             # 商家联系电话
         # 附加字段，供 _save_video_restaurant 写入缓存
         "parse_reason": parse_reason,
         "data_source": data_source,
@@ -1042,6 +1045,7 @@ async def _async_parse_and_save(
                     "category": restaurant.get("category", ""),
                     "avg_price": restaurant.get("avg_price"),
                     "photo_url": restaurant.get("photo_url", ""),
+                    "tel": restaurant.get("tel", ""),              # 商家联系电话
                 })
                 restaurant_id = saved["id"]
             if restaurant_id:
@@ -1162,6 +1166,7 @@ async def get_map_restaurants(user_id: str):
 async def search_user_restaurant(
     name: str,
     city: str = "",
+    user_id: str = "",
     lat: float | None = None,
     lng: float | None = None,
     limit: int = 50,
@@ -1187,6 +1192,11 @@ async def search_user_restaurant(
             user_lng=lng,
             max_results=safe_limit,
         )
+
+        if user_id.strip():
+            existing_amap_ids = get_user_created_restaurant_amap_ids(user_id.strip())
+            for item in results:
+                item["is_added"] = item.get("amap_id") in existing_amap_ids
 
         return {"results": results}
     except HTTPException:
@@ -1237,6 +1247,9 @@ async def create_user_restaurant(req: UserRestaurantRequest):
         restaurant_id = saved.get("id")
         if not restaurant_id:
             raise HTTPException(status_code=500, detail="店铺入库失败")
+
+        if has_user_restaurant(req.user_id, restaurant_id):
+            raise HTTPException(status_code=400, detail="该店铺已在我的推荐中，无需重复添加")
 
         # 添加用户自建关联
         add_user_restaurant(req.user_id, restaurant_id, req.note)
@@ -1670,6 +1683,7 @@ async def manual_add_restaurant(req: ManualAddRestaurantRequest):
             "amap_id": amap_result.get("amap_id"),
             "avg_price": amap_result.get("avg_price"),      # 人均消费（元）
             "photo_url": amap_result.get("photo_url", ""),  # 店铺封面图
+            "tel": amap_result.get("tel", ""),               # 商家联系电话
             # v2.5 新增字段
             "parse_reason": f"用户手动添加店铺「{req.restaurant_name}」",
             "data_source": "manual_add",
@@ -1694,6 +1708,7 @@ async def manual_add_restaurant(req: ManualAddRestaurantRequest):
                 "category": restaurant_data.get("category", ""),
                 "avg_price": restaurant_data.get("avg_price"),    # 人均消费（元）
                 "photo_url": restaurant_data.get("photo_url", ""), # 店铺封面图
+                "tel": restaurant_data.get("tel", ""),             # 商家联系电话
             })
             restaurant_id = saved["id"]
             print(f"[手动添加] 新店铺入库: {restaurant_data['name']}")
@@ -1747,6 +1762,7 @@ class AdminCorrectRequest(BaseModel):
     category: str   # 管理员最终确认的分类
     avg_price: int | None = None      # 人均消费（元），来自高德 biz_ext.cost
     photo_url: str | None = None      # 店铺封面图 URL，来自高德 photos[0].url
+    tel: str | None = None            # 商家联系电话，来自高德 tel
 
 class AdminSkipRequest(BaseModel):
     cache_id: str
@@ -1762,6 +1778,7 @@ class AdminCorrectMultiRestaurantItem(BaseModel):
     category: str
     avg_price: int | None = None
     photo_url: str | None = None
+    tel: str | None = None            # 商家联系电话
 
 class AdminCorrectMultiRequest(BaseModel):
     cache_id: str
@@ -1938,6 +1955,7 @@ async def review_correct(
         category=req.category,
         avg_price=req.avg_price,
         photo_url=req.photo_url,
+        tel=req.tel,
     )
     if not success:
         raise HTTPException(status_code=404, detail="未找到该复核记录")
@@ -1968,6 +1986,7 @@ async def review_correct_multi(
             "category": r.category,
             "avg_price": r.avg_price,
             "photo_url": r.photo_url,
+            "tel": r.tel,
         }
         for r in req.restaurants
     ]

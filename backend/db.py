@@ -691,6 +691,7 @@ def admin_correct_restaurant(
     category: str,
     avg_price: int | None = None,
     photo_url: str | None = None,
+    tel: str | None = None,
 ) -> bool:
     """
     人工修正店铺：
@@ -719,6 +720,8 @@ def admin_correct_restaurant(
         restaurant_data["avg_price"] = avg_price
     if photo_url:
         restaurant_data["photo_url"] = photo_url
+    if tel:
+        restaurant_data["tel"] = tel
     r_result = supabase.table("restaurants").upsert(
         restaurant_data, on_conflict="amap_id"
     ).execute()
@@ -813,6 +816,8 @@ def admin_correct_restaurants_multi(
             restaurant_data["avg_price"] = r["avg_price"]
         if r.get("photo_url"):
             restaurant_data["photo_url"] = r["photo_url"]
+        if r.get("tel"):
+            restaurant_data["tel"] = r["tel"]
         r_result = supabase.table("restaurants").upsert(
             restaurant_data, on_conflict="amap_id"
         ).execute()
@@ -907,6 +912,31 @@ def get_user_created_restaurants(user_id: str) -> list[dict]:
         .execute()
     )
     return result.data or []
+
+
+def get_user_created_restaurant_amap_ids(user_id: str) -> set[str]:
+    """获取用户已添加店铺的高德 POI ID 集合（用于搜索结果去重提示）"""
+    rows = get_user_created_restaurants(user_id)
+    amap_ids: set[str] = set()
+    for row in rows:
+        restaurant = row.get("restaurants") or {}
+        amap_id = restaurant.get("amap_id")
+        if amap_id:
+            amap_ids.add(amap_id)
+    return amap_ids
+
+
+def has_user_restaurant(user_id: str, restaurant_id: str) -> bool:
+    """检查用户是否已添加该店铺到我的推荐"""
+    result = (
+        supabase.table("user_created_restaurants")
+        .select("id")
+        .eq("user_id", user_id)
+        .eq("restaurant_id", restaurant_id)
+        .limit(1)
+        .execute()
+    )
+    return bool(result.data)
 
 
 def add_user_restaurant(user_id: str, restaurant_id: str, note: str = "") -> dict:
