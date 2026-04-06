@@ -222,7 +222,8 @@ async def extract_restaurants_priority(
     author_liked_comments: list,
     hot_comments: list,
     all_comments: list,
-    rule_candidates: list = None,  # v10.0 新增：规则预提取的候选店铺名
+    rule_candidates: list = None,
+    hot_search_keywords: list = None,  # v10.0 新增：抖音热搜词
 ) -> list[dict]:
     """
     基于优先级策略提取视频中的店铺信息（v10.0 优化版本）。
@@ -268,6 +269,7 @@ async def extract_restaurants_priority(
     p3_comments = format_comments(hot_comments)
     p4_comments = format_comments(all_comments)
     candidates_text = format_candidates(rule_candidates or [])
+    hot_keywords_text = ", ".join(hot_search_keywords) if hot_search_keywords else "无"
 
     prompt = f"""你是一个美食信息提取助手。请根据以下抖音探店视频的信息，判断博主这条视频探访的是哪一家具体店铺。
 
@@ -277,6 +279,9 @@ async def extract_restaurants_priority(
 
 === 规则预提取的候选店铺（供参考，可能包含噪音）===
 {candidates_text}
+
+=== P0 信息（极高优先级：抖音热搜词，通常就是店铺名或品牌名）===
+热搜词：{hot_keywords_text}
 
 === P1 信息（最高优先级：标题和话题标签通常直接含店名）===
 视频标题：{p1_title}
@@ -338,6 +343,8 @@ async def extract_restaurants_priority(
 
 只返回 JSON 对象，不要有其他文字。如果完全无法判断或不是美食探店视频，返回 {{"result": null, "reason": "原因"}}。
 
+**重要**：如果你在分析过程中已经识别到了可能的店铺名（即使不完全确定），必须以 JSON 店铺对象格式返回，不要返回 null。只有在完全没有任何店铺线索时才返回 null。如果你在 reason 中提到了某个店铺名，说明你已经识别到了，此时必须返回该店铺的 JSON 对象。
+
 === 反例示范 ===
 
 反例1 - 标题描述当店铺名：
@@ -377,9 +384,26 @@ async def extract_restaurants_priority(
         parsed = json.loads(result_text)
 
         # 兼容 {"result": null, "reason": "..."} 格式（无法判断时）
+        # v10.0 兜底：如果 reason 中实际包含了店铺名线索（AI 识别到了但格式不对），
+        # 尝试从规则候选中找到匹配的店铺名作为结果
         if parsed.get("result") is None and "reason" in parsed:
             reason = parsed.get("reason", "")
-            print(f"[AI解析] 优先级算法：未识别到店铺，原因: {reason}")
+            print(f"[AI解析] 优先级算法：AI 返回 null，原因: {reason}")
+
+            # 兜底：检查 reason 中是否提到了规则候选中的店铺名
+            if rule_candidates:
+                for cand in rule_candidates:
+                    cand_name = cand.get("name", "")
+                    if cand_name and len(cand_name) >= 2 and cand_name.lower() in reason.lower():
+                        print(f"[AI解析] 兜底：reason 中提到了候选「{cand_name}」，作为结果返回")
+                        return [{
+                            "name": cand_name,
+                            "city": city_name or "未知",
+                            "category": "",
+                            "confidence": "medium",
+                            "reason": f"AI返回null但reason中提到了{cand_name}（兜底提取）",
+                        }]
+
             return [{"_no_result": True, "reason": reason}]
 
         restaurant = parsed

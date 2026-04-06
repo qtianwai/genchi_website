@@ -728,7 +728,8 @@ class MapViewModel: ObservableObject {
                     category: restaurant.category,
                     verified: nil,
                     avg_price: nil,
-                    photo_url: restaurant.photo_url
+                    photo_url: restaurant.photo_url,
+                    tel: nil
                 )
 
                 if let existing = itemsByRestaurantId[restaurant.restaurant_id] {
@@ -763,7 +764,11 @@ class MapViewModel: ObservableObject {
                         avoidCount: 0
                     )
                     displayItem.recommendedBy = [
-                        .subscribedUser(userId: targetUserId, nickname: subscription.nickname, avatarUrl: subscription.avatar_url)
+                        RecommendSourceType.subscribedUser(
+                            userId: targetUserId,
+                            nickname: subscription.nickname,
+                            avatarUrl: subscription.avatar_url
+                        )
                     ]
 
                     itemsByRestaurantId[restaurant.restaurant_id] = displayItem

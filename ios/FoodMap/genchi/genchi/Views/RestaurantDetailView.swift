@@ -192,6 +192,15 @@ struct RestaurantDetailView: View {
                             emphasis: .primary,
                             action: { showNavSheet = true }
                         )
+                        if let tel = restaurant.tel, !tel.isEmpty {
+                            CardActionButton(
+                                title: "电话",
+                                icon: "phone.fill",
+                                tint: .green,
+                                emphasis: .primary,
+                                action: { callPhone(tel) }
+                            )
+                        }
                         CardActionButton(
                             title: isFavorited ? "取消收藏" : "收藏",
                             icon: isFavorited ? "heart.slash" : "heart.fill",
@@ -683,6 +692,17 @@ struct RestaurantDetailView: View {
             UIApplication.shared.open(url)
         } else {
             openInAppleMaps(coordinate: coordinate)
+        }
+    }
+
+    /// 拨打商家电话（高德 tel 可能含多个号码用 ";" 分隔，取第一个）
+    private func callPhone(_ tel: String) {
+        let firstNumber = tel.components(separatedBy: ";").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? tel
+        let cleaned = firstNumber.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        if let url = URL(string: "tel:\(cleaned)") {
+            UIApplication.shared.open(url)
         }
     }
 }

@@ -14,6 +14,14 @@
 
 所有工具调用（Bash、Edit、Write、Read、WebFetch 等）均已在 `.claude/settings.local.json` 中通过通配符授权，无需逐条确认。
 
+## 代码提交与部署
+
+当每次说"提交代码"或相近意思（如：提交、推送代码、发布代码、部署等），即表示：
+- 将当前代码变更提交至 GitHub 仓库
+- Railway 检测到 GitHub 更新后自动触发部署
+
+无需额外确认，直接执行 git add → git commit → git push 流程。
+
 ## 会话总结
 每一次会话请求结束后进行会话总结，无论生成新文件还是修改已有文件都需要总结，并将总结内容 Append 写入到 README.md 文件中（内容是累积增加的）。总结内容应包括：
 - 会话的主要目的

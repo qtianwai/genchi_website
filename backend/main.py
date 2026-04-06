@@ -436,6 +436,7 @@ async def parse_single_video_fast(
     author_liked_comments = video_info.get("author_liked_comments", [])
     hot_comments = video_info.get("hot_comments", [])
     all_comments = video_info.get("all_comments", [])
+    hot_search_keywords = video_info.get("hot_search_keywords", [])  # 抖音热搜词
 
     # API 成本统计
     COST_PER_CALL = 0.1  # 元/次
@@ -456,6 +457,7 @@ async def parse_single_video_fast(
         author_liked_comments=author_liked_comments,
         all_comments=all_comments,
         poi_info=poi_info,
+        hot_search_keywords=hot_search_keywords,
     )
 
     # ── 第二层：AI 精选（传入规则候选辅助决策）──
@@ -468,6 +470,7 @@ async def parse_single_video_fast(
         hot_comments=hot_comments,
         all_comments=all_comments,
         rule_candidates=rule_candidates,
+        hot_search_keywords=hot_search_keywords,
     )
 
     # 收集 parse_reason

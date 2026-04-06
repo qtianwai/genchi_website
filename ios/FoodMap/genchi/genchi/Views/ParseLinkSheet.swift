@@ -31,12 +31,13 @@ struct ParseLinkSheet: View {
     // 轮询连续失败次数（用 @State 替代局部变量，避免 Swift 6 并发警告）
     @State private var bgPollingFailureCount = 0
     // 入库范围选择：关注博主全部推荐 or 仅添加本店铺
-    @State private var selectedScope: ParseScope = .followAll
+    @State private var selectedScope: ParseScope = .singleOnly
     // 预填链接自动解析只触发一次
     @State private var hasAutoStarted = false
+    @AppStorage("parse_link_last_scope") private var lastSelectedScopeRawValue = ""
 
-    enum ParseScope {
-        case followAll   // 关注博主全部推荐（默认）
+    enum ParseScope: String {
+        case followAll
         case singleOnly  // 仅添加本店铺
     }
 
@@ -121,18 +122,20 @@ struct ParseLinkSheet: View {
                             )
 
                             ScopeOptionRow(
-                                icon: "person.crop.circle.badge.plus",
-                                title: "关注博主全部推荐",
-                                subtitle: "解析博主所有探店视频，自动关注博主",
-                                isSelected: selectedScope == .followAll
-                            ) { selectedScope = .followAll }
-
-                            ScopeOptionRow(
                                 icon: "fork.knife.circle",
                                 title: "仅添加本店铺",
                                 subtitle: "只添加这条视频的店铺，不关注博主",
+                                badgeText: lastSelectedScopeBadge(for: .singleOnly),
                                 isSelected: selectedScope == .singleOnly
-                            ) { selectedScope = .singleOnly }
+                            ) { updateSelectedScope(.singleOnly) }
+
+                            ScopeOptionRow(
+                                icon: "person.crop.circle.badge.plus",
+                                title: "关注博主全部推荐",
+                                subtitle: "关注这个博主后，地图会补齐他推荐过的店，后续新推荐也会自动更新",
+                                badgeText: lastSelectedScopeBadge(for: .followAll),
+                                isSelected: selectedScope == .followAll
+                            ) { updateSelectedScope(.followAll) }
                         }
                         .padding(16)
                         .background(Color(.systemBackground), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -229,6 +232,7 @@ struct ParseLinkSheet: View {
             bgProgressTimer?.invalidate()
         }
         .onAppear {
+            selectedScope = restoredScope
             if let initialLink, !initialLink.isEmpty {
                 linkText = initialLink
             }
@@ -297,7 +301,7 @@ struct ParseLinkSheet: View {
     func parseLink() {
         guard !linkText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         isLoading = true
-        parseCompleted = false  // 重置状态
+        parseCompleted = false
         errorMessage = nil
         result = nil
         bgCompletedMessage = nil
@@ -312,29 +316,21 @@ struct ParseLinkSheet: View {
                     scope: selectedScope == .singleOnly ? "single_only" : "follow_all"
                 )
 
-                // v10.0 半异步：status="parsing" 时自动关闭 Sheet，通知 MapView 开始轮询
+                // v10.0：无论什么状态都直接关闭弹框
+                // parsing → 通知 MapView 开始轮询，后台解析完弹框通知
+                // cached/parsed → 直接刷新地图
                 if response.status == "parsing", let videoCacheId = response.video_cache_id, !videoCacheId.isEmpty {
-                    isLoading = false
                     onParsingStarted?(videoCacheId)
-                    dismiss()
-                    return
+                } else {
+                    // 缓存命中或同步返回，直接刷新地图
+                    onSuccess()
                 }
-
-                // 缓存命中或同步返回结果（行为不变）
-                result = response
-                parseCompleted = true
-                onSuccess()
-
-                // 如果有后台任务正在运行，启动轮询
-                if response.is_background_running, let authorId = response.author_id ?? response.author?.id {
-                    showBgProgress = true
-                    bgStatusMessage = "正在解析博主其他探店视频..."
-                    startBgProgressPolling(authorId: authorId)
-                }
+                isLoading = false
+                dismiss()
             } catch {
                 errorMessage = error.localizedDescription
+                isLoading = false
             }
-            isLoading = false
         }
     }
 
@@ -383,6 +379,19 @@ struct ParseLinkSheet: View {
                 }
             }
         }
+    }
+
+    private var restoredScope: ParseScope {
+        ParseScope(rawValue: lastSelectedScopeRawValue) ?? .singleOnly
+    }
+
+    private func updateSelectedScope(_ scope: ParseScope) {
+        selectedScope = scope
+        lastSelectedScopeRawValue = scope.rawValue
+    }
+
+    private func lastSelectedScopeBadge(for scope: ParseScope) -> String? {
+        lastSelectedScopeRawValue == scope.rawValue ? "上次选择" : nil
     }
 }
 
@@ -583,6 +592,7 @@ struct ScopeOptionRow: View {
     let icon: String       // SF Symbol 图标名
     let title: String      // 主标题
     let subtitle: String   // 副标题说明
+    let badgeText: String?
     let isSelected: Bool   // 是否选中
     let onTap: () -> Void  // 点击回调
 
@@ -597,13 +607,27 @@ struct ScopeOptionRow: View {
 
                 // 文字区域
                 VStack(alignment: .leading, spacing: DS.Spacing.xs) {
-                    Text(title)
-                        .font(.subheadline)
-                        .fontWeight(isSelected ? .semibold : .regular)
-                        .foregroundColor(isSelected ? DS.Color.brand : .primary)
+                    HStack(spacing: 8) {
+                        Text(title)
+                            .font(.subheadline)
+                            .fontWeight(isSelected ? .semibold : .regular)
+                            .foregroundColor(isSelected ? DS.Color.brand : .primary)
+
+                        if let badgeText {
+                            Text(badgeText)
+                                .font(.caption2)
+                                .fontWeight(.semibold)
+                                .foregroundColor(DS.Color.brand)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(DS.Color.brand.opacity(0.12), in: Capsule())
+                        }
+                    }
                     Text(subtitle)
                         .font(.caption)
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.92)
                 }
 
                 Spacer()

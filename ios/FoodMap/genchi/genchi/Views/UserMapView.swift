@@ -112,7 +112,8 @@ struct UserMapView: View {
                                     category: restaurant.category,
                                     verified: nil,
                                     avg_price: nil,
-                                    photo_url: restaurant.photo_url
+                                    photo_url: restaurant.photo_url,
+                                    tel: nil
                                 ), restaurantId: restaurant.id)) {
                                     VStack(alignment: .leading, spacing: 6) {
                                         Text(restaurant.name)

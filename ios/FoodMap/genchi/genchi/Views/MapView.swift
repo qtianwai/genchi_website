@@ -76,6 +76,7 @@ struct MapView: View {
     @State private var showCorrectionSheet = false               // 是否显示勘误表单
     @State private var correctionRestaurantId: String? = nil     // 勘误的店铺 ID
     @State private var correctionVideoCacheId: String? = nil     // 勘误的视频缓存 ID
+    @State private var hasAutoOpenedCorrectionSheetForUITest = false
 
     /// 跨文件构造入口（如 MainTabView）。
     /// 说明：结构体内存在 `private` 存储属性时，编译器生成的成员初始化器为 `private`，
@@ -120,6 +121,7 @@ struct MapView: View {
         _showCorrectionSheet = State(initialValue: false)
         _correctionRestaurantId = State(initialValue: nil)
         _correctionVideoCacheId = State(initialValue: nil)
+        _hasAutoOpenedCorrectionSheetForUITest = State(initialValue: false)
         _authState = EnvironmentObject()
     }
 
@@ -129,6 +131,14 @@ struct MapView: View {
             .flatMap(\.windows)
             .first(where: \.isKeyWindow)?
             .safeAreaInsets ?? .zero
+    }
+
+    private var isUITestAutoOpenCorrectionEnabled: Bool {
+        ProcessInfo.processInfo.arguments.contains("UITEST_AUTO_OPEN_CORRECTION")
+    }
+
+    private var shouldDisableLocationPromptForUITest: Bool {
+        ProcessInfo.processInfo.arguments.contains("UITEST_DISABLE_LOCATION_PROMPT")
     }
 
     var body: some View {
@@ -175,7 +185,9 @@ struct MapView: View {
         .ignoresSafeArea()
         .task {
             await reloadAllData()
-            locationManager.requestPermission()
+            if !shouldDisableLocationPromptForUITest {
+                locationManager.requestPermission()
+            }
             loadSearchHistory()
             if let location = locationManager.userLocation, viewModel.isFirstLocationUpdate {
                 viewModel.centerMapOnUserLocation(location)
@@ -191,6 +203,7 @@ struct MapView: View {
             viewModel.startAutoRefresh(userId: authState.userId)
             detectClipboardLink()
             startRadarAnimation()
+            autoOpenCorrectionSheetForUITestIfNeeded()
         }
         .onDisappear {
             viewModel.stopAutoRefresh()
@@ -206,6 +219,7 @@ struct MapView: View {
         }
         .onChange(of: viewModel.mapRestaurants.count) { _, _ in
             syncSelectionWithLatestData()
+            autoOpenCorrectionSheetForUITestIfNeeded()
         }
         .onChange(of: viewModel.userRestaurants.count) { _, _ in
             syncSelectionWithLatestData()
@@ -282,7 +296,7 @@ struct MapView: View {
                 restaurantId: correctionRestaurantId,
                 videoCacheId: correctionVideoCacheId,
                 onSubmitted: {
-                    toastMessage = "反馈已提交"
+                    showToast("反馈已提交")
                 }
             )
             .environmentObject(authState)
@@ -431,20 +445,7 @@ struct MapView: View {
         .sheet(isPresented: $showGachaVideos) {
             GachaVideoListSheet(restaurantId: gachaVideoRestaurantId)
         }
-        .alert("检测到抖音链接", isPresented: $showClipboardPrompt) {
-            Button("确认添加") {
-                pendingParseLink = clipboardLink
-                parseAutoStart = true
-                showParseSheet = true
-                lastHandledClipboardLink = clipboardLink
-            }
-            Button("取消", role: .cancel) {
-                // 避免同一链接重复打扰
-                lastHandledClipboardLink = clipboardLink
-            }
-        } message: {
-            Text("是否根据该链接添加店铺？")
-        }
+        // v10.0：剪贴板自动检测功能已关闭（体验不好）
     }
 
     private var mapLayer: some View {
@@ -678,25 +679,20 @@ struct MapView: View {
 
     private var addButton: some View {
         ZStack {
-            // v10.0：解析中呼吸动画（橙色脉冲圆环）
-            if parsingVideoCacheId != nil {
-                Circle()
-                    .stroke(DS.Color.brand.opacity(0.4), lineWidth: 2)
-                    .frame(width: 48, height: 48)
-                    .scaleEffect(parsingVideoCacheId != nil ? 1.4 : 1.0)
-                    .opacity(parsingVideoCacheId != nil ? 0 : 0.6)
-                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false), value: parsingVideoCacheId != nil)
-
-                Circle()
-                    .stroke(DS.Color.brand.opacity(0.6), lineWidth: 1.5)
-                    .frame(width: 48, height: 48)
-                    .scaleEffect(parsingVideoCacheId != nil ? 1.2 : 1.0)
-                    .opacity(parsingVideoCacheId != nil ? 0.2 : 0.8)
-                    .animation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true), value: parsingVideoCacheId != nil)
-            }
-
             MapToolCircleButton(icon: "plus", style: .neutral) {
                 showAddMenu = true
+            }
+
+            // v10.0：解析中 loading 动画（覆盖在按钮上方）
+            if parsingVideoCacheId != nil {
+                Circle()
+                    .fill(DS.Color.brand.opacity(0.12))
+                    .frame(width: 44, height: 44)
+
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .scaleEffect(0.9)
+                    .tint(DS.Color.brand)
             }
         }
     }
@@ -1041,21 +1037,9 @@ struct MapView: View {
         hiddenRestaurantIds.subtract(targetSet)
     }
 
+    // v10.0：剪贴板自动检测功能已关闭（体验不好）
     private func detectClipboardLink() {
-        guard let text = UIPasteboard.general.string?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !text.isEmpty else { return }
-
-        guard let link = extractURL(from: text), isDouyinURL(link) else { return }
-        guard link != lastHandledClipboardLink else { return }
-
-        let now = Date().timeIntervalSince1970
-        if now - lastClipboardPromptAt < 10 {
-            return
-        }
-
-        clipboardLink = link
-        lastClipboardPromptAt = now
-        showClipboardPrompt = true
+        // 功能已禁用
     }
 
     private func extractURL(from text: String) -> String? {
@@ -1196,11 +1180,22 @@ struct MapView: View {
             Text(message)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundColor(.white)
+                .accessibilityIdentifier("map-toast")
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
                 .background(Color.black.opacity(0.72), in: Capsule())
                 .padding(.bottom, 128)
         }
+    }
+
+    private func autoOpenCorrectionSheetForUITestIfNeeded() {
+        guard isUITestAutoOpenCorrectionEnabled else { return }
+        guard !hasAutoOpenedCorrectionSheetForUITest else { return }
+
+        hasAutoOpenedCorrectionSheetForUITest = true
+        correctionRestaurantId = "ui-test-restaurant"
+        correctionVideoCacheId = nil
+        showCorrectionSheet = true
     }
 
     private func openAppleMaps(for item: MapDisplayItem) {
@@ -2421,6 +2416,27 @@ struct MapQuickActionCard: View {
             // v7.1 重构：操作区（导航高优 + 知乎式次级四键）
             // ─────────────────────────────────────────
 
+            // 电话按钮（仅当有商家电话时显示）
+            if let tel = item.restaurant.tel, !tel.isEmpty {
+                Button(action: { callPhone(tel) }) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "phone.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                        Text("拨打电话")
+                            .font(.system(size: 15, weight: .semibold))
+                        Spacer()
+                        Text(tel.components(separatedBy: ";").first ?? tel)
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 16)
+                    .frame(height: 44)
+                    .background(.green, in: RoundedRectangle(cornerRadius: DS.Radius.md))
+                }
+                .buttonStyle(PressableScaleButtonStyle())
+            }
+
             // 第一行：导航主按钮（占满宽，品牌色实心）
             Button(action: onNavigate) {
                 HStack(spacing: 8) {
@@ -2618,6 +2634,17 @@ struct MapQuickActionCard: View {
         }
 
         return item.author?.avatar_url
+    }
+
+    /// 拨打商家电话（高德 tel 可能含多个号码用 ";" 分隔，取第一个）
+    private func callPhone(_ tel: String) {
+        let firstNumber = tel.components(separatedBy: ";").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? tel
+        let cleaned = firstNumber.replacingOccurrences(of: " ", with: "")
+            .replacingOccurrences(of: "-", with: "")
+        if let url = URL(string: "tel:\(cleaned)") {
+            UIApplication.shared.open(url)
+        }
     }
 }
 

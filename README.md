@@ -2495,3 +2495,18 @@ SwiftUI
 - 完成任务：将文件中所有 Unicode 弯引号（`""`）替换为 ASCII 直引号（`""`），编译通过
 - 技术栈：Swift、sed
 - 修改的文件：`ios/.../ViewModels/FanTuanViewModel.swift`、`帮助文档/会话记录.md`、`README.md`
+
+### 2026-04-06 会话：店铺信息增加一键打电话
+- 主要目的：从高德 API 获取商家联系电话并存入数据库，iOS 端店铺详情页和地图卡片增加一键拨号功能
+- 完成的主要任务：
+  - 后端 `_parse_poi()` 新增 tel 字段提取，3 个入口（自动解析/手动添加/人工复核）统一透传 tel 到 restaurants 表
+  - 重构 `search_restaurant_for_review()` 复用 `_parse_poi()`，消除 ~40 行重复的 POI 字段提取代码，避免未来新增字段时多处遗漏
+  - `get_poi_detail()` 返回 tel 字段
+  - 人工复核请求模型（AdminCorrectRequest、AdminCorrectMultiRestaurantItem）新增 tel 参数
+  - iOS Restaurant 和 RestaurantCandidate 模型新增 `tel: String?`
+  - RestaurantDetailView 第一行操作按钮新增绿色「电话」按钮（有电话时显示）
+  - MapQuickActionCard 导航按钮上方新增绿色「拨打电话」按钮（有电话时显示，右侧显示号码）
+  - 数据库 restaurants 表需新增 tel text 列（需在 Supabase Dashboard SQL Editor 执行）
+- 关键决策：电话按钮仅在 tel 非空时条件渲染，不影响无电话店铺的布局；高德 tel 可能含多号码用分号分隔，拨号时取第一个；重构 review 搜索函数复用 _parse_poi 从根本上解决字段不一致问题
+- 技术栈：Python FastAPI、SwiftUI、高德地图 API（tel 字段）、iOS tel:// URL Scheme
+- 修改的文件：`backend/amap_service.py`、`backend/main.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Views/RestaurantDetailView.swift`、`ios/.../Views/MapView.swift`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/产品功能清单.md`、`需求文档&技术方案/产品介绍.md`、`README.md`

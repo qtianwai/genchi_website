@@ -20,6 +20,14 @@ class AuthState: ObservableObject {
 
     // 检查本地是否有保存的登录状态
     func checkStoredSession() {
+        if let uiTestUserId = ProcessInfo.processInfo.environment["UITEST_USER_ID"],
+           !uiTestUserId.isEmpty {
+            self.userId = uiTestUserId
+            self.isLoggedIn = true
+            self.isLoading = false
+            return
+        }
+
         if let uid = UserDefaults.standard.string(forKey: "user_id"),
            !uid.isEmpty {
             self.userId = uid

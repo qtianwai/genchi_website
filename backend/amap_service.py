@@ -161,6 +161,7 @@ def _parse_poi(poi: dict, city: str) -> dict | None:
             "city": poi.get("cityname", city) or city,
             "avg_price": avg_price,       # 人均消费（元），无数据时为 None
             "photo_url": photo_url,       # 店铺封面图 URL，无数据时为空字符串
+            "tel": poi.get("tel", ""),    # 商家联系电话，无数据时为空字符串
         }
     except ValueError:
         return None
@@ -460,44 +461,24 @@ async def search_restaurant_for_review(
 
     candidates = []
     for poi in deduped_pois.values():
-        location = poi.get("location", "")
-        if "," not in location:
-            continue
-        lng, lat = location.split(",", 1)
-        try:
-            latitude = float(lat)
-            longitude = float(lng)
-        except ValueError:
+        # 复用 _parse_poi() 提取基础字段（name/address/lat/lng/amap_id/city/avg_price/photo_url/tel）
+        parsed = _parse_poi(poi, city)
+        if parsed is None:
             continue
 
         amap_type = poi.get("type", "")
-        biz_ext = poi.get("biz_ext", {}) or {}
-        avg_price_raw = biz_ext.get("cost", "") or biz_ext.get("avgprice", "")
-        try:
-            avg_price = int(float(avg_price_raw)) if avg_price_raw else None
-        except (ValueError, TypeError):
-            avg_price = None
-        photos = poi.get("photos", []) or []
-        photo_url = photos[0].get("url", "") if photos else ""
-        similarity = _name_similarity(name, poi.get("name", ""))
+        similarity = _name_similarity(name, parsed["name"])
         distance_meters = None
         if user_lat is not None and user_lng is not None:
             distance_meters = round(
-                _distance_meters(user_lat, user_lng, latitude, longitude),
+                _distance_meters(user_lat, user_lng, parsed["latitude"], parsed["longitude"]),
                 1
             )
 
         candidates.append({
-            "amap_id": poi.get("id", ""),
-            "name": poi.get("name", ""),
-            "address": poi.get("address", ""),
-            "city": poi.get("cityname", city) or city,
-            "latitude": latitude,
-            "longitude": longitude,
-            "category_raw": amap_type,
-            "category_mapped": map_amap_category(amap_type),
-            "avg_price": avg_price,           # 人均消费（元）
-            "photo_url": photo_url,           # 店铺封面图 URL
+            **parsed,                                    # 基础字段（含 tel）
+            "category_raw": amap_type,                   # 高德原始分类
+            "category_mapped": map_amap_category(amap_type),  # 映射后分类
             "distance_meters": distance_meters,
             "_similarity": similarity,
         })
@@ -557,7 +538,7 @@ async def get_poi_detail(amap_id: str) -> dict | None:
                 avg_price = None
             photos = poi.get("photos", []) or []
             photo_url = photos[0].get("url", "") if photos else ""
-            return {"avg_price": avg_price, "photo_url": photo_url}
+            return {"avg_price": avg_price, "photo_url": photo_url, "tel": poi.get("tel", "")}
         except Exception as e:
             print(f"[高德详情] 请求失败: {e}")
             return None

@@ -114,9 +114,9 @@ def _extract_from_brackets(title: str) -> list[dict]:
         r'【([^】]+)】',
         r'「([^」]+)」',
         r'《([^》]+)》',
+        r'\u201c([^\u201d]+)\u201d',
         r'"([^"]+)"',
-        r'"([^"]+)"',
-        r''([^']+)'',
+        r'\u2018([^\u2019]+)\u2019',
     ]
     for pattern in patterns:
         matches = re.findall(pattern, title)
@@ -265,6 +265,7 @@ def extract_candidates(
     author_liked_comments: list[dict],
     all_comments: list[dict],
     poi_info: dict | None = None,
+    hot_search_keywords: list[str] = None,
 ) -> list[dict]:
     """
     从所有文本源中用正则/规则提取候选店铺名（零 API 成本）。
@@ -273,6 +274,13 @@ def extract_candidates(
     按 score 降序排列，已去重。
     """
     all_candidates = []
+
+    # 0. 抖音热搜词（非常强的信号，通常就是店铺名）
+    if hot_search_keywords:
+        for kw in hot_search_keywords:
+            kw = kw.strip()
+            if kw and len(kw) >= 2 and not _is_stop_word(kw):
+                all_candidates.append({"name": kw, "source": "hot_search_keyword", "score": 92})
 
     # 1. 抖音 POI（最高优先级）
     all_candidates.extend(_extract_from_poi(poi_info))

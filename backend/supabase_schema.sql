@@ -50,6 +50,7 @@ create table if not exists restaurants (
   -- v5.0 新增：高德扩展信息
   avg_price     integer,                -- 人均消费（元），来自高德 biz_ext.avgprice
   photo_url     text,                   -- 店铺封面图 URL，来自高德 photos[0].url
+  tel           text,                   -- 商家联系电话，来自高德 tel 字段
   created_at    timestamptz default now()
 );
 
