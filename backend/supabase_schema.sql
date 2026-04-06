@@ -136,7 +136,7 @@ create table if not exists video_parse_cache (
   video_id        text,                 -- 抖音视频 ID
   author_id       uuid references authors(id) on delete cascade,
   restaurant_id   uuid references restaurants(id) on delete set null,
-  status          text not null default 'pending',  -- pending/parsing/completed/failed
+  status          text not null default 'pending',  -- pending/parsing/completed/failed/cold_start（v14.0 新增 cold_start：冷启动录入，未经解析）
   -- 解析结果快照（直接从 video_parse_cache 返回，避免联表查询）
   restaurant_name    text,
   restaurant_address text,
@@ -150,7 +150,7 @@ create table if not exists video_parse_cache (
   error_message   text,                 -- 解析失败时的错误信息
   -- v2.5 新增字段
   parse_reason    text,                 -- 解析说明：AI 判断依据（包括未提取到店名的原因）
-  data_source     text not null default 'user_submit',  -- 数据来源：user_submit/background_scan/auto_check/manual_add
+  data_source     text not null default 'user_submit',  -- 数据来源：user_submit/background_scan/auto_check/manual_add/cold_start（v14.0 新增）
   api_cost        numeric(10,6),        -- 本条数据消耗的 JustOneAPI 成本（单位：元）
   api_cost_note   text,                 -- API 成本说明（如：调用了哪些接口、各自消耗多少）
   -- v7.0 新增：视频扩展信息（JSON）
@@ -200,7 +200,7 @@ create policy "admin_users_no_client_access" on admin_users for all using (false
 create table if not exists author_background_tasks (
   id              uuid primary key default uuid_generate_v4(),
   author_id       uuid not null references authors(id) on delete cascade,
-  task_type       text not null,        -- 'full_scan': 首次入库的全量扫描; 'incremental': 增量更新; 'auto_check': 自动更新检测
+  task_type       text not null,        -- 'full_scan': 首次入库的全量扫描; 'incremental': 增量更新; 'auto_check': 自动更新检测; 'cold_start': 冷启动博主录入（v14.0 新增）
   total_videos    int default 0,        -- 该任务需要处理的总视频数
   processed_videos int default 0,        -- 已处理完成的视频数
   status          text not null default 'pending',  -- pending/running/completed/failed

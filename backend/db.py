@@ -639,6 +639,80 @@ def update_bg_task_cost(task_id: str, api_cost: float, api_cost_note: str) -> di
     return result.data[0] if result.data else {}
 
 
+def get_cold_start_authors(page: int = 1, page_size: int = 20) -> dict:
+    """
+    v14.0 新增：获取通过冷启动方式录入的博主列表。
+    查询 author_background_tasks 中 task_type='cold_start' 的记录，
+    JOIN authors 表获取博主信息，按 created_at 倒序。
+    同一博主多次提交只展示最新一条任务。
+    返回 {authors: [...], total, page, page_size}
+    """
+    # 查询所有冷启动任务，按创建时间倒序
+    result = (
+        supabase.table("author_background_tasks")
+        .select("id, author_id, task_type, status, total_videos, new_restaurants_found, "
+                "api_cost, api_cost_note, error_message, created_at, completed_at, "
+                "authors(id, name, avatar_url, douyin_uid)")
+        .eq("task_type", "cold_start")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    tasks = result.data or []
+
+    # 同一博主只保留最新一条任务
+    seen_authors = set()
+    unique_tasks = []
+    for task in tasks:
+        author_id = task.get("author_id")
+        if author_id in seen_authors:
+            continue
+        seen_authors.add(author_id)
+        unique_tasks.append(task)
+
+    total = len(unique_tasks)
+
+    # 手动分页
+    offset = (page - 1) * page_size
+    page_tasks = unique_tasks[offset: offset + page_size]
+
+    # 组装返回数据
+    authors = []
+    for task in page_tasks:
+        author_info = task.get("authors") or {}
+        authors.append({
+            "id": author_info.get("id", task.get("author_id", "")),
+            "name": author_info.get("name", "未知博主"),
+            "avatar_url": author_info.get("avatar_url"),
+            "douyin_uid": author_info.get("douyin_uid", ""),
+            "task": {
+                "task_id": task.get("id", ""),
+                "status": task.get("status", ""),
+                "total_videos": task.get("total_videos"),
+                "food_videos_found": task.get("new_restaurants_found"),
+                "new_records_created": task.get("new_restaurants_found"),
+                "api_cost": float(task.get("api_cost") or 0),
+                "created_at": task.get("created_at"),
+                "completed_at": task.get("completed_at"),
+                "error_message": task.get("error_message"),
+            },
+        })
+
+    return {"authors": authors, "total": total, "page": page, "page_size": page_size}
+
+
+def has_running_cold_start_task(author_id: str) -> bool:
+    """v14.0 新增：检查博主是否有进行中的冷启动任务（防重复提交）"""
+    result = (
+        supabase.table("author_background_tasks")
+        .select("id", count="exact")
+        .eq("author_id", author_id)
+        .eq("task_type", "cold_start")
+        .in_("status", ["pending", "running"])
+        .execute()
+    )
+    return (result.count or 0) > 0
+
+
 # ─────────────────────────────────────────
 # 后台人工复核相关操作（v3.0 新增）
 # ─────────────────────────────────────────
@@ -660,8 +734,12 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
         "restaurant_photo_url, restaurant_avg_price, "  # 复核页店铺封面图和均价快照
         "corrected_restaurants, "  # v9.0 新增：多店铺修正 JSON 数组
         "video_extra, "  # v7.0 新增：视频扩展信息 JSON
+        "data_source, "  # v14.0 新增：数据来源（cold_start 等），复核页展示用
         "reviewed_at, created_at, authors(name, avatar_url)"
     )
+
+    # v14.0：扩展 status 查询范围，支持冷启动录入（cold_start）和未解析（pending）状态
+    all_review_statuses = ["completed", "failed", "cold_start", "pending"]
 
     if tab == "reviewed":
         # 已复核：approved / corrected / confirmed，按 reviewed_at 倒序
@@ -669,7 +747,7 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
             supabase.table("video_parse_cache")
             .select(select_fields, count="exact")
             .in_("review_status", ["approved", "corrected", "confirmed"])
-            .in_("status", ["completed", "failed"])
+            .in_("status", all_review_statuses)
             .order("reviewed_at", desc=True)
             .range(offset, offset + page_size - 1)
             .execute()
@@ -677,15 +755,15 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
     else:
         # 待复核：pending / skipped
         # 优先级：
-        # 1. 有待处理用户勘误的记录（最高优先级）
-        # 2. P0：restaurant_id IS NULL
-        # 3. P1：已有识别结果
+        # 1. P-1：有待处理用户勘误的记录（最高优先级）
+        # 2. P0：restaurant_id IS NULL（AI 未识别）
+        # 3. P1：已有识别结果 或 冷启动录入
         # 同优先级内按最新相关时间倒序。
         result = (
             supabase.table("video_parse_cache")
             .select(select_fields, count="exact")
             .in_("review_status", ["pending", "skipped"])
-            .in_("status", ["completed", "failed"])
+            .in_("status", all_review_statuses)
             .execute()
         )
 
@@ -705,11 +783,23 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
             has_pending_correction = correction_ts > 0
 
             item["has_pending_user_corrections"] = has_pending_correction
-            item["_priority_rank"] = 0 if has_pending_correction else (1 if restaurant_id is None else 2)
+            # v14.0：冷启动录入的记录固定为 P1（data_source='cold_start'），
+            # 即使 restaurant_id 为 NULL 也不归为 P0
+            is_cold_start = item.get("data_source") == "cold_start"
+            if has_pending_correction:
+                item["_priority_rank"] = 0
+            elif is_cold_start:
+                item["_priority_rank"] = 2  # 冷启动 P1，与普通 P1 同级
+            elif restaurant_id is None:
+                item["_priority_rank"] = 1  # P0
+            else:
+                item["_priority_rank"] = 2  # 普通 P1
             item["_sort_ts"] = correction_ts or _iso_to_timestamp(item.get("created_at"))
 
             if has_pending_correction:
                 item["review_priority"] = "P-1"
+            elif is_cold_start:
+                item["review_priority"] = "P1"
             else:
                 item["review_priority"] = "P0" if restaurant_id is None else "P1"
 

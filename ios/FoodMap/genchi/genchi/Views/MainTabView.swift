@@ -35,6 +35,14 @@ struct MainTabView: View {
                         Label("复核", systemImage: "checkmark.shield.fill")
                     }
             }
+
+            // Tab 5：冷启动博主录入（仅管理员可见，v14.0 新增）
+            if authState.isAdmin {
+                ColdStartView()
+                    .tabItem {
+                        Label("录入", systemImage: "tray.and.arrow.down.fill")
+                    }
+            }
         }
         .accentColor(DS.Color.brand)
     }

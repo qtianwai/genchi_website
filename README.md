@@ -35,9 +35,10 @@
     │   ├── MapViewModel.swift       # 地图 ViewModel
     │   ├── FanTuanViewModel.swift   # 饭团状态管理（v8.0 新增）
     │   ├── GachaViewModel.swift     # 抽卡流程管理（v8.0 新增）
-    │   └── QARecommendViewModel.swift # 问答推荐管理（v8.0 新增）
+    │   ├── QARecommendViewModel.swift # 问答推荐管理（v8.0 新增）
+    │   └── ColdStartViewModel.swift # 冷启动博主录入管理（v14.0 新增）
     └── Views/
-        ├── MainTabView.swift    # Tab 导航（v5.0：地图、+、收藏、我的）
+        ├── MainTabView.swift    # Tab 导航（v14.0：新增管理员「录入」Tab）
         ├── MapView.swift        # 地图主页面（v8.0：集成饭团浮动组件）
         ├── FanTuanView.swift    # 饭团浮动组件 + 能力菜单（v8.0 新增）
         ├── GachaView.swift      # 抽卡主页面（v8.0 新增）
@@ -55,7 +56,13 @@
         ├── GroupDetailView.swift      # 分组详情页（v5.0 新增）
         ├── AuthorsView.swift    # 博主列表（v5.0 已从 Tab 移除）
         ├── ProfileView.swift    # 个人中心（v8.0：新增成就入口）
-        └── LoginView.swift      # 登录页面
+        ├── LoginView.swift      # 登录页面
+        └── Admin/
+            ├── ReviewListView.swift     # 复核列表页（管理员）
+            ├── ReviewDetailView.swift   # 复核详情页（管理员）
+            ├── RestaurantSearchView.swift # 复核店铺搜索（管理员）
+            ├── ColdStartView.swift      # 冷启动博主录入主页（v14.0 新增）
+            └── ColdStartSubmitSheet.swift # 冷启动提交弹窗（v14.0 新增）
 ```
 
 ---
@@ -190,6 +197,9 @@ python main.py
 | GET | `/api/achievements/user` | 获取用户已解锁成就（v8.0 新增） |
 | POST | `/api/behavior/log` | 记录用户行为日志（v8.0 新增） |
 | GET | `/api/restaurants/{id}/reviews-summary` | 收藏留言 AI 摘要（v8.0 新增） |
+| POST | `/api/admin/cold-start/submit` | 冷启动博主录入提交（v14.0 新增） |
+| GET | `/api/admin/cold-start/authors` | 冷启动已录入博主列表（v14.0 新增） |
+| GET | `/api/admin/cold-start/task-status/{task_id}` | 冷启动任务进度查询（v14.0 新增） |
 
 ---
 
@@ -2586,3 +2596,35 @@ SwiftUI
 - 关键决策：本地规则判断美食视频（零 AI 成本）而非调用 AI；不确定时保守判定为美食视频避免漏掉；快速路径不改造保障用户体验
 - 技术栈：Python FastAPI、Supabase PostgreSQL
 - 修改的文件：`backend/main.py`、`backend/scheduler.py`、`backend/douyin_parser.py`、`backend/ai_extractor.py`、`backend/db.py`、`backend/.env`、`backend/supabase_schema.sql`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/解析算法优化方案.md`
+
+### 2026-04-06 会话：授权书图片压缩到 5MB 内
+- 主要目的：将用户提供的授权委托书图片压缩到网站可上传的 5MB 限制内
+- 完成的主要任务：
+  - 定位原始图片文件 `/Users/xiangzy/Downloads/微信图片_20260406215638_93_1.jpg`
+  - 使用 macOS `sips` 导出压缩版 JPEG
+  - 同时校正图片方向，生成可直接上传的新文件 `/tmp/授权委托书_5MB内.jpg`
+- 关键决策：优先保留清晰度，仅做轻度 JPEG 压缩，并在导出时直接旋转为正向，避免网站预览方向异常
+- 技术栈：macOS `sips`、JPEG 图片压缩
+- 修改的文件：`README.md`
+
+### 2026-04-06 会话：压缩图片保存到下载目录
+- 主要目的：将已压缩的授权书图片保存到用户可直接打开和上传的下载目录
+- 完成的主要任务：
+  - 将 `/tmp/授权委托书_5MB内.jpg` 复制到 `/Users/xiangzy/Downloads/授权委托书_5MB内.jpg`
+  - 核对目标文件大小为 4.5MB，继续满足网站 5MB 上传限制
+- 关键决策：保留上一版已校正方向和压缩质量的成品，仅追加保存到下载目录，不重复二次压缩，避免画质继续下降
+- 技术栈：macOS 文件复制、JPEG 文件校验
+- 修改的文件：`README.md`
+
+### 2026-04-06 会话：v14.0 冷启动博主录入模块
+- 主要目的：冷启动阶段快速积累美食视频数据，管理员批量录入博主历史美食视频，跳过完整解析流程由人工复核添加店铺，节省约 97% API 成本
+- 完成的主要任务：
+  - 后端新增 3 个管理员 API（submit/authors/task-status）+ 后台异步任务 `_cold_start_background()`
+  - 后端修改 `get_review_list()` 支持 cold_start/pending 状态，冷启动记录优先级固定 P1
+  - 后端修改 `parse_link()` 缓存命中逻辑，cold_start 记录被用户提交时自动升级为完整解析
+  - iOS 新增「录入」Tab（仅管理员可见）、ColdStartView 博主列表页、ColdStartSubmitSheet 提交弹窗
+  - iOS 复核模块适配：ReviewItem 增加 data_source 字段，列表显示「冷启动」蓝色标签，详情页显示来源提示
+  - 创建实施计划文档 `需求文档&技术方案/冷启动博主录入模块实施计划.md`
+- 关键决策：status 使用新增的 `cold_start` 枚举值而非复用 pending/completed；首次获取博主 sec_uid 仅调用 get-video-detail/v2（¥0.1）而非完整 parse_douyin_link；不写入 user_follows 关注关系
+- 技术栈：Python FastAPI、Supabase PostgreSQL、SwiftUI
+- 修改的文件：`backend/main.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../ViewModels/ColdStartViewModel.swift`（新建）、`ios/.../Views/Admin/ColdStartView.swift`（新建）、`ios/.../Views/Admin/ColdStartSubmitSheet.swift`（新建）、`ios/.../Views/MainTabView.swift`、`ios/.../Views/Admin/ReviewListView.swift`、`ios/.../Views/Admin/ReviewDetailView.swift`、`需求文档&技术方案/冷启动博主录入模块实施计划.md`（新建）、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/产品功能清单.md`

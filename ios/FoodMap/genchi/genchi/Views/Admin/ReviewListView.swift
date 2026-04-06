@@ -131,6 +131,18 @@ struct ReviewRowView: View {
                         .cornerRadius(4)
                 }
 
+                // v14.0 新增：冷启动录入标签
+                if item.isColdStart {
+                    Text("冷启动")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.blue)
+                        .cornerRadius(4)
+                }
+
                 // 博主名
                 Text(item.authors?.name ?? "未知博主")
                     .font(.caption)

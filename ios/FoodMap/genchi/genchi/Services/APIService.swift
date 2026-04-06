@@ -444,6 +444,41 @@ class APIService {
     }
 
     // ─────────────────────────────────────────
+    // v14.0 冷启动博主录入（管理员专属）
+    // ─────────────────────────────────────────
+
+    // 提交冷启动任务
+    func coldStartSubmit(videoUrl: String, maxCount: Int, userId: String) async throws -> ColdStartSubmitResponse {
+        struct Body: Codable { let video_url: String; let max_count: Int; let user_id: String }
+        return try await adminPost(
+            path: "/api/admin/cold-start/submit",
+            body: Body(video_url: videoUrl, max_count: maxCount, user_id: userId),
+            userId: userId,
+            responseType: ColdStartSubmitResponse.self
+        )
+    }
+
+    // 获取冷启动博主列表
+    func getColdStartAuthors(page: Int = 1, userId: String) async throws -> ColdStartAuthorsResponse {
+        return try await adminGet(
+            path: "/api/admin/cold-start/authors",
+            params: ["page": "\(page)", "page_size": "20"],
+            userId: userId,
+            responseType: ColdStartAuthorsResponse.self
+        )
+    }
+
+    // 查询冷启动任务进度
+    func getColdStartTaskStatus(taskId: String, userId: String) async throws -> ColdStartTaskStatusResponse {
+        return try await adminGet(
+            path: "/api/admin/cold-start/task-status/\(taskId)",
+            params: [:],
+            userId: userId,
+            responseType: ColdStartTaskStatusResponse.self
+        )
+    }
+
+    // ─────────────────────────────────────────
     // 用户自建推荐店铺（v4.0 新增）
     // ─────────────────────────────────────────
 

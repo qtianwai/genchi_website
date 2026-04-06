@@ -245,10 +245,11 @@ struct ReviewItem: Identifiable, Codable {
     let video_url: String?
     let author_id: String?
     let restaurant_id: String?
-    let status: String?         // "completed" 或 "failed"（解析状态）
+    let status: String?         // "completed" / "failed" / "cold_start" / "pending"（解析状态）
     let review_status: String?
     let review_priority: String?  // "P-1" / "P0" / "P1"
     let parse_reason: String?
+    let data_source: String?    // v14.0 新增：数据来源（user_submit/background_scan/cold_start 等）
     // 店铺快照字段
     let restaurant_name: String?
     let restaurant_address: String?
@@ -276,6 +277,9 @@ struct ReviewItem: Identifiable, Codable {
 
     // AI 解析失败（status == "failed"），需要人工兜底
     var isFailed: Bool { status == "failed" }
+
+    // v14.0 新增：冷启动录入的记录
+    var isColdStart: Bool { data_source == "cold_start" }
 
     // 抖音视频跳转 URL（与地图卡片 VideoThumbnail 保持一致，用路径格式）
     var douyinAppURL: URL? {
@@ -705,4 +709,56 @@ struct FanTuanPetResponse: Codable {
     let satiety_change: Int
     let intimacy_change: Int
     let fantuan_status: FanTuanStatus
+}
+
+// ─────────────────────────────────────────
+// v14.0 冷启动博主录入相关模型
+// ─────────────────────────────────────────
+
+// 冷启动任务信息
+struct ColdStartTask: Codable {
+    let task_id: String
+    let status: String              // pending / running / completed / failed
+    let total_videos: Int?
+    let food_videos_found: Int?     // 美食视频数
+    let new_records_created: Int?   // 新增记录数
+    let api_cost: Double?
+    let created_at: String?
+    let completed_at: String?
+    let error_message: String?
+}
+
+// 冷启动博主列表项
+struct ColdStartAuthor: Identifiable, Codable {
+    let id: String              // author.id
+    let name: String
+    let avatar_url: String?
+    let douyin_uid: String?
+    let task: ColdStartTask?
+}
+
+// 冷启动提交响应
+struct ColdStartSubmitResponse: Codable {
+    let status: String
+    let author: Author?
+    let task_id: String?
+    let message: String
+}
+
+// 冷启动博主列表响应
+struct ColdStartAuthorsResponse: Codable {
+    let authors: [ColdStartAuthor]
+    let total: Int
+    let page: Int
+    let page_size: Int
+}
+
+// 冷启动任务状态响应
+struct ColdStartTaskStatusResponse: Codable {
+    let status: String
+    let total_videos: Int?
+    let food_videos_found: Int?
+    let new_records_created: Int?
+    let api_cost: Double?
+    let message: String?
 }

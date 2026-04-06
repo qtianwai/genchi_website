@@ -101,6 +101,20 @@ struct ReviewDetailView: View {
                         .padding(10)
                         .background(Color(.systemGray6))
                         .cornerRadius(8)
+
+                    // v14.0 新增：冷启动来源提示
+                    if item.isColdStart {
+                        HStack(spacing: 6) {
+                            Image(systemName: "tray.and.arrow.down.fill")
+                                .font(.caption)
+                            Text("该记录通过冷启动博主录入，需人工添加店铺")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.blue)
+                        .padding(8)
+                        .background(Color.blue.opacity(0.08))
+                        .cornerRadius(8)
+                    }
                 }
 
                 // ── 当前关联店铺（有 restaurant_name 时显示）──

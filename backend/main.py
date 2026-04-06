@@ -72,6 +72,8 @@ from db import (
     # 新增：v13.0 博主自动更新检测优化
     get_authors_for_auto_update, update_author_food_stats,
     get_author_food_video_count, update_bg_task_cost,
+    # 新增：v14.0 冷启动博主录入
+    get_cold_start_authors, has_running_cold_start_task,
 )
 
 load_dotenv()
@@ -207,6 +209,12 @@ class LogBehaviorRequest(BaseModel):
     target_type: str = None     # restaurant / author / card
     target_id: str = None
     metadata: dict = None
+
+# v14.0 新增：冷启动博主录入请求模型
+class ColdStartSubmitRequest(BaseModel):
+    video_url: str       # 博主的一条示例视频链接
+    max_count: int = 50  # 获取历史视频最大数量（10~200）
+    user_id: str         # 管理员 user_id
 
 
 # ─────────────────────────────────────────
@@ -1057,6 +1065,12 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
                     "is_background_running": False,
                     "background_progress": None,
                 }
+
+            # ── 分支3.5（v14.0）：未人工审核 + cold_start/pending → 走正常解析覆盖 ──
+            # 冷启动录入的视频如果被用户单独提交，自动升级为完整解析
+            if status in ("cold_start", "pending"):
+                print(f"[解析链接] 命中冷启动/pending 记录（status={status}），走正常解析覆盖")
+                # 不 return，继续往下走标准解析流程
 
             # ── 分支4：未人工审核 + failed → 比较算法版本 ──
             if status == "failed":
@@ -2265,6 +2279,271 @@ async def backfill_restaurant_data(admin_user_id: str = Depends(require_admin)):
         "total": len(rows),
         "updated": updated,
         "failed": failed,
+    }
+
+
+# ─────────────────────────────────────────
+# v14.0 冷启动博主录入（管理员专属）
+# ─────────────────────────────────────────
+
+def cold_start_background(author_id: str, sec_uid: str, task_id: str, max_count: int):
+    """
+    冷启动后台任务入口：在独立事件循环中运行异步任务。
+    获取博主历史视频 → AI 标题过滤 → 写入 video_parse_cache（不走解析流程）
+    """
+    try:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(_cold_start_async(author_id, sec_uid, task_id, max_count))
+    except Exception as e:
+        print(f"[冷启动] 后台任务出错 author_id={author_id}: {e}")
+        try:
+            fail_bg_task(task_id, str(e))
+        except Exception:
+            pass
+    finally:
+        loop.close()
+
+
+async def _cold_start_async(author_id: str, sec_uid: str, task_id: str, max_count: int):
+    """
+    冷启动异步核心逻辑（精简版 _parse_author_videos_async）：
+    1. 获取博主视频列表（唯一的 JustOneAPI 成本）
+    2. AI 标题过滤（零 JustOneAPI 成本，只调通义千问）
+    3. 排除已有记录
+    4. 批量写入 video_parse_cache（status=cold_start，等待人工复核）
+    跳过：get-video-detail、get-video-comment、AI 提取店铺、高德搜索
+    """
+    update_bg_task_started(task_id)
+
+    # 第 1 步：获取博主视频列表
+    videos, fetch_api_calls = await fetch_author_videos(sec_uid, max_count=max_count)
+    COST_PER_CALL = 0.1
+    total_cost = fetch_api_calls * COST_PER_CALL
+    cost_note = f"get-user-video-list/v3 × {fetch_api_calls} 次分页，¥{total_cost:.2f}"
+    print(f"[冷启动] 获取到 {len(videos)} 条视频（{fetch_api_calls} 次 API 调用，¥{total_cost:.2f}）")
+
+    if not videos:
+        print(f"[冷启动] 博主 {author_id} 无历史视频")
+        update_bg_task_cost(task_id, total_cost, cost_note)
+        complete_bg_task(task_id, 0)
+        return
+
+    # 第 2 步：AI 标题过滤（零 JustOneAPI 成本）
+    video_list = [
+        {"video_id": v.get("video_id", ""), "title": v.get("title", ""), "share_url": v.get("share_url", "")}
+        for v in videos
+    ]
+    food_videos = await filter_food_video_titles(video_list)
+
+    # 第 3 步：排除已有记录
+    new_videos = []
+    skipped = 0
+    for video in food_videos:
+        vid = video.get("video_id", "")
+        if not vid:
+            continue
+        existing = get_video_cache_by_id(vid)
+        if existing:
+            skipped += 1
+            continue
+        new_videos.append(video)
+
+    print(f"[冷启动] AI 过滤: {len(videos)} → {len(food_videos)} 条美食视频 → {len(new_videos)} 条新记录（跳过 {skipped} 条已有）")
+
+    # 更新任务总视频数
+    update_bg_task_progress(task_id, 0, 0)
+    from db import supabase as _sb
+    _sb.table("author_background_tasks").update({
+        "total_videos": len(videos),
+    }).eq("id", task_id).execute()
+
+    # 第 4 步：批量写入 video_parse_cache
+    created_count = 0
+    for video in new_videos:
+        vid = video.get("video_id", "")
+        share_url = video.get("share_url", "") or f"https://www.iesdouyin.com/share/video/{vid}/"
+        title = video.get("title", "")
+
+        # 从原始 videos 列表中找到 create_time
+        create_time = 0
+        for v in videos:
+            if v.get("video_id") == vid:
+                create_time = v.get("create_time", 0)
+                break
+
+        # 写入 video_parse_cache（status=cold_start，等待人工复核添加店铺）
+        upsert_video_cache({
+            "video_url": share_url,
+            "video_id": vid,
+            "author_id": author_id,
+            "status": "cold_start",
+            "review_status": "pending",
+            "data_source": "cold_start",
+            "api_cost": 0,
+            "api_cost_note": "冷启动录入，无单条 API 成本",
+            "parse_reason": "冷启动博主录入，待人工添加店铺",
+        })
+
+        # 写入 video_extra（标题、share_url、发布时间）
+        video_extra = {"title": title, "share_url": share_url}
+        if create_time:
+            video_extra["publish_timestamp"] = create_time
+            try:
+                from datetime import timezone
+                video_extra["publish_time"] = datetime.fromtimestamp(
+                    create_time, tz=timezone.utc
+                ).strftime("%Y-%m-%dT%H:%M:%S")
+            except Exception:
+                pass
+        update_video_cache_extra_by_video_id(vid, video_extra)
+        created_count += 1
+
+    # 第 5 步：更新任务状态和成本
+    update_bg_task_cost(task_id, total_cost, cost_note)
+    complete_bg_task(task_id, created_count)
+    print(f"[冷启动] 完成：新增 {created_count} 条记录，成本 ¥{total_cost:.2f}")
+
+
+@app.post("/api/admin/cold-start/submit")
+async def cold_start_submit(
+    req: ColdStartSubmitRequest,
+    background_tasks: BackgroundTasks,
+    admin_user_id: str = Depends(require_admin),
+):
+    """
+    v14.0 冷启动博主录入：管理员提交博主示例视频链接，后台异步获取历史视频并写入复核队列。
+    成本仅为 get-user-video-list 分页调用费（¥0.1/次），不走完整解析流程。
+    """
+    try:
+        raw_url = req.video_url.strip()
+        # max_count 校验：限制 10~200
+        max_count = max(10, min(200, req.max_count))
+
+        # 第 1 步：从 URL 提取 video_id
+        clean_url = extract_url_from_text(raw_url)
+        vid = extract_video_id_from_url(clean_url)
+
+        # 第 2 步：获取博主信息
+        # 优先检查是否已有博主记录（有 sec_uid 则跳过 API 调用）
+        author_record = None
+        author_id = None
+        sec_uid = None
+
+        if vid:
+            # 尝试从已有缓存中找到 author_id
+            cached = get_video_cache_by_id(vid)
+            if cached and cached.get("author_id"):
+                from db import supabase
+                author_resp = supabase.table("authors").select("*").eq("id", cached["author_id"]).execute()
+                if author_resp.data:
+                    author_record = author_resp.data[0]
+                    author_id = author_record["id"]
+                    sec_uid = author_record.get("sec_uid", "")
+
+        if not sec_uid:
+            # 需要调用 API 获取博主信息
+            # 注意：fetch_video_detail_only 不返回博主 sec_uid/author_id 等字段，
+            # 必须使用 parse_douyin_link 获取完整博主信息
+            video_info = await parse_douyin_link(raw_url, known_video_id=vid)
+
+            author_douyin_id = str(video_info.get("author_id", ""))
+            sec_uid = video_info.get("author_sec_uid", "")
+            author_name = video_info.get("author_name", "未知博主")
+            author_avatar = video_info.get("author_avatar", "")
+
+            if not author_douyin_id:
+                raise HTTPException(status_code=400, detail="无法获取博主信息")
+            if not sec_uid:
+                raise HTTPException(status_code=400, detail="无法获取博主 sec_uid，无法获取视频列表")
+
+            # upsert 博主记录
+            author_record = upsert_author({
+                "douyin_uid": author_douyin_id,
+                "sec_uid": sec_uid,
+                "name": author_name,
+                "avatar_url": author_avatar,
+                "signature": video_info.get("author_signature", ""),
+                "video_count": video_info.get("author_video_count", 0),
+                "total_likes": video_info.get("author_total_likes", 0),
+            })
+            author_id = author_record["id"]
+
+        # 第 3 步：检查是否有进行中的冷启动任务（防重复提交）
+        if has_running_cold_start_task(author_id):
+            return {
+                "status": "error",
+                "author": author_record,
+                "task_id": None,
+                "message": "该博主有正在进行的冷启动任务，请等待完成后再提交",
+            }
+
+        # 第 4 步：创建后台任务记录
+        task = create_bg_task(author_id, "cold_start")
+        task_id = task.get("id", "")
+
+        # 第 5 步：启动后台任务
+        import threading
+        t = threading.Thread(
+            target=cold_start_background,
+            args=(author_id, sec_uid, task_id, max_count),
+            daemon=True,
+        )
+        t.start()
+
+        return {
+            "status": "ok",
+            "author": author_record,
+            "task_id": task_id,
+            "message": f"已提交冷启动任务，正在后台获取博主最近 {max_count} 条视频...",
+        }
+
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"[冷启动] 提交失败: {e}")
+        raise HTTPException(status_code=500, detail=f"提交失败: {str(e)}")
+
+
+@app.get("/api/admin/cold-start/authors")
+async def cold_start_authors(
+    page: int = 1,
+    page_size: int = 20,
+    admin_user_id: str = Depends(require_admin),
+):
+    """v14.0 获取通过冷启动方式录入的博主列表"""
+    return get_cold_start_authors(page=page, page_size=page_size)
+
+
+@app.get("/api/admin/cold-start/task-status/{task_id}")
+async def cold_start_task_status(
+    task_id: str,
+    admin_user_id: str = Depends(require_admin),
+):
+    """v14.0 查询冷启动任务进度（前端轮询用）"""
+    from db import supabase as _sb
+    result = _sb.table("author_background_tasks").select("*").eq("id", task_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    task = result.data[0]
+    status = task.get("status", "unknown")
+    message = {
+        "pending": "任务等待中...",
+        "running": "正在获取博主历史视频并过滤...",
+        "completed": "冷启动任务完成",
+        "failed": f"任务失败：{task.get('error_message', '未知错误')}",
+    }.get(status, "未知状态")
+
+    return {
+        "status": status,
+        "total_videos": task.get("total_videos"),
+        "food_videos_found": task.get("new_restaurants_found"),
+        "new_records_created": task.get("new_restaurants_found"),
+        "skipped_existing": None,
+        "api_cost": float(task.get("api_cost") or 0),
+        "message": message,
     }
 
 
