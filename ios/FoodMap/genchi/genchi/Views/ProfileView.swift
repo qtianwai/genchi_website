@@ -166,7 +166,10 @@ struct ProfileView: View {
                             .foregroundColor(.orange)
                     }
                     Label("关于 App", systemImage: "info.circle")
-                    Label("意见反馈", systemImage: "bubble.left")
+                    NavigationLink(destination: FeedbackListView().environmentObject(authState)) {
+                        Label("意见反馈", systemImage: "bubble.left")
+                            .foregroundColor(.orange)
+                    }
                 }
 
                 // 登出

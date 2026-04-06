@@ -43,6 +43,14 @@ struct MainTabView: View {
                         Label("录入", systemImage: "tray.and.arrow.down.fill")
                     }
             }
+
+            // Tab 6：用户反馈管理（仅管理员可见，v15.0 新增）
+            if authState.isAdmin {
+                AdminFeedbackListView()
+                    .tabItem {
+                        Label("反馈", systemImage: "bubble.left.and.exclamationmark.bubble.right.fill")
+                    }
+            }
         }
         .accentColor(DS.Color.brand)
     }
