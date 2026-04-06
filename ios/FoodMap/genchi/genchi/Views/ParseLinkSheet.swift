@@ -305,13 +305,16 @@ struct ParseLinkSheet: View {
     // 调用后端解析链接
     func parseLink() {
         guard !linkText.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        isLoading = true
+        // 重置状态
         parseCompleted = false
         errorMessage = nil
         result = nil
         bgCompletedMessage = nil
         showBgProgress = false
         bgProgressTimer?.invalidate()
+
+        // 立即关闭弹框，不等待网络响应
+        dismiss()
 
         Task {
             do {
@@ -323,30 +326,19 @@ struct ParseLinkSheet: View {
 
                 lastSelectedScopeRawValue = selectedScope.rawValue
 
-                // v10.0：无论什么状态都直接关闭弹框
                 // parsing → 通知 MapView 开始轮询，后台解析完弹框通知
                 // failed → 通知 MapView 显示失败弹框（JustOneAPI 临时错误等）
                 // cached/parsed → 直接刷新地图
                 if response.status == "parsing", let videoCacheId = response.video_cache_id, !videoCacheId.isEmpty {
                     onParsingStarted?(videoCacheId)
                 } else if response.status == "failed" {
-                    // 后端返回失败（如 JustOneAPI code=301），显示失败弹框
                     onParsingStarted?("error:\(response.message)")
                 } else {
-                    // 缓存命中或同步返回，直接刷新地图
                     onSuccess()
                 }
-                isLoading = false
-                dismiss()
             } catch {
-                isLoading = false
-                // 解析失败：关闭弹框，通知 MapView 显示错误提示
-                // 不在弹框内显示错误（弹框会消失），而是通过 onParsingStarted 传递错误状态
-                // 这里直接关闭弹框，错误信息通过 ParseCompleteAlert 展示
-                let errMsg = error.localizedDescription
-                // 将错误包装成一个特殊的 videoCacheId，前端识别后显示失败弹框
-                onParsingStarted?("error:\(errMsg)")
-                dismiss()
+                // 将错误包装成特殊格式，通知 MapView 显示失败弹框
+                onParsingStarted?("error:\(error.localizedDescription)")
             }
         }
     }

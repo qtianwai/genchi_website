@@ -687,19 +687,26 @@ struct MapView: View {
     private var addButton: some View {
         ZStack {
             MapToolCircleButton(icon: "plus", style: .neutral) {
-                showAddMenu = true
+                if parsingVideoCacheId != nil {
+                    // 解析中：拦截点击，给用户反馈
+                    showToast("正在识别中，请稍候")
+                } else {
+                    showAddMenu = true
+                }
             }
 
-            // v10.0：解析中 loading 动画（覆盖在按钮上方）
+            // 解析中 loading 动画（覆盖在按钮上方，不拦截点击事件）
             if parsingVideoCacheId != nil {
                 Circle()
-                    .fill(DS.Color.brand.opacity(0.12))
+                    .fill(DS.Color.brand.opacity(0.18))
                     .frame(width: 44, height: 44)
+                    .allowsHitTesting(false)
 
                 ProgressView()
                     .progressViewStyle(.circular)
                     .scaleEffect(0.9)
                     .tint(DS.Color.brand)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -884,11 +891,13 @@ struct MapView: View {
             Task { @MainActor in
                 do {
                     let result = try await APIService.shared.getParseResult(videoCacheId: videoCacheId)
-                    if result.status == "completed" || result.status == "failed" {
+                    if result.status == "completed" {
                         stopParseResultPolling()
-                        // 刷新地图数据
-                        refreshTrigger += 1
-                        // 弹出解析完成提醒
+                        // 成功：直接定位到店铺并弹出卡片，不弹框
+                        await locateRestaurantAfterParsing(result: result)
+                    } else if result.status == "failed" {
+                        stopParseResultPolling()
+                        // 失败：才弹出提示框
                         parseCompleteResult = result
                         withAnimation(.easeInOut(duration: 0.3)) {
                             showParseCompleteAlert = true
@@ -907,6 +916,27 @@ struct MapView: View {
         parsePollingTimer?.invalidate()
         parsePollingTimer = nil
         parsingVideoCacheId = nil
+    }
+
+    /// 解析成功后：刷新数据 → 找到店铺 → 飞过去并弹出卡片
+    @MainActor
+    private func locateRestaurantAfterParsing(result: ParseResultResponse) async {
+        // 等待数据加载完成（可 await，比 refreshTrigger 可靠）
+        await reloadAllData()
+
+        // 通过 restaurant.id 在 allItems 中找到对应的 MapDisplayItem，设置 selectedItem 弹出卡片
+        if let restaurantId = result.restaurant?.id,
+           let item = viewModel.allItems.first(where: { $0.restaurantId == restaurantId }) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
+                selectedItem = item
+                viewModel.highlightedItemId = item.id
+            }
+            viewModel.focus(on: item)
+        } else if let coordinate = result.restaurant?.coordinate {
+            // 兜底：找不到 MapDisplayItem 时飞到坐标
+            viewModel.flyToCoordinate(coordinate)
+            showToast("店铺已添加到地图")
+        }
     }
 
     private func syncSelectionWithLatestData() {

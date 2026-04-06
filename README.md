@@ -2520,3 +2520,34 @@ SwiftUI
 - 关键决策：规则文件放在 `ios/FoodMap/genchi/`，与 `genchi.xcodeproj` 同级，确保它位于当前 Xcode 项目目录下；规则内容采用完整同步而不是摘要，避免遗漏 Claude 既有约束
 - 技术栈：Markdown 文档维护
 - 修改的文件：`ios/FoodMap/genchi/XCODE_PROJECT_RULES.md`、`README.md`
+
+### 2026-04-06 会话：查询当前项目 Codex 规则
+- 主要目的：梳理并说明当前项目中 Codex 的规则设置
+- 完成的主要任务：
+  - 根据根目录 `AGENTS.md` 总结当前项目的核心规则
+  - 确认规则文件与 `CLAUDE.md` 保持一致
+  - 检查并维护 `README.md` 会话记录
+- 关键决策：本次以根目录 `AGENTS.md` 作为当前项目 Codex 规则的直接依据，并按规则要求同步记录会话总结
+- 技术栈：Markdown 文档维护
+- 修改的文件：`README.md`
+
+### 2026-04-06 会话：精简 Codex 规则入口文件
+- 主要目的：将项目规则维护入口统一收敛到 `CLAUDE.md`
+- 完成的主要任务：
+  - 将根目录 `AGENTS.md` 精简为规则入口文件
+  - 删除 `AGENTS.md` 中重复的完整规则内容
+  - 保留“本项目规则唯一以 `CLAUDE.md` 为准”的说明，避免后续双份维护
+- 关键决策：不删除 `AGENTS.md` 文件本身，只保留最小入口说明，既保证 Codex 有稳定规则入口，也实现以后只维护 `CLAUDE.md`
+- 技术栈：Markdown 文档维护
+- 修改的文件：`AGENTS.md`、`README.md`
+
+### 2026-04-06 会话：抖音链接解析体验优化
+- 主要目的：修复用户测试发现的4个体验问题
+- 完成的主要任务：
+  - 问题1：`ParseLinkSheet.parseLink()` 中将 `dismiss()` 提前到 Task 外部，弹框立即关闭不再卡顿
+  - 问题2：`MapView.addButton` 解析中时拦截点击并 Toast 提示"正在识别中，请稍候"，覆盖层加 `.allowsHitTesting(false)`
+  - 问题3：轮询成功后不再弹出 `ParseCompleteAlert`，改为直接调用 `locateRestaurantAfterParsing` 自动定位并弹出店铺卡片
+  - 问题4：新增 `locateRestaurantAfterParsing` 函数，用 `await reloadAllData()` 替代 `refreshTrigger += 1`，确保数据加载完成后再通过 `restaurant.id` 找到 `MapDisplayItem` 并设置 `selectedItem`
+- 关键决策：成功路径完全绕过弹框，直接复用 `selectedItem` 机制弹出店铺卡片；失败路径保持原有弹框提示不变
+- 技术栈：SwiftUI、iOS
+- 修改的文件：`ios/.../Views/ParseLinkSheet.swift`、`ios/.../Views/MapView.swift`、`README.md`
