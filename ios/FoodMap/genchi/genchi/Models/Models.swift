@@ -247,7 +247,7 @@ struct ReviewItem: Identifiable, Codable {
     let restaurant_id: String?
     let status: String?         // "completed" 或 "failed"（解析状态）
     let review_status: String?
-    let review_priority: String?  // "P0" 或 "P1"
+    let review_priority: String?  // "P-1" / "P0" / "P1"
     let parse_reason: String?
     // 店铺快照字段
     let restaurant_name: String?
@@ -270,6 +270,9 @@ struct ReviewItem: Identifiable, Codable {
 
     // P0：AI 未识别（restaurant_id 为 nil）
     var isP0: Bool { restaurant_id == nil }
+
+    // P-1：存在待处理用户勘误，需要最高优先级复核
+    var isUserCorrectionPriority: Bool { review_priority == "P-1" }
 
     // AI 解析失败（status == "failed"），需要人工兜底
     var isFailed: Bool { status == "failed" }

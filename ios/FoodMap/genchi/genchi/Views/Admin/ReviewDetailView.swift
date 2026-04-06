@@ -14,6 +14,22 @@ struct ReviewDetailView: View {
     @State private var errorMessage: String?
     @State private var showSearchSheet = false
 
+    private var priorityColor: Color {
+        if item.isUserCorrectionPriority { return .pink }
+        if item.isP0 { return .red }
+        return .orange
+    }
+
+    private var priorityDescription: String {
+        if item.isUserCorrectionPriority {
+            return "用户提交了勘误反馈，需优先复核"
+        }
+        if item.isFailed {
+            return "AI 解析失败，需人工兜底"
+        }
+        return item.isP0 ? "AI 未识别店铺" : "AI 已识别，待确认"
+    }
+
     // 是否来自已复核列表（用于决定操作完成后的行为）
     var isFromReviewed: Bool { viewModel.selectedTab == .reviewed }
 
@@ -35,8 +51,18 @@ struct ReviewDetailView: View {
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
                             .padding(.vertical, 4)
-                            .background(item.isP0 ? Color.red : Color.orange)
+                            .background(priorityColor)
                             .cornerRadius(6)
+                        if item.isUserCorrectionPriority {
+                            Text("用户反馈")
+                                .font(.caption)
+                                .fontWeight(.bold)
+                                .foregroundColor(.white)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 4)
+                                .background(Color.orange)
+                                .cornerRadius(6)
+                        }
                         // AI 解析失败标签
                         if item.isFailed {
                             Text("AI解析失败")
@@ -48,7 +74,7 @@ struct ReviewDetailView: View {
                                 .background(Color.purple)
                                 .cornerRadius(6)
                         }
-                        Text(item.isFailed ? "AI 解析失败，需人工兜底" : (item.isP0 ? "AI 未识别店铺" : "AI 已识别，待确认"))
+                        Text(priorityDescription)
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         Spacer()

@@ -3,6 +3,7 @@
 
 import os
 import json
+from datetime import datetime
 from supabase import create_client, Client
 from dotenv import load_dotenv
 
@@ -559,25 +560,54 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
             .execute()
         )
     else:
-        # 待复核：pending / skipped，P0（restaurant_id IS NULL）在前
-        # 包含 completed 和 failed 状态（AI 解析失败的记录也需要人工复核兜底）
+        # 待复核：pending / skipped
+        # 优先级：
+        # 1. 有待处理用户勘误的记录（最高优先级）
+        # 2. P0：restaurant_id IS NULL
+        # 3. P1：已有识别结果
+        # 同优先级内按最新相关时间倒序。
         result = (
             supabase.table("video_parse_cache")
             .select(select_fields, count="exact")
             .in_("review_status", ["pending", "skipped"])
             .in_("status", ["completed", "failed"])
-            .order("restaurant_id", desc=False, nullsfirst=True)  # NULL 在前（P0）
-            .order("created_at", desc=True)
-            .range(offset, offset + page_size - 1)
             .execute()
         )
 
     items = result.data or []
     total = result.count or 0
 
-    # 为每条记录计算优先级标签（已复核记录也保留，方便前端展示）
-    for item in items:
-        item["review_priority"] = "P0" if item.get("restaurant_id") is None else "P1"
+    if tab != "reviewed":
+        pending_cache_times, pending_restaurant_times = get_pending_correction_targets()
+
+        for item in items:
+            cache_id = item.get("id")
+            restaurant_id = item.get("restaurant_id")
+            correction_ts = max(
+                pending_cache_times.get(cache_id, 0.0),
+                pending_restaurant_times.get(restaurant_id, 0.0),
+            )
+            has_pending_correction = correction_ts > 0
+
+            item["has_pending_user_corrections"] = has_pending_correction
+            item["_priority_rank"] = 0 if has_pending_correction else (1 if restaurant_id is None else 2)
+            item["_sort_ts"] = correction_ts or _iso_to_timestamp(item.get("created_at"))
+
+            if has_pending_correction:
+                item["review_priority"] = "P-1"
+            else:
+                item["review_priority"] = "P0" if restaurant_id is None else "P1"
+
+        items.sort(key=lambda item: (item["_priority_rank"], -item["_sort_ts"]))
+        items = items[offset: offset + page_size]
+
+        for item in items:
+            item.pop("_priority_rank", None)
+            item.pop("_sort_ts", None)
+    else:
+        # 为每条记录计算优先级标签（已复核记录也保留，方便前端展示）
+        for item in items:
+            item["review_priority"] = "P0" if item.get("restaurant_id") is None else "P1"
 
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
@@ -630,6 +660,13 @@ def admin_confirm_correct(cache_id: str, admin_user_id: str) -> bool:
         "updated_at": "now()",
     }).eq("id", cache_id).execute()
 
+    mark_user_corrections_reviewed(
+        reviewed_by=admin_user_id,
+        restaurant_id=restaurant_id,
+        video_cache_id=cache_id,
+        review_note="管理员确认原识别结果正确",
+    )
+
     return True
 
 
@@ -676,6 +713,14 @@ def admin_confirm_empty(cache_id: str, admin_user_id: str) -> bool:
         "reviewed_at": "now()",
         "updated_at": "now()",
     }).eq("id", cache_id).execute()
+
+    mark_user_corrections_reviewed(
+        reviewed_by=admin_user_id,
+        restaurant_id=cache.get("restaurant_id") if cache else None,
+        video_cache_id=cache_id,
+        review_note="管理员确认该视频无关联店铺",
+    )
+
     return True
 
 
@@ -767,6 +812,13 @@ def admin_correct_restaurant(
     if photo_url:
         cache_update["restaurant_photo_url"] = photo_url
     supabase.table("video_parse_cache").update(cache_update).eq("id", cache_id).execute()
+
+    mark_user_corrections_reviewed(
+        reviewed_by=admin_user_id,
+        restaurant_id=cache.get("restaurant_id"),
+        video_cache_id=cache_id,
+        review_note=f"管理员已修正为「{name}」",
+    )
 
     return True
 
@@ -877,6 +929,13 @@ def admin_correct_restaurants_multi(
     if first.get("photo_url"):
         cache_update["restaurant_photo_url"] = first["photo_url"]
     supabase.table("video_parse_cache").update(cache_update).eq("id", cache_id).execute()
+
+    mark_user_corrections_reviewed(
+        reviewed_by=admin_user_id,
+        restaurant_id=cache.get("restaurant_id"),
+        video_cache_id=cache_id,
+        review_note=f"管理员已修正为 {len(restaurants)} 家关联店铺",
+    )
 
     return True
 
@@ -1981,6 +2040,84 @@ def get_corrections_by_video_cache(video_cache_id: str) -> list[dict]:
     return result.data or []
 
 
+def get_user_corrections_for_review_item(
+    restaurant_id: str | None = None,
+    video_cache_id: str | None = None,
+) -> list[dict]:
+    """聚合某条复核记录关联的全部勘误（餐厅级 + 视频级），按时间倒序去重返回"""
+    merged: dict[str, dict] = {}
+
+    if restaurant_id:
+        for row in get_corrections_by_restaurant(restaurant_id):
+            correction_id = row.get("id")
+            if correction_id:
+                merged[correction_id] = row
+
+    if video_cache_id:
+        for row in get_corrections_by_video_cache(video_cache_id):
+            correction_id = row.get("id")
+            if correction_id:
+                merged[correction_id] = row
+
+    return sorted(
+        merged.values(),
+        key=lambda row: _iso_to_timestamp(row.get("created_at")),
+        reverse=True,
+    )
+
+
+def get_pending_correction_targets() -> tuple[dict[str, float], dict[str, float]]:
+    """返回待处理用户勘误关联的 video_cache / restaurant 最新时间索引，用于复核排序"""
+    result = (
+        supabase.table("user_corrections")
+        .select("restaurant_id, video_cache_id, created_at")
+        .eq("status", "pending")
+        .execute()
+    )
+
+    cache_times: dict[str, float] = {}
+    restaurant_times: dict[str, float] = {}
+
+    for row in (result.data or []):
+        ts = _iso_to_timestamp(row.get("created_at"))
+        cache_id = row.get("video_cache_id")
+        restaurant_id = row.get("restaurant_id")
+
+        if cache_id:
+            cache_times[cache_id] = max(cache_times.get(cache_id, 0.0), ts)
+        if restaurant_id:
+            restaurant_times[restaurant_id] = max(restaurant_times.get(restaurant_id, 0.0), ts)
+
+    return cache_times, restaurant_times
+
+
+def mark_user_corrections_reviewed(
+    reviewed_by: str,
+    restaurant_id: str | None = None,
+    video_cache_id: str | None = None,
+    review_note: str | None = None,
+    status: str = "reviewed",
+) -> None:
+    """管理员处理复核后，将相关待处理勘误标记为已复核"""
+    update_data = {
+        "status": status,
+        "reviewed_by": reviewed_by,
+        "reviewed_at": "now()",
+    }
+    if review_note:
+        update_data["review_note"] = review_note
+
+    if restaurant_id:
+        supabase.table("user_corrections").update(update_data).eq(
+            "restaurant_id", restaurant_id
+        ).eq("status", "pending").execute()
+
+    if video_cache_id:
+        supabase.table("user_corrections").update(update_data).eq(
+            "video_cache_id", video_cache_id
+        ).eq("status", "pending").execute()
+
+
 def reset_review_status_for_correction(restaurant_id: str = None, video_cache_id: str = None):
     """
     勘误提交后，将关联的 video_parse_cache 记录的 review_status 重置为 pending。
@@ -2003,6 +2140,17 @@ def reset_review_status_for_correction(restaurant_id: str = None, video_cache_id
         supabase.table("video_parse_cache").update(
             {"review_status": "pending"}
         ).eq("id", video_cache_id).execute()
+
+
+def _iso_to_timestamp(value: str | None) -> float:
+    """将 ISO 时间转为时间戳，异常时返回 0，便于排序"""
+    if not value:
+        return 0.0
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except Exception:
+        return 0.0
 
 
 # ─────────────────────────────────────────

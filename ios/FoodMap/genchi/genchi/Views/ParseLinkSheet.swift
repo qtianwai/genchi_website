@@ -134,7 +134,7 @@ struct ParseLinkSheet: View {
                             ScopeOptionRow(
                                 icon: "person.crop.circle.badge.plus",
                                 title: "关注博主全部推荐",
-                                subtitle: "关注这个博主后，地图会补齐他推荐过的店，后续新推荐也会自动更新",
+                                subtitle: "关注博主，地图将补齐他推荐过的店铺",
                                 badgeText: lastSelectedScopeBadge(for: .followAll),
                                 accessibilityIdentifier: "parse-scope-follow-all",
                                 badgeAccessibilityIdentifier: "parse-scope-follow-all-badge",
@@ -321,6 +321,8 @@ struct ParseLinkSheet: View {
                     scope: selectedScope == .singleOnly ? "single_only" : "follow_all"
                 )
 
+                lastSelectedScopeRawValue = selectedScope.rawValue
+
                 // v10.0：无论什么状态都直接关闭弹框
                 // parsing → 通知 MapView 开始轮询，后台解析完弹框通知
                 // cached/parsed → 直接刷新地图
@@ -392,7 +394,6 @@ struct ParseLinkSheet: View {
 
     private func updateSelectedScope(_ scope: ParseScope) {
         selectedScope = scope
-        lastSelectedScopeRawValue = scope.rawValue
     }
 
     private func lastSelectedScopeBadge(for scope: ParseScope) -> String? {
@@ -648,7 +649,8 @@ struct ScopeOptionRow: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.92)
+                        .minimumScaleFactor(0.84)
+                        .allowsTightening(true)
                 }
 
                 Spacer()

@@ -1872,24 +1872,20 @@ async def review_list(
 ):
     """
     获取复核列表。
-    tab=pending（默认）：待复核，P0 优先。
+    tab=pending（默认）：待复核，带用户勘误的记录优先级最高，其次 P0。
     tab=reviewed：已复核，按 reviewed_at 倒序。
     v10.0：每条记录附加 user_corrections 字段（用户勘误信息）
     """
     result = get_review_list(page=page, page_size=page_size, tab=tab)
 
     # v10.0：为每条记录附加用户勘误信息
-    from db import get_corrections_by_restaurant, get_corrections_by_video_cache
+    from db import get_user_corrections_for_review_item
     items = result.get("items", [])
     for item in items:
-        corrections = []
-        restaurant_id = item.get("restaurant_id")
-        cache_id = item.get("id")
-        if restaurant_id:
-            corrections.extend(get_corrections_by_restaurant(restaurant_id))
-        if cache_id and not corrections:
-            corrections.extend(get_corrections_by_video_cache(cache_id))
-        item["user_corrections"] = corrections
+        item["user_corrections"] = get_user_corrections_for_review_item(
+            restaurant_id=item.get("restaurant_id"),
+            video_cache_id=item.get("id"),
+        )
 
     return result
 

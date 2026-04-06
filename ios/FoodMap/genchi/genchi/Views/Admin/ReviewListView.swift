@@ -89,6 +89,12 @@ struct ReviewListView: View {
 struct ReviewRowView: View {
     let item: ReviewItem
 
+    private var priorityColor: Color {
+        if item.isUserCorrectionPriority { return .pink }
+        if item.isP0 { return .red }
+        return .orange
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
@@ -99,8 +105,19 @@ struct ReviewRowView: View {
                     .foregroundColor(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(item.isP0 ? Color.red : Color.orange)
+                    .background(priorityColor)
                     .cornerRadius(4)
+
+                if item.isUserCorrectionPriority {
+                    Text("用户反馈")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange)
+                        .cornerRadius(4)
+                }
 
                 // AI 解析失败标签（failed 状态显示）
                 if item.isFailed {

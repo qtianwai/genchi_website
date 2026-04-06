@@ -2510,3 +2510,13 @@ SwiftUI
 - 关键决策：电话按钮仅在 tel 非空时条件渲染，不影响无电话店铺的布局；高德 tel 可能含多号码用分号分隔，拨号时取第一个；重构 review 搜索函数复用 _parse_poi 从根本上解决字段不一致问题
 - 技术栈：Python FastAPI、SwiftUI、高德地图 API（tel 字段）、iOS tel:// URL Scheme
 - 修改的文件：`backend/amap_service.py`、`backend/main.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Views/RestaurantDetailView.swift`、`ios/.../Views/MapView.swift`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/产品功能清单.md`、`需求文档&技术方案/产品介绍.md`、`README.md`
+
+### 2026-04-06 会话：补充 Xcode 项目规则文件
+- 主要目的：将 `CLAUDE.md` 中定义的项目规则同步到 Xcode 项目目录，保证 Xcode 项目下也有一份完整规则文件
+- 完成的主要任务：
+  - 检查当前仓库中的规则文件分布，确认已有 `.cursor/rules/` 与根目录 `CLAUDE.md`
+  - 在 `ios/FoodMap/genchi/` 下新增 `XCODE_PROJECT_RULES.md`
+  - 将 `CLAUDE.md` 中的项目规则完整同步到新文件，并在文件头部说明该文件与 `CLAUDE.md` 的同步关系
+- 关键决策：规则文件放在 `ios/FoodMap/genchi/`，与 `genchi.xcodeproj` 同级，确保它位于当前 Xcode 项目目录下；规则内容采用完整同步而不是摘要，避免遗漏 Claude 既有约束
+- 技术栈：Markdown 文档维护
+- 修改的文件：`ios/FoodMap/genchi/XCODE_PROJECT_RULES.md`、`README.md`
