@@ -141,6 +141,8 @@ create table if not exists video_parse_cache (
   restaurant_lng     double precision,
   restaurant_amap_id text,
   restaurant_category text,
+  restaurant_avg_price integer,         -- 店铺均价快照（复核模块直接读取）
+  restaurant_photo_url text,            -- 店铺封面图快照（复核模块直接读取）
   error_message   text,                 -- 解析失败时的错误信息
   -- v2.5 新增字段
   parse_reason    text,                 -- 解析说明：AI 判断依据（包括未提取到店名的原因）
@@ -271,6 +273,8 @@ create policy "博主信息可更新" on authors for update using (true) with ch
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS data_source text NOT NULL DEFAULT 'user_submit';
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS api_cost numeric(10,6);
 -- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS api_cost_note text;
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS restaurant_avg_price integer;
+-- ALTER TABLE video_parse_cache ADD COLUMN IF NOT EXISTS restaurant_photo_url text;
 
 
 -- ─────────────────────────────────────────
