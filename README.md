@@ -30,15 +30,18 @@
     ├── Models/Models.swift      # 数据模型（含 v8.0 抽卡/成就/打卡模型）
     ├── Services/
     │   ├── APIService.swift     # 后端 API 调用（含 v8.0 饭团系统 API）
-    │   └── AuthState.swift      # 用户认证状态
+    │   ├── AuthState.swift      # 用户认证状态
+    │   └── DeviceInfo.swift     # 设备上下文采集（v15.0 新增）
     ├── ViewModels/
     │   ├── MapViewModel.swift       # 地图 ViewModel
     │   ├── FanTuanViewModel.swift   # 饭团状态管理（v8.0 新增）
     │   ├── GachaViewModel.swift     # 抽卡流程管理（v8.0 新增）
     │   ├── QARecommendViewModel.swift # 问答推荐管理（v8.0 新增）
-    │   └── ColdStartViewModel.swift # 冷启动博主录入管理（v14.0 新增）
+    │   ├── ColdStartViewModel.swift # 冷启动博主录入管理（v14.0 新增）
+    │   ├── FeedbackViewModel.swift  # 用户反馈列表管理（v15.0 新增）
+    │   └── AdminFeedbackViewModel.swift # 管理员反馈列表管理（v15.0 新增）
     └── Views/
-        ├── MainTabView.swift    # Tab 导航（v14.0：新增管理员「录入」Tab）
+        ├── MainTabView.swift    # Tab 导航（v15.0：新增管理员「反馈」Tab）
         ├── MapView.swift        # 地图主页面（v8.0：集成饭团浮动组件）
         ├── FanTuanView.swift    # 饭团浮动组件 + 能力菜单（v8.0 新增）
         ├── GachaView.swift      # 抽卡主页面（v8.0 新增）
@@ -48,6 +51,9 @@
         ├── ParseLinkSheet.swift # 粘贴链接弹窗（v10.0：半异步模式）
         ├── ParseCompleteAlert.swift # 解析完成弹框（v10.0 新增）
         ├── CorrectionSheet.swift # 用户勘误表单（v10.0 新增）
+        ├── FeedbackSubmitSheet.swift # 提交反馈弹窗（v15.0 新增）
+        ├── FeedbackListView.swift   # 用户反馈列表（v15.0 新增）
+        ├── FeedbackDetailView.swift # 用户反馈详情（v15.0 新增）
         ├── UserAddRestaurantSheet.swift # 手动添加店铺
         ├── FavoritesView.swift  # 收藏页（v5.0：合并博主+收藏）
         ├── AuthorDetailView.swift   # 博主详情页（v5.0 新增）
@@ -62,7 +68,9 @@
             ├── ReviewDetailView.swift   # 复核详情页（管理员）
             ├── RestaurantSearchView.swift # 复核店铺搜索（管理员）
             ├── ColdStartView.swift      # 冷启动博主录入主页（v14.0 新增）
-            └── ColdStartSubmitSheet.swift # 冷启动提交弹窗（v14.0 新增）
+            ├── ColdStartSubmitSheet.swift # 冷启动提交弹窗（v14.0 新增）
+            ├── AdminFeedbackListView.swift   # 管理员反馈列表（v15.0 新增）
+            └── AdminFeedbackDetailView.swift # 管理员反馈详情（v15.0 新增）
 ```
 
 ---
@@ -2639,4 +2647,33 @@ SwiftUI
   - 更新 `帮助文档/微信登录配置指南.md`，新增开发前待办项清单（域名配置、微信平台申请、iOS集成、后端配置、上线备案）
 - 关键决策：先买域名 DNS 指向 Railway，后续迁移国内只改 DNS 指向，Universal Links 和微信配置无需修改
 - 技术栈：DNS 配置、Universal Links、微信开放平台
+
+### 2026-04-06 会话：短信验证码登录配置指南
+- 主要目的：为短信验证码登录功能提供完整的配置指南
+- 完成的主要任务：
+  - 创建 `短信验证码登录配置指南.md`，包含完整的配置步骤、本地测试、Railway 部署说明
+  - 更新 `backend/.env`，取消注释短信配置部分（ALIYUN_ACCESS_KEY_ID、ALIYUN_ACCESS_KEY_SECRET、SMS_SIGN_NAME、SMS_TEMPLATE_CODE）
+  - 补充 AccessKey 获取的详细步骤：阿里云控制台 → 账户头像 → AccessKey 管理 → 当前用户 AccessKey
+  - 提供 curl 测试命令和常见问题解答
+- 关键决策：文档包含本地开发模式（验证码打印到日志）和生产模式（真实短信发送）的说明
+- 技术栈：阿里云短信 API、FastAPI、SwiftUI
+- 修改的文件：`backend/.env`、`短信验证码登录配置指南.md`（新建）、`帮助文档/会话记录.md`、`README.md`
 - 修改的文件：`帮助文档/微信登录配置指南.md`
+
+### 2026-04-06 会话：一键问题反馈功能开发（v15.0）
+- 主要目的：开发用户反馈闭环功能，用户可提交文字+截图+设备信息反馈，管理员在 App 内查看处理和回复
+- 完成的主要任务：
+  - 数据库：新增 user_feedback + user_feedback_replies 两张表，更新 supabase_schema.sql
+  - 后端 db.py：新增 7 个反馈相关数据库操作函数
+  - 后端 main.py：新增 6 个 API 路由（用户端 3 个 + 管理员端 3 个），支持 multipart/form-data 多图上传
+  - iOS Models.swift：新增 UserFeedback/FeedbackReply/AdminFeedbackItem 等 6 个数据模型
+  - iOS DeviceInfo.swift（新建）：设备上下文采集（设备型号/iOS版本/App版本）
+  - iOS APIService.swift：新增 7 个 API 调用方法
+  - iOS ViewModel：新建 FeedbackViewModel + AdminFeedbackViewModel
+  - iOS 用户端页面：FeedbackSubmitSheet（提交反馈）、FeedbackListView（反馈列表）、FeedbackDetailView（反馈详情）
+  - iOS 管理员端页面：AdminFeedbackListView（管理员反馈列表）、AdminFeedbackDetailView（管理员反馈详情+回复）
+  - iOS 入口改造：ProfileView「意见反馈」改为 NavigationLink，MainTabView 新增管理员「反馈」Tab
+  - 产品功能清单：从未完成移至已完成
+- 关键决策：截图上传复用 Supabase Storage 模式（feedback bucket），管理员回复自动将 pending→in_progress，反馈列表按状态优先级排序
+- 技术栈：SwiftUI、PhotosUI、FastAPI、Supabase PostgreSQL + Storage
+- 修改的文件：`backend/supabase_schema.sql`、`backend/db.py`、`backend/main.py`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Services/DeviceInfo.swift`（新建）、`ios/.../ViewModels/FeedbackViewModel.swift`（新建）、`ios/.../ViewModels/AdminFeedbackViewModel.swift`（新建）、`ios/.../Views/FeedbackSubmitSheet.swift`（新建）、`ios/.../Views/FeedbackListView.swift`（新建）、`ios/.../Views/FeedbackDetailView.swift`（新建）、`ios/.../Views/Admin/AdminFeedbackListView.swift`（新建）、`ios/.../Views/Admin/AdminFeedbackDetailView.swift`（新建）、`ios/.../Views/ProfileView.swift`、`ios/.../Views/MainTabView.swift`、`需求文档&技术方案/产品功能清单.md`、`README.md`
