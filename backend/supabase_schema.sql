@@ -24,6 +24,10 @@ create table if not exists authors (
   auto_update_enabled    boolean default true,  -- 是否启用自动更新检测
   last_update_check      timestamptz,          -- 上次执行自动检测的时间
   no_new_food_video_days int default 0,         -- 连续未检测到新美食视频的天数
+  -- v13.0 新增：美食视频统计（用于自动更新检测的博主筛选）
+  food_video_ratio       float default 0,       -- 美食视频占比（0~1），上次后台解析时计算
+  food_video_count       int default 0,         -- 平台关联的美食视频数量（status=completed 的记录数）
+  last_food_video_at     timestamptz,           -- 最近一条美食视频的发布时间
   created_at    timestamptz default now()
 );
 
@@ -204,6 +208,9 @@ create table if not exists author_background_tasks (
   error_message   text,
   started_at      timestamptz,
   completed_at   timestamptz,
+  -- v13.0 新增：任务成本记录
+  api_cost        numeric(10,6) default 0,  -- 本次任务消耗的 JustOneAPI 总成本（元）
+  api_cost_note   text default '',           -- 成本明细说明
   created_at      timestamptz default now()
 );
 

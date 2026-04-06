@@ -672,6 +672,192 @@ async def fetch_video_detail_extra(video_id: str, author_uid: str = "") -> dict:
     }
 
 
+# ─────────────────────────────────────────
+# v13.0：拆分 fetch_video_detail_extra 为两步
+# 目的：后台解析时先获取详情判断是否美食视频，非美食视频跳过评论获取，省 ¥0.1/条
+# ─────────────────────────────────────────
+
+async def fetch_video_detail_only(video_id: str) -> dict:
+    """
+    只获取视频详情（不获取评论），消耗 1 次 JustOneAPI 调用（¥0.1）
+
+    用于后台解析路径的第一步：先获取详情判断是否美食视频
+    返回字段与 fetch_video_detail_extra 一致，但评论相关字段为空列表
+    """
+    result = await _aget("/api/douyin/get-video-detail/v2", {"videoId": video_id})
+    if result.get("code") != 0:
+        print(f"[抖音解析] 获取视频详情失败: {result.get('message')}")
+        return {
+            "hashtags": [], "city_code": "", "city_name": "未知",
+            "author_liked_comments": [], "hot_comments": [],
+            "hot_comments_raw": [], "all_comments": [],
+            "video_cover_url": "", "video_publish_timestamp": 0,
+            "video_publish_time": "", "video_digg_count": 0,
+            "video_comment_count": 0, "video_tags": [], "cha_list": [],
+            "hot_search_keywords": [], "aweme_type_tags": "",
+            "poi_info": None, "title": "",
+        }
+
+    aweme = result["data"].get("aweme_detail", {})
+
+    # 提取话题标签
+    text_extras = aweme.get("text_extra", []) or []
+    hashtags = [
+        t.get("hashtag_name", "")
+        for t in text_extras
+        if t.get("type") == 1 and t.get("hashtag_name")
+    ]
+
+    # 城市编码转中文（复用 fetch_video_detail_extra 的逻辑）
+    city_code = str(aweme.get("city", ""))
+    city_map = {
+        "110000": "北京", "120000": "天津", "310000": "上海", "500000": "重庆",
+        "130100": "石家庄", "140100": "太原", "150100": "呼和浩特", "210100": "沈阳",
+        "220100": "长春", "230100": "哈尔滨", "320100": "南京", "330100": "杭州",
+        "340100": "合肥", "350100": "福州", "360100": "南昌", "370100": "济南",
+        "410100": "郑州", "420100": "武汉", "430100": "长沙", "440100": "广州",
+        "450100": "南宁", "460100": "海口", "510100": "成都", "520100": "贵阳",
+        "530100": "昆明", "540100": "拉萨", "610100": "西安", "620100": "兰州",
+        "630100": "西宁", "640100": "银川", "650100": "乌鲁木齐",
+        "440300": "深圳", "320500": "苏州", "330200": "宁波", "350200": "厦门",
+        "370200": "青岛", "440400": "珠海", "440600": "佛山", "441300": "惠州",
+        "441900": "东莞", "442000": "中山", "445100": "潮州", "445200": "揭阳",
+        "510700": "绵阳", "511100": "乐山", "610200": "铜川", "610300": "宝鸡",
+    }
+    city_name_from_code = city_map.get(city_code, "未知" if not city_code or city_code == "0" else city_code)
+
+    # 从标题和话题标签中提取城市
+    CITY_NAMES = [
+        "北京", "天津", "上海", "重庆",
+        "石家庄", "太原", "呼和浩特", "沈阳", "长春", "哈尔滨",
+        "南京", "杭州", "合肥", "福州", "南昌", "济南",
+        "郑州", "武汉", "长沙", "广州", "南宁", "海口",
+        "成都", "贵阳", "昆明", "拉萨", "西安", "兰州",
+        "西宁", "银川", "乌鲁木齐",
+        "深圳", "苏州", "宁波", "厦门", "青岛", "珠海",
+        "佛山", "惠州", "东莞", "中山", "潮州", "揭阳",
+        "绵阳", "乐山", "宝鸡", "常州", "无锡", "温州",
+        "嘉兴", "金华", "台州", "泉州", "漳州", "赣州",
+        "烟台", "威海", "济宁", "临沂", "洛阳", "南阳",
+        "宜昌", "襄阳", "株洲", "湘潭", "衡阳", "汕头",
+        "江门", "湛江", "茂名", "肇庆", "清远", "梅州",
+        "遵义", "大理", "丽江", "桂林", "柳州", "北海",
+        "三亚", "海南", "西双版纳", "德宏",
+        "大连", "鞍山", "抚顺", "本溪", "丹东",
+        "齐齐哈尔", "牡丹江", "佳木斯",
+        "包头", "鄂尔多斯", "呼伦贝尔",
+        "唐山", "保定", "邯郸", "秦皇岛",
+        "运城", "大同", "晋城",
+        "徐州", "南通", "连云港", "淮安", "盐城", "扬州", "镇江", "泰州",
+        "芜湖", "马鞍山", "安庆", "黄山",
+        "郫县", "郫都",
+    ]
+    video_title = aweme.get("desc", "")
+    title_city = next((c for c in CITY_NAMES if c in video_title), None)
+    tag_city = None
+    if not title_city:
+        for tag in hashtags:
+            tag_city = next((c for c in CITY_NAMES if c in tag), None)
+            if tag_city:
+                break
+    city_name = title_city or tag_city or city_name_from_code
+
+    # 提取视频扩展信息
+    video_tags = [tag.get("tag_name", "") for tag in (aweme.get("video_tag") or []) if tag.get("tag_name")]
+    cha_list = [ch.get("cha_name", "") for ch in (aweme.get("cha_list") or []) if ch.get("cha_name")]
+    hot_search_keywords = []
+    for sw in (aweme.get("suggest_words") or {}).get("suggest_words") or []:
+        for word_info in (sw.get("words") or []):
+            keyword = word_info.get("word", "")
+            if keyword:
+                hot_search_keywords.append(keyword)
+
+    video_cover_url = (aweme.get("video", {}).get("cover", {}).get("url_list", [""])[0] or "")
+    statistics = aweme.get("statistics") or {}
+    create_timestamp = aweme.get("create_time", 0)
+    publish_time = ""
+    if create_timestamp:
+        from datetime import datetime, timezone
+        publish_time = datetime.fromtimestamp(create_timestamp, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+    # POI 信息（抖音视频中的地点标注）
+    poi_info = aweme.get("poi_info")
+
+    return {
+        "title": video_title,
+        "hashtags": hashtags,
+        "city_code": city_code,
+        "city_name": city_name,
+        "author_liked_comments": [],  # 不获取评论
+        "hot_comments": [],
+        "hot_comments_raw": [],
+        "all_comments": [],
+        "video_cover_url": video_cover_url,
+        "video_publish_timestamp": create_timestamp,
+        "video_publish_time": publish_time,
+        "video_digg_count": statistics.get("digg_count", 0),
+        "video_comment_count": statistics.get("comment_count", 0),
+        "video_tags": video_tags,
+        "cha_list": cha_list,
+        "hot_search_keywords": hot_search_keywords,
+        "aweme_type_tags": aweme.get("aweme_type_tags", ""),
+        "poi_info": poi_info,
+    }
+
+
+async def fetch_video_comments_only(video_id: str, author_uid: str = "") -> dict:
+    """
+    只获取视频评论（不获取详情），消耗 1 次 JustOneAPI 调用（¥0.1）
+
+    用于后台解析路径的第二步：确认是美食视频后再获取评论
+    返回评论相关字段，可与 fetch_video_detail_only 的结果合并
+    """
+    author_liked_comments = []
+    hot_comments = []
+    all_comments = []
+    hot_comments_raw = []
+
+    comments_result = await _aget(
+        "/api/douyin/get-video-comment/v1",
+        {"awemeId": video_id, "page": 1},
+    )
+    if comments_result.get("code") == 0:
+        raw_comments = (comments_result.get("data") or {}).get("comments", []) or []
+        for c in raw_comments:
+            text = c.get("text", "")
+            if not text:
+                continue
+            digg = c.get("digg_count", 0)
+            comment_data = {"text": text, "digg_count": digg}
+            all_comments.append(comment_data)
+
+            if c.get("is_author_digged"):
+                author_liked_comments.append(comment_data)
+
+            if c.get("is_hot"):
+                hot_comments.append(comment_data)
+                hot_comments_raw.append({
+                    "cid": c.get("cid", ""),
+                    "text": text,
+                    "digg_count": digg,
+                })
+
+        author_liked_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        hot_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+        hot_comments_raw.sort(key=lambda x: x["digg_count"], reverse=True)
+        all_comments.sort(key=lambda x: x["digg_count"], reverse=True)
+
+    print(f"[抖音解析] 视频评论: 博主点赞={len(author_liked_comments)}条, "
+          f"热门={len(hot_comments)}条, 总评论={len(all_comments)}条")
+
+    return {
+        "author_liked_comments": author_liked_comments,
+        "hot_comments": hot_comments,
+        "hot_comments_raw": hot_comments_raw,
+        "all_comments": all_comments,
+    }
+
+
 
 # ─────────────────────────────────────────
 # 以下函数已在 v10.0 算法优化中移除：

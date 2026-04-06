@@ -10,8 +10,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
-from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, extract_url_from_text, extract_video_id_from_url
-from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, filter_food_video_titles
+from douyin_parser import parse_douyin_link, fetch_author_videos, fetch_video_comments, fetch_video_detail_extra, fetch_video_detail_only, fetch_video_comments_only, extract_url_from_text, extract_video_id_from_url
+from ai_extractor import extract_restaurants_from_video, extract_restaurants_priority, filter_food_video_titles, is_food_video_by_detail
 from amap_service import batch_search_restaurants, search_restaurant_for_review, get_poi_detail
 from sms_service import generate_otp, store_otp, verify_otp as verify_otp_code, send_sms, phone_to_user_id
 from db import (
@@ -69,6 +69,9 @@ from db import (
     update_fantuan_on_gacha, update_fantuan_on_checkin, update_fantuan_on_favorite,
     # 新增：v12.0 后台解析成本回写
     append_video_cache_api_cost,
+    # 新增：v13.0 博主自动更新检测优化
+    get_authors_for_auto_update, update_author_food_stats,
+    get_author_food_video_count, update_bg_task_cost,
 )
 
 load_dotenv()
@@ -77,6 +80,12 @@ load_dotenv()
 AUTHOR_SCAN_COOLDOWN_HOURS = int(os.getenv("AUTHOR_SCAN_COOLDOWN_HOURS", "168"))  # 博主扫描冷却期（小时）
 FETCH_AUTHOR_VIDEOS_MAX = int(os.getenv("FETCH_AUTHOR_VIDEOS_MAX", "15"))  # 获取博主视频列表最大数量
 MAX_PARSE_VIDEOS = int(os.getenv("MAX_PARSE_VIDEOS", "15"))  # AI 过滤后美食视频最大解析量
+
+# v13.0 博主自动更新检测优化配置（环境变量可配）
+AUTO_UPDATE_MIN_FOOD_RATIO = float(os.getenv("AUTO_UPDATE_MIN_FOOD_RATIO", "0.4"))  # 美食视频占比最低阈值
+AUTO_UPDATE_MIN_FOOD_COUNT = int(os.getenv("AUTO_UPDATE_MIN_FOOD_COUNT", "5"))  # 平台关联美食视频最低数量
+AUTO_UPDATE_MAX_AUTHORS = int(os.getenv("AUTO_UPDATE_MAX_AUTHORS", "50"))  # 每次自动检测最多处理的博主数量
+AUTO_UPDATE_NO_NEW_DAYS_LIMIT = int(os.getenv("AUTO_UPDATE_NO_NEW_DAYS_LIMIT", "7"))  # 连续无新美食视频天数阈值
 
 # v8.0 饭团系统配置（环境变量可配置）
 DAILY_GACHA_LIMIT = int(os.getenv("DAILY_GACHA_LIMIT", "15"))  # 每日抽卡次数上限
@@ -737,35 +746,59 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         })
 
         try:
-            # 获取视频扩展信息（P1:标签+城市+评论）
-            # 后台解析消耗：get-video-detail/v2 + get-video-comment/v1
+            # v13.0：拆分为两步，先获取详情判断是否美食视频，非美食视频跳过评论获取省 ¥0.1
             COST_PER_CALL = 0.1
-            extra = await fetch_video_detail_extra(vid, author_id)
-            api_calls_bg = [
-                "get-video-detail/v2（获取视频详情+话题标签+城市）",
-                "get-video-comment/v1（获取评论）",
-            ]
-            api_cost_bg = len(api_calls_bg) * COST_PER_CALL
 
-            # v7.0 新增：写入视频扩展信息到 video_parse_cache
-            # 先收集 extra 中的新字段（背景路径调用的是 fetch_video_detail_extra，结果在 extra 里）
+            # 步骤 1：只获取视频详情（¥0.1）
+            detail = await fetch_video_detail_only(vid)
+            api_calls_bg = ["get-video-detail/v2（获取视频详情+话题标签+城市）"]
+
+            # 写入视频扩展信息到 video_parse_cache
             bg_video_extra = {
                 "title": title,
-                "city_name": extra.get("city_name", ""),
-                "publish_time": extra.get("video_publish_time", ""),
-                "publish_timestamp": extra.get("video_publish_timestamp", 0),
-                "digg_count": extra.get("video_digg_count", 0),
-                "comment_count": extra.get("video_comment_count", 0),
-                "cover_url": extra.get("video_cover_url", ""),
-                "hashtags": extra.get("hashtags", []),
-                "video_tags": extra.get("video_tags", []),
-                "cha_list": extra.get("cha_list", []),
-                "hot_search_keywords": extra.get("hot_search_keywords", []),
-                "aweme_type_tags": extra.get("aweme_type_tags", ""),
+                "city_name": detail.get("city_name", ""),
+                "publish_time": detail.get("video_publish_time", ""),
+                "publish_timestamp": detail.get("video_publish_timestamp", 0),
+                "digg_count": detail.get("video_digg_count", 0),
+                "comment_count": detail.get("video_comment_count", 0),
+                "cover_url": detail.get("video_cover_url", ""),
+                "hashtags": detail.get("hashtags", []),
+                "video_tags": detail.get("video_tags", []),
+                "cha_list": detail.get("cha_list", []),
+                "hot_search_keywords": detail.get("hot_search_keywords", []),
+                "aweme_type_tags": detail.get("aweme_type_tags", ""),
                 "share_url": video_url,
             }
-            # 更新该视频的 video_extra（按 video_id 查找，URL 可能不精确匹配）
             update_video_cache_extra_by_video_id(vid, bg_video_extra)
+
+            # 步骤 2：本地规则判断是否美食视频（零成本）
+            is_food = await is_food_video_by_detail(detail)
+            if not is_food:
+                # 非美食视频，标记为 failed，省 ¥0.1（跳过评论获取）
+                api_cost_bg = len(api_calls_bg) * COST_PER_CALL
+                api_cost_note_bg = "；".join(api_calls_bg) + f"；合计 1 次调用，约 ¥{api_cost_bg:.4f}（非美食视频跳过评论）"
+                upsert_video_cache({
+                    "video_url": video_url,
+                    "video_id": vid,
+                    "author_id": author_id,
+                    "status": "failed",
+                    "parse_reason": "非美食探店视频（本地规则判断）",
+                    "data_source": "background_scan",
+                    "api_cost": api_cost_bg,
+                    "api_cost_note": api_cost_note_bg,
+                    "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
+                })
+                print(f"[后台解析] 视频 {vid} 非美食视频，跳过评论获取（省 ¥0.1）")
+                update_bg_task_progress(task_id, i + 1, saved_count)
+                continue
+
+            # 步骤 3：确认是美食视频，获取评论（¥0.1）
+            comments_data = await fetch_video_comments_only(vid, author_id)
+            api_calls_bg.append("get-video-comment/v1（获取评论）")
+
+            # 合并详情和评论数据
+            extra = {**detail, **comments_data}
+            api_cost_bg = len(api_calls_bg) * COST_PER_CALL
 
             # AI 提取（v10.0：传入规则候选辅助决策，去掉评论回复接口）
             from rule_extractor import extract_candidates as extract_candidates_bg
@@ -900,6 +933,35 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         update_bg_task_progress(task_id, i + 1, saved_count)
 
     complete_bg_task(task_id, saved_count)
+
+    # v13.0：更新博主美食视频统计数据（用于自动更新检测的博主筛选）
+    try:
+        food_ratio = len(food_videos) / len(video_list) if video_list else 0
+        food_count = get_author_food_video_count(author_id)
+        # last_food_video_at：取视频列表中最新的发布时间（已按 create_time 倒序排列）
+        last_food_ts = None
+        if videos:
+            first_ts = videos[0].get("create_time", 0)
+            if first_ts:
+                from datetime import datetime as dt, timezone
+                last_food_ts = dt.fromtimestamp(first_ts, tz=timezone.utc).isoformat()
+        update_author_food_stats(author_id, food_ratio, food_count, last_food_ts)
+        print(f"[后台解析] 博主 {author_id} 统计更新: 美食占比={food_ratio:.2%}, 美食视频数={food_count}")
+    except Exception as e:
+        print(f"[后台解析] 更新博主统计数据出错: {e}")
+
+    # v13.0：将任务总成本记录到 author_background_tasks 表
+    try:
+        # 计算任务总成本：获取视频列表成本 + 逐个视频解析成本
+        task_total_cost = fetch_cost  # fetch_author_videos 的分页成本
+        task_cost_parts = [f"获取视频列表: {fetch_cost_note}"]
+        task_total_cost += len(pending_videos) * 0.2  # 每个视频 ¥0.2（detail + comments）
+        task_cost_parts.append(f"解析 {len(pending_videos)} 个视频: ¥{len(pending_videos) * 0.2:.2f}")
+        update_bg_task_cost(task_id, task_total_cost, "\n".join(task_cost_parts))
+        print(f"[后台解析] 任务成本记录: ¥{task_total_cost:.2f}")
+    except Exception as e:
+        print(f"[后台解析] 记录任务成本出错: {e}")
+
     print(f"[后台解析] 博主 {author_id} 后台解析完成,新增 {saved_count} 家店铺 (最大解析量: {MAX_PARSE_VIDEOS})")
 
 
@@ -1198,17 +1260,27 @@ async def _async_parse_and_save(
         if scope != "single_only":
             follow_author(user_id, author_id)
 
-        # 启用/重新激活博主的自动更新检测
+        # 启用/重新激活博主的自动更新检测（v13.0 改造）
+        # 条件：新链接 + AI 判断为美食视频（不要求识别到店铺）
         if scope != "single_only":
             try:
                 from db import get_author_by_id
                 existing_author_record = get_author_by_id(author_id)
                 if existing_author_record:
                     auto_update_enabled = existing_author_record.get("auto_update_enabled", True)
-                    if not auto_update_enabled and restaurant:
-                        enable_author_auto_update(author_id)
-                    elif auto_update_enabled is None:
-                        enable_author_auto_update(author_id)
+                    if auto_update_enabled is None or not auto_update_enabled:
+                        # v13.0：判断当前视频是否为美食类视频
+                        is_food_video = True  # 默认为美食视频
+                        if not restaurant:
+                            # 未识别到店铺时，检查 parse_reason 是否标记为非美食
+                            cached_record = get_video_cache_by_id(vid)
+                            if cached_record:
+                                reason = cached_record.get("parse_reason", "") or ""
+                                if "非美食" in reason:
+                                    is_food_video = False
+                        if is_food_video:
+                            enable_author_auto_update(author_id)
+                            print(f"[异步解析] 博主 {author_id} 自动更新已重新激活（美食视频触发）")
             except Exception as e:
                 print(f"[异步解析] 自动更新启用出错: {e}")
 

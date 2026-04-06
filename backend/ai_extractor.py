@@ -111,6 +111,76 @@ async def filter_food_video_titles(video_titles: list[dict]) -> list[dict]:
         return video_titles
 
 
+async def is_food_video_by_detail(detail: dict) -> bool:
+    """
+    基于视频详情（标题 + 话题标签 + POI + 视频标签）判断是否为美食类视频（v13.0 新增）
+
+    用于后台解析路径：先获取 get-video-detail/v2，判断是否美食视频，
+    非美食视频跳过 get-video-comment/v1，每条省 ¥0.1。
+
+    判断策略（本地规则优先，零 AI 成本）：
+    1. 如果有 POI 信息且类别包含美食关键词 → 美食视频
+    2. 如果标题或标签中包含明确的非美食关键词 → 非美食视频
+    3. 如果标题或标签中包含美食关键词 → 美食视频
+    4. 不确定时保守返回 True（宁可多花 ¥0.1 也不漏掉美食视频）
+    """
+    title = detail.get("title", "")
+    hashtags = detail.get("hashtags", [])
+    video_tags = detail.get("video_tags", [])
+    cha_list = detail.get("cha_list", [])
+    poi_info = detail.get("poi_info")
+
+    # 合并所有文本信息用于关键词匹配
+    all_text = title + " " + " ".join(hashtags) + " " + " ".join(video_tags) + " " + " ".join(cha_list)
+    all_text_lower = all_text.lower()
+
+    # 策略 1：POI 信息中包含美食类别 → 一定是美食视频
+    if poi_info:
+        poi_type = str(poi_info.get("type_name", ""))
+        if any(kw in poi_type for kw in ["餐饮", "美食", "小吃", "火锅", "烧烤", "咖啡", "奶茶", "甜品", "面馆", "饭店"]):
+            return True
+
+    # 策略 2：明确的非美食关键词 → 非美食视频
+    non_food_keywords = [
+        "旅游攻略", "旅行vlog", "穿搭", "化妆", "护肤", "美妆",
+        "健身", "减肥教程", "瑜伽", "跑步",
+        "游戏", "电竞", "王者荣耀", "原神",
+        "房产", "买房", "装修", "家居",
+        "汽车", "试驾", "提车",
+        "宠物", "猫咪", "狗狗",
+        "育儿", "母婴", "带娃",
+        "数码", "手机", "电脑", "开箱测评",
+        "舞蹈", "唱歌", "音乐",
+        "搞笑", "段子", "整蛊",
+        "知识分享", "学习", "考研", "考公",
+    ]
+    non_food_count = sum(1 for kw in non_food_keywords if kw in all_text_lower)
+
+    # 策略 3：美食相关关键词
+    food_keywords = [
+        "探店", "美食", "好吃", "餐厅", "饭店", "小吃", "火锅", "烧烤",
+        "奶茶", "咖啡", "甜品", "面馆", "串串", "烤肉", "海鲜",
+        "人均", "必吃", "推荐", "打卡", "觅食", "吃货", "干饭",
+        "早餐", "午餐", "晚餐", "夜宵", "宵夜", "下午茶",
+        "米其林", "黑珍珠", "老字号", "苍蝇馆子",
+        "排队", "网红店", "宝藏店", "隐藏菜单",
+    ]
+    food_count = sum(1 for kw in food_keywords if kw in all_text_lower)
+
+    # 判断逻辑：
+    # - 美食关键词 >= 2 → 大概率是美食视频
+    # - 非美食关键词 >= 2 且无美食关键词 → 大概率不是美食视频
+    # - 其他情况保守返回 True
+    if food_count >= 2:
+        return True
+    if non_food_count >= 2 and food_count == 0:
+        print(f"[AI过滤] 本地规则判断为非美食视频: title={title[:30]}, 非美食关键词={non_food_count}")
+        return False
+
+    # 不确定时保守返回 True（宁可多花 ¥0.1 也不漏掉美食视频）
+    return True
+
+
 async def extract_restaurants_from_video(
     video_title: str,
     comments: list,  # 支持 list[str] 或 list[dict{"text","digg_count"}] 两种格式

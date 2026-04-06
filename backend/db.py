@@ -551,6 +551,95 @@ def enable_author_auto_update(author_id: str) -> dict:
 
 
 # ─────────────────────────────────────────
+# v13.0 博主自动更新检测优化
+# ─────────────────────────────────────────
+
+def get_authors_for_auto_update(
+    min_food_ratio: float = 0.4,
+    min_food_count: int = 5,
+    limit: int = 50,
+) -> list[dict]:
+    """
+    获取符合自动更新条件的博主，按美食视频更新频率降序排列
+
+    筛选条件：
+    1. auto_update_enabled = true
+    2. food_video_ratio >= min_food_ratio（美食视频占比）
+    3. food_video_count >= min_food_count（平台关联美食视频数量）
+    4. sec_uid 不为空（必须有 sec_uid 才能获取视频列表）
+
+    排序：last_food_video_at DESC（最近发美食视频的博主优先）
+    """
+    result = (
+        supabase.table("authors")
+        .select("*")
+        .eq("auto_update_enabled", True)
+        .not_is("sec_uid", "null")
+        .gte("food_video_ratio", min_food_ratio)
+        .gte("food_video_count", min_food_count)
+        .order("last_food_video_at", desc=True, nullsfirst=False)
+        .limit(limit)
+        .execute()
+    )
+    return result.data or []
+
+
+def get_author_food_video_count(author_id: str) -> int:
+    """
+    查询博主在平台关联的美食视频数量（status=completed 的记录数）
+
+    通过 video_parse_cache 表统计 author_id 对应的 completed 记录数
+    """
+    result = (
+        supabase.table("video_parse_cache")
+        .select("id", count="exact")
+        .eq("author_id", author_id)
+        .eq("status", "completed")
+        .execute()
+    )
+    return result.count or 0
+
+
+def update_author_food_stats(
+    author_id: str,
+    food_ratio: float,
+    food_count: int,
+    last_food_video_at: str = None,
+) -> dict:
+    """
+    更新博主的美食视频统计数据（v13.0 新增）
+
+    在后台解析完成后调用，用于自动更新检测的博主筛选
+    - food_ratio: 美食视频占比（0~1）
+    - food_count: 平台关联的美食视频数量
+    - last_food_video_at: 最近一条美食视频的发布时间（ISO 格式字符串）
+    """
+    update_data = {
+        "food_video_ratio": round(food_ratio, 4),
+        "food_video_count": food_count,
+    }
+    if last_food_video_at:
+        update_data["last_food_video_at"] = last_food_video_at
+    result = supabase.table("authors").update(update_data).eq("id", author_id).execute()
+    return result.data[0] if result.data else {}
+
+
+def update_bg_task_cost(task_id: str, api_cost: float, api_cost_note: str) -> dict:
+    """
+    更新后台任务的 API 成本记录（v13.0 新增）
+
+    用于 scheduler 自动检测和后台解析任务的成本追踪
+    - api_cost: 本次任务消耗的 JustOneAPI 总成本（元）
+    - api_cost_note: 成本明细说明
+    """
+    result = supabase.table("author_background_tasks").update({
+        "api_cost": api_cost,
+        "api_cost_note": api_cost_note,
+    }).eq("id", task_id).execute()
+    return result.data[0] if result.data else {}
+
+
+# ─────────────────────────────────────────
 # 后台人工复核相关操作（v3.0 新增）
 # ─────────────────────────────────────────
 

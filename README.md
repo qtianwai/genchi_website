@@ -2575,3 +2575,14 @@ SwiftUI
 - 关键决策：算法版本号放在 main.py 而非 ai_extractor.py，因为版本涵盖整个解析流程；已审核无店铺的记录直接告知用户而非提示"人工复核"
 - 技术栈：Python FastAPI、Supabase PostgreSQL、SwiftUI
 - 修改的文件：`backend/main.py`、`backend/douyin_parser.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Views/ParseLinkSheet.swift`、`需求文档&技术方案/解析算法优化方案.md`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/产品功能清单.md`
+
+### 2026-04-06 会话：v13.0 博主自动更新检测优化 + 解析成本优化
+- 主要目的：精准筛选值得自动检测的博主，降低后台解析成本
+- 完成的主要任务：
+  - 优化项一：博主自动更新检测逻辑优化 — 筛选条件增加美食视频占比（≥40%）、关联数量（≥5）、按更新频率排序；scheduler.py 重写为真正执行视频解析；重新激活逻辑改为"新链接+美食视频"
+  - 优化项二：解析算法成本优化 — 后台解析拆分为先获取详情判断美食再获取评论，非美食视频省 ¥0.1/条
+  - 数据库变更：authors 表新增 3 个统计字段，author_background_tasks 表新增 2 个成本字段
+  - 新增 5 个环境变量控制自动检测行为
+- 关键决策：本地规则判断美食视频（零 AI 成本）而非调用 AI；不确定时保守判定为美食视频避免漏掉；快速路径不改造保障用户体验
+- 技术栈：Python FastAPI、Supabase PostgreSQL
+- 修改的文件：`backend/main.py`、`backend/scheduler.py`、`backend/douyin_parser.py`、`backend/ai_extractor.py`、`backend/db.py`、`backend/.env`、`backend/supabase_schema.sql`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/解析算法优化方案.md`
