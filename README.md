@@ -193,6 +193,18 @@ python main.py
 
 ---
 
+### 2026-04-06 后台解析博主历史视频优化（v12.0）
+- 主要目的：降低后台解析成本，提升配置灵活性
+- 完成的主要任务：
+  - 冷却期从 24h 延长至 168h，由 AUTHOR_SCAN_COOLDOWN_HOURS 环境变量控制
+  - 获取博主视频列表数量由 FETCH_AUTHOR_VIDEOS_MAX 环境变量控制（默认 15）
+  - 废弃 DEBUG_MODE + DEBUG_MAX_VIDEOS，统一由 MAX_PARSE_VIDEOS 控制 AI 过滤后最大解析量
+  - 过滤已解析视频逻辑调整：只要库里有记录就跳过（不论状态）
+  - fetch_author_videos 返回值改为 tuple，新增 create_time 提取和发布时间倒序排列
+  - 新增 append_video_cache_api_cost 函数，将获取视频列表的分页成本追加到用户视频记录上
+- 技术栈：Python FastAPI、Supabase PostgreSQL
+- 修改了哪些文件：`backend/main.py`、`backend/douyin_parser.py`、`backend/db.py`、`backend/.env`、`backend/scheduler.py`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/解析算法优化方案.md`
+
 ### 2026-04-05 修复删除后重新添加店铺不显示 + 添加成功后自动定位
 - 主要目的：修复删除店铺后再手动添加无法显示的 Bug，并实现添加成功后自动定位到新店铺显示卡片
 - 完成的主要任务：

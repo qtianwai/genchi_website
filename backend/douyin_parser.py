@@ -368,24 +368,30 @@ def extract_video_id_from_url(url: str) -> str | None:
     return None
 
 
-async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
+async def fetch_author_videos(sec_uid: str, max_count: int = 15) -> tuple[list[dict], int]:
     """
     获取博主发布的视频列表（用于批量解析博主所有探店视频）。
 
     优先使用 v3 接口（v1 容易限流返回 code=301）。
     支持分页，直到达到 max_count 或无更多数据。
 
-    返回格式：[{"video_id": "...", "title": "...", "share_url": "..."}, ...]
-    share_url 是可以在抖音中打开的视频链接
+    v12.0 优化：
+    - 默认 max_count=15（单页约 20 条，15 条只需 1 次分页 = ¥0.1）
+    - 返回值改为 tuple：(视频列表, API 调用次数)，用于成本记录
+    - 提取 create_time 字段，返回前按发布时间倒序排列（API 返回排序不保证）
+
+    返回格式：([{"video_id": "...", "title": "...", "share_url": "...", "create_time": 0}, ...], api_call_count)
     """
     videos = []
     max_cursor = 0  # 分页游标，0 表示第一页
+    api_call_count = 0  # API 调用次数（用于成本记录）
 
     while len(videos) < max_count:
         result = await _aget(
             "/api/douyin/get-user-video-list/v3",  # v3 比 v1 更稳定
             {"secUid": sec_uid, "maxCursor": max_cursor},
         )
+        api_call_count += 1
 
         if result.get("code") != 0:
             print(f"[抖音解析] 获取博主视频列表失败: {result.get('message')} (code={result.get('code')})")
@@ -409,6 +415,7 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
                 "video_id": video_id,
                 "title": v.get("desc", ""),
                 "share_url": share_url,
+                "create_time": v.get("create_time", 0),  # v12.0：用于排序
             })
             if len(videos) >= max_count:
                 break
@@ -419,8 +426,12 @@ async def fetch_author_videos(sec_uid: str, max_count: int = 20) -> list[dict]:
             break
         max_cursor = data.get("max_cursor", 0)
 
-    print(f"[抖音解析] 获取到博主视频 {len(videos)} 条")
-    return videos
+    # v12.0：按发布时间倒序排列（最新在前），API 返回排序不保证
+    if len(videos) > 1:
+        videos.sort(key=lambda x: x.get("create_time", 0), reverse=True)
+
+    print(f"[抖音解析] 获取到博主视频 {len(videos)} 条（{api_call_count} 次 API 调用）")
+    return videos, api_call_count
 
 
 async def fetch_video_comments(video_id: str, max_count: int = 20) -> list[dict]:

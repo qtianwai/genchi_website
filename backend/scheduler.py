@@ -102,7 +102,7 @@ async def _run_auto_update_async():
 
         try:
             # 获取博主最新视频列表（不分页，单次调用获取一批）
-            videos = await fetch_author_videos(sec_uid, max_count=20)
+            videos, _ = await fetch_author_videos(sec_uid, max_count=20)
 
             if not videos:
                 logger.info(f"[调度器] 博主 {author_name} 无视频记录")
@@ -111,15 +111,15 @@ async def _run_auto_update_async():
                 update_author_auto_check_time(author_id)
                 continue
 
-            # 过滤掉数据库中已有解析记录的视频
+            # v12.0：只要库里有记录的视频就跳过（不论 completed/failed/parsing）
             pending_videos = []
             for v in videos:
                 vid = v.get("video_id", "")
                 existing_cache = get_video_cache_by_id(vid)
-                if not existing_cache or existing_cache.get("status") != "completed":
-                    pending_videos.append(v)
+                if existing_cache:
+                    logger.info(f"[调度器] 视频 {vid} 已有记录（status={existing_cache.get('status')}），跳过")
                 else:
-                    logger.info(f"[调度器] 视频 {vid} 已解析过，跳过")
+                    pending_videos.append(v)
 
             if not pending_videos:
                 logger.info(f"[调度器] 博主 {author_name} 无新视频")
@@ -264,7 +264,7 @@ async def trigger_single_author(author_id: str, req: TriggerRequest):
         if not sec_uid:
             return {"status": "skipped", "message": "博主无 sec_uid"}
 
-        videos = loop.run_until_complete(fetch_author_videos(sec_uid, max_count=20))
+        videos, _ = loop.run_until_complete(fetch_author_videos(sec_uid, max_count=20))
         return {
             "status": "success",
             "author_name": author.get("name"),

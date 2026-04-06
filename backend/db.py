@@ -294,6 +294,29 @@ def update_video_cache_failed(video_url: str, error_message: str) -> dict:
     return result.data[0] if result.data else {}
 
 
+def append_video_cache_api_cost(video_id: str, extra_cost: float, extra_cost_note: str) -> dict:
+    """
+    追加 API 成本到已有的 video_parse_cache 记录上（v12.0 新增）。
+    用于将 fetch_author_videos 的分页调用成本回写到用户提交的视频记录上。
+    """
+    existing = get_video_cache_by_id(video_id)
+    if not existing:
+        return {}
+
+    current_cost = existing.get("api_cost") or 0
+    current_note = existing.get("api_cost_note") or ""
+
+    new_cost = float(current_cost) + extra_cost
+    separator = "\n" if current_note else ""
+    new_note = f"{current_note}{separator}[博主视频列表] {extra_cost_note}"
+
+    result = supabase.table("video_parse_cache").update({
+        "api_cost": new_cost,
+        "api_cost_note": new_note,
+    }).eq("video_id", video_id).execute()
+    return result.data[0] if result.data else {}
+
+
 def update_video_cache_extra(video_url: str, video_extra: dict) -> dict:
     """
     视频解析完成后，更新 video_extra JSON 字段（v7.0 新增）。
@@ -386,7 +409,7 @@ def get_latest_bg_task(author_id: str) -> dict | None:
     return rows[0] if rows else None
 
 
-def get_latest_bg_task_within_hours(author_id: str, hours: int = 24) -> dict | None:
+def get_latest_bg_task_within_hours(author_id: str, hours: int = 168) -> dict | None:
     """
     获取博主最近 N 小时内创建的后台任务（用于冷却期判断，优化 3.3）。
 
@@ -410,7 +433,7 @@ def get_latest_bg_task_within_hours(author_id: str, hours: int = 24) -> dict | N
     return rows[0] if rows else None
 
 
-def is_author_in_cool_down(author_id: str, hours: int = 24) -> bool:
+def is_author_in_cool_down(author_id: str, hours: int = 168) -> bool:
     """
     检查博主是否在扫描冷却期内（优化 3.3）。
 

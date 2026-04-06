@@ -67,13 +67,16 @@ from db import (
     # 新增：v10.10 饭团养成体系
     get_fantuan_status, fantuan_daily_login, fantuan_pet,
     update_fantuan_on_gacha, update_fantuan_on_checkin, update_fantuan_on_favorite,
+    # 新增：v12.0 后台解析成本回写
+    append_video_cache_api_cost,
 )
 
 load_dotenv()
 
-# 读取调试模式配置
-DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() == "true"
-DEBUG_MAX_VIDEOS = int(os.getenv("DEBUG_MAX_VIDEOS", "5"))
+# v12.0 后台解析优化配置（环境变量可配）
+AUTHOR_SCAN_COOLDOWN_HOURS = int(os.getenv("AUTHOR_SCAN_COOLDOWN_HOURS", "168"))  # 博主扫描冷却期（小时）
+FETCH_AUTHOR_VIDEOS_MAX = int(os.getenv("FETCH_AUTHOR_VIDEOS_MAX", "15"))  # 获取博主视频列表最大数量
+MAX_PARSE_VIDEOS = int(os.getenv("MAX_PARSE_VIDEOS", "15"))  # AI 过滤后美食视频最大解析量
 
 # v8.0 饭团系统配置（环境变量可配置）
 DAILY_GACHA_LIMIT = int(os.getenv("DAILY_GACHA_LIMIT", "15"))  # 每日抽卡次数上限
@@ -644,21 +647,33 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
     优化 3.2：新增 AI 标题过滤，过滤掉非美食/探店类视频，零 JustOneAPI 成本
     优化 3.3：新增冷却期检查，1 天内重复扫描时直接跳过
 
-    调试模式：当 DEBUG_MODE=true 时，最多解析 DEBUG_MAX_VIDEOS 条视频
+    v12.0 优化：
+    - 冷却期由环境变量 AUTHOR_SCAN_COOLDOWN_HOURS 控制（默认 168h）
+    - 获取视频列表数量由环境变量 FETCH_AUTHOR_VIDEOS_MAX 控制（默认 15）
+    - AI 过滤后最大解析量由环境变量 MAX_PARSE_VIDEOS 控制（默认 15）
+    - 只要库里有记录的视频就跳过（不论 completed/failed/parsing）
     """
     if not sec_uid:
         print(f"[后台解析] 博主无 sec_uid，跳过历史视频解析: {author_id}")
         return
 
-    # 优化 3.3：冷却期检查（1 天内不重复扫描）
-    if is_author_in_cool_down(author_id, hours=24):
+    # v12.0：冷却期检查（由 AUTHOR_SCAN_COOLDOWN_HOURS 环境变量控制）
+    if is_author_in_cool_down(author_id, hours=AUTHOR_SCAN_COOLDOWN_HOURS):
         recent_task = get_latest_bg_task(author_id)
         task_status = recent_task.get("status", "unknown") if recent_task else "unknown"
         print(f"[后台解析] 博主 {author_id} 在冷却期内（最近任务状态: {task_status}），跳过本次扫描")
         return
 
-    # 获取博主视频列表（最多 30 个，排除当前视频）
-    videos = await fetch_author_videos(sec_uid, max_count=30)
+    # v12.0：获取博主视频列表（数量由 FETCH_AUTHOR_VIDEOS_MAX 环境变量控制，排除当前视频）
+    videos, fetch_api_calls = await fetch_author_videos(sec_uid, max_count=FETCH_AUTHOR_VIDEOS_MAX)
+
+    # v12.0：将获取博主视频列表的成本追加到用户提交的视频记录上
+    COST_PER_CALL = 0.1
+    fetch_cost = fetch_api_calls * COST_PER_CALL
+    fetch_cost_note = f"get-user-video-list/v3 × {fetch_api_calls} 次分页，¥{fetch_cost:.2f}"
+    append_video_cache_api_cost(current_video_id, fetch_cost, fetch_cost_note)
+    print(f"[后台解析] 博主视频列表获取成本 ¥{fetch_cost:.2f} 已追加到视频 {current_video_id}")
+
     video_list = [
         {
             "video_id": v.get("video_id", ""),
@@ -672,11 +687,6 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         print(f"[后台解析] 博主 {author_id} 无历史视频")
         return
 
-    # 调试模式：限制解析数量
-    if DEBUG_MODE and len(video_list) > DEBUG_MAX_VIDEOS:
-        print(f"[后台解析] 调试模式已启用，限制解析数量: {len(video_list)} -> {DEBUG_MAX_VIDEOS}")
-        video_list = video_list[:DEBUG_MAX_VIDEOS]
-
     # 创建后台任务记录
     task = create_bg_task(author_id, "full_scan")
     task_id = task.get("id", "")
@@ -685,13 +695,18 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
     # 优化 3.2：AI 标题过滤 - 过滤掉非美食/探店类视频
     food_videos = await filter_food_video_titles(video_list)
 
-    # 过滤掉数据库中已有成功解析记录的视频（使用 video_id）
+    # v12.0：AI 过滤后，限制最大解析数量（由 MAX_PARSE_VIDEOS 环境变量控制）
+    if len(food_videos) > MAX_PARSE_VIDEOS:
+        print(f"[后台解析] 美食视频数量超限，截断: {len(food_videos)} -> {MAX_PARSE_VIDEOS}")
+        food_videos = food_videos[:MAX_PARSE_VIDEOS]
+
+    # v12.0：只要库里有记录的视频就跳过（不论 completed/failed/parsing）
     pending_videos = []
     for video in food_videos:
         vid = video.get("video_id", "")
         existing_cache = get_video_cache_by_id(vid)
-        if existing_cache and existing_cache.get("status") == "completed":
-            print(f"[后台解析] 视频 {vid} 已解析过，跳过")
+        if existing_cache:
+            print(f"[后台解析] 视频 {vid} 已有记录（status={existing_cache.get('status')}），跳过")
             continue
         pending_videos.append(video)
 
@@ -885,8 +900,7 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
         update_bg_task_progress(task_id, i + 1, saved_count)
 
     complete_bg_task(task_id, saved_count)
-    debug_info = f" (调试模式: 限制 {DEBUG_MAX_VIDEOS} 条)" if DEBUG_MODE else ""
-    print(f"[后台解析] 博主 {author_id} 后台解析完成,新增 {saved_count} 家店铺{debug_info}")
+    print(f"[后台解析] 博主 {author_id} 后台解析完成,新增 {saved_count} 家店铺 (最大解析量: {MAX_PARSE_VIDEOS})")
 
 
 @app.post("/api/parse-link")
@@ -1206,7 +1220,7 @@ async def _async_parse_and_save(
                 or latest_task.get("status") in ("completed", "failed")
             )
             if should_start_bg:
-                if not is_author_in_cool_down(author_id, hours=24):
+                if not is_author_in_cool_down(author_id, hours=AUTHOR_SCAN_COOLDOWN_HOURS):
                     # 在新事件循环中运行后台扫描（因为当前已在 BackgroundTasks 中）
                     parse_author_all_videos_background(author_id, author_sec_uid, vid)
 
