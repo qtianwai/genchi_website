@@ -543,7 +543,6 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
         "id, video_id, video_url, author_id, restaurant_id, status, review_status, "
         "parse_reason, restaurant_name, restaurant_address, restaurant_city, "
         "restaurant_lat, restaurant_lng, restaurant_amap_id, restaurant_category, "
-        "restaurant_photo_url, restaurant_avg_price, "  # v10.0 新增：封面图和均价
         "corrected_restaurants, "  # v9.0 新增：多店铺修正 JSON 数组
         "video_extra, "  # v7.0 新增：视频扩展信息 JSON
         "reviewed_at, created_at, authors(name, avatar_url)"
@@ -808,10 +807,6 @@ def admin_correct_restaurant(
         "reviewed_at": "now()",
         "updated_at": "now()",
     }
-    if avg_price is not None:
-        cache_update["restaurant_avg_price"] = avg_price
-    if photo_url:
-        cache_update["restaurant_photo_url"] = photo_url
     supabase.table("video_parse_cache").update(cache_update).eq("id", cache_id).execute()
 
     mark_user_corrections_reviewed(
@@ -925,10 +920,6 @@ def admin_correct_restaurants_multi(
         "reviewed_at": "now()",
         "updated_at": "now()",
     }
-    if first.get("avg_price") is not None:
-        cache_update["restaurant_avg_price"] = first["avg_price"]
-    if first.get("photo_url"):
-        cache_update["restaurant_photo_url"] = first["photo_url"]
     supabase.table("video_parse_cache").update(cache_update).eq("id", cache_id).execute()
 
     mark_user_corrections_reviewed(
