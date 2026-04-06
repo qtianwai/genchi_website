@@ -855,6 +855,21 @@ struct MapView: View {
 
     /// 开始轮询异步解析结果（每3秒一次，最多60次 = 3分钟）
     private func startParseResultPolling(videoCacheId: String) {
+        // 处理前端直接传来的错误（如 JustOneAPI 失败）
+        // ParseLinkSheet 在 catch 块里会传 "error:错误信息" 格式
+        if videoCacheId.hasPrefix("error:") {
+            let errMsg = String(videoCacheId.dropFirst("error:".count))
+            parseCompleteResult = ParseResultResponse(
+                status: "failed",
+                restaurant: nil,
+                message: errMsg
+            )
+            withAnimation(.easeInOut(duration: 0.3)) {
+                showParseCompleteAlert = true
+            }
+            return
+        }
+
         parsingVideoCacheId = videoCacheId
         parsePollingTimer?.invalidate()
         var pollCount = 0

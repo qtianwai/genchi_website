@@ -1008,7 +1008,29 @@ async def parse_link(req: ParseLinkRequest, background_tasks: BackgroundTasks):
         }
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # JustOneAPI 解析失败（如 code=301 临时错误）
+        # 不直接抛 400，而是返回友好提示，让用户知道视频已收录，后台会重试
+        err_msg = str(e)
+        print(f"[解析链接] JustOneAPI 解析失败: {err_msg}")
+        # 尝试为该 URL 创建一个 failed 状态的缓存记录（避免重复提交时重复调用 API）
+        try:
+            upsert_video_cache({
+                "video_url": extract_url_from_text(req.url.strip()),
+                "status": "failed",
+                "parse_reason": f"JustOneAPI 解析失败: {err_msg}",
+            })
+        except Exception:
+            pass
+        return {
+            "status": "failed",
+            "video_cache_id": None,
+            "restaurant": None,
+            "author": None,
+            "author_id": None,
+            "message": "视频链接解析失败，可能是链接已过期或网络波动，请稍后重试",
+            "is_background_running": False,
+            "background_progress": None,
+        }
     except Exception as e:
         print(f"[解析链接] 未知错误: {e}")
         raise HTTPException(status_code=500, detail=f"解析失败: {str(e)}")
