@@ -113,7 +113,7 @@ Claude 可以直接使用 Supabase REST API 查询或操作数据库，无需用
 
 **Supabase 连接信息：**
 - URL: `https://ygsxhvsmivcckmjmjmhr.supabase.co`
-- Service Role Key: `sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN`（完整权限，绕过 RLS）
+- Service Role Key: [请在 Railway 环境变量中配置]
 
 **使用场景：**
 - 执行数据库迁移脚本（ALTER TABLE、CREATE INDEX 等）
@@ -128,8 +128,8 @@ Claude 可以直接使用 Supabase REST API 查询或操作数据库，无需用
 ```bash
 # 查询表数据
 curl "https://ygsxhvsmivcckmjmjmhr.supabase.co/rest/v1/video_parse_cache?select=*&limit=5" \
-  -H "apikey: sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN" \
-  -H "Authorization: Bearer sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN"
+  -H "apikey: [SUPABASE_ANON_KEY]" \
+  -H "Authorization: Bearer [SUPABASE_SERVICE_ROLE_KEY]"
 
 # 执行 SQL（通过 RPC 或直接 SQL endpoint）
 # 注意：Supabase REST API 不直接支持任意 SQL，需要通过 pg_admin 或创建 RPC 函数
