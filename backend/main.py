@@ -713,9 +713,37 @@ async def _parse_author_videos_async(author_id: str, sec_uid: str, current_video
     food_videos = await filter_food_video_titles(video_list)
 
     # v12.0：AI 过滤后，限制最大解析数量（由 MAX_PARSE_VIDEOS 环境变量控制）
+    # v14.1：超出部分不丢弃，存入复核队列（data_source=overflow）
+    overflow_videos = []
     if len(food_videos) > MAX_PARSE_VIDEOS:
-        print(f"[后台解析] 美食视频数量超限，截断: {len(food_videos)} -> {MAX_PARSE_VIDEOS}")
-        food_videos = food_videos[:MAX_PARSE_VIDEOS]
+        overflow_videos = food_videos[MAX_PARSE_VIDEOS:]  # 超出部分
+        food_videos = food_videos[:MAX_PARSE_VIDEOS]       # 正常解析部分
+        print(f"[后台解析] 美食视频数量超限，截断: {len(food_videos) + len(overflow_videos)} -> {MAX_PARSE_VIDEOS}，溢出 {len(overflow_videos)} 条存入复核")
+
+    # v14.1：将溢出视频存入复核队列（零 API 成本）
+    for ov in overflow_videos:
+        ov_vid = ov.get("video_id", "")
+        if not ov_vid:
+            continue
+        # 去重：已有记录则跳过
+        if get_video_cache_by_id(ov_vid):
+            print(f"[后台解析] 溢出视频 {ov_vid} 已有记录，跳过")
+            continue
+        ov_share_url = ov.get("share_url", "")
+        ov_url = ov_share_url if ov_share_url else f"https://www.iesdouyin.com/share/video/{ov_vid}/"
+        upsert_video_cache({
+            "video_url": ov_url,
+            "video_id": ov_vid,
+            "author_id": author_id,
+            "status": "cold_start",        # 复用 cold_start 状态，进入复核队列
+            "data_source": "overflow",     # 新标识，区分来源
+            "review_status": "pending",
+            "parse_algorithm_version": PARSE_ALGORITHM_VERSION,
+            "parse_reason": "AI 标题过滤通过，因超出 MAX_PARSE_VIDEOS 限制未自动解析，需人工复核添加店铺",
+            "api_cost": 0.0,
+            "api_cost_note": "溢出截断，未调用 JustOneAPI，成本 ¥0",
+        })
+        print(f"[后台解析] 溢出视频 {ov_vid} 已存入复核队列")
 
     # v12.0：只要库里有记录的视频就跳过（不论 completed/failed/parsing）
     pending_videos = []

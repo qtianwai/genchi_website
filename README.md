@@ -211,6 +211,20 @@ python main.py
 
 ---
 
+### 2026-04-07 截断保留优化（v14.1）
+- 主要目的：AI 过滤后超出 MAX_PARSE_VIDEOS 的视频不再丢弃，存入复核队列由管理员人工添加店铺
+- 完成的主要任务：
+  - backend/main.py：`_parse_author_videos_async` 截断逻辑改造，溢出视频以零 API 成本写入 video_parse_cache（status=cold_start, data_source=overflow）
+  - backend/scheduler.py：`_run_auto_update_async` 同步改造，两个场景统一策略
+  - backend/db.py：`get_review_list` 排序逻辑扩展，overflow 与 cold_start 同级 P1
+  - backend/supabase_schema.sql：data_source 字段注释新增 overflow 枚举值说明
+  - iOS Models.swift：新增 `isOverflow` 计算属性
+  - iOS ReviewListView.swift：新增橙色「溢出」标签
+  - iOS ReviewDetailView.swift：新增溢出来源提示文字
+- 关键决策：溢出视频复用 cold_start 状态进入复核队列，用 data_source=overflow 区分来源；parse_reason/api_cost/api_cost_note 均有明确说明，不为空
+- 技术栈：Python FastAPI、Supabase PostgreSQL、SwiftUI
+- 修改了哪些文件：`backend/main.py`、`backend/scheduler.py`、`backend/db.py`、`backend/supabase_schema.sql`、`ios/.../Models/Models.swift`、`ios/.../Views/Admin/ReviewListView.swift`、`ios/.../Views/Admin/ReviewDetailView.swift`、`需求文档&技术方案/视频解析与数据入库技术方案.md`、`需求文档&技术方案/冷启动博主录入模块实施计划.md`
+
 ### 2026-04-06 后台解析博主历史视频优化（v12.0）
 - 主要目的：降低后台解析成本，提升配置灵活性
 - 完成的主要任务：
@@ -2677,3 +2691,62 @@ SwiftUI
 - 关键决策：截图上传复用 Supabase Storage 模式（feedback bucket），管理员回复自动将 pending→in_progress，反馈列表按状态优先级排序
 - 技术栈：SwiftUI、PhotosUI、FastAPI、Supabase PostgreSQL + Storage
 - 修改的文件：`backend/supabase_schema.sql`、`backend/db.py`、`backend/main.py`、`ios/.../Models/Models.swift`、`ios/.../Services/APIService.swift`、`ios/.../Services/DeviceInfo.swift`（新建）、`ios/.../ViewModels/FeedbackViewModel.swift`（新建）、`ios/.../ViewModels/AdminFeedbackViewModel.swift`（新建）、`ios/.../Views/FeedbackSubmitSheet.swift`（新建）、`ios/.../Views/FeedbackListView.swift`（新建）、`ios/.../Views/FeedbackDetailView.swift`（新建）、`ios/.../Views/Admin/AdminFeedbackListView.swift`（新建）、`ios/.../Views/Admin/AdminFeedbackDetailView.swift`（新建）、`ios/.../Views/ProfileView.swift`、`ios/.../Views/MainTabView.swift`、`需求文档&技术方案/产品功能清单.md`、`README.md`
+
+---
+
+## 会话记录 2026-04-07
+
+### 主要目的
+将勘误功能与复核模块更好地结合，让管理员在复核列表层面就能看到用户上报的错误内容。
+
+### 完成的主要任务
+- 在复核列表待复核卡片（`ReviewRowView`）上新增勘误摘要展示块：显示所有待处理勘误的类型和说明文字，最多3条，超出显示"还有N条"，橙色背景突出
+- 在已复核卡片（`ReviewedRowView`）上新增已处理勘误摘要：灰色调显示"勘误已处理 · N条（类型）"
+- 新增 `correctionTypeLabel` 辅助函数，将勘误类型英文枚举映射为中文
+
+### 关键决策
+- 探索后发现后端和详情页的勘误联动逻辑已完整，真正缺失的只是列表卡片层面的摘要展示
+- 仅修改一个文件：`ios/FoodMap/genchi/genchi/Views/Admin/ReviewListView.swift`
+
+### 技术栈
+- SwiftUI（iOS）
+
+### 修改文件
+- `ios/FoodMap/genchi/genchi/Views/Admin/ReviewListView.swift`
+
+---
+
+## 会话记录 2026-04-07：正式上线配置指南与成本预估
+
+### 主要目的
+为跟吃 App 正式上线做准备，生成完整的上线配置指南和成本预估文档，覆盖从 Railway+Supabase 调试环境迁移至阿里云正式环境的全流程。
+
+### 完成的主要任务
+- 创建 `帮助文档/上线配置指南与成本预估.md`，内容包括：
+  - 上线前准备清单（ICP 备案、域名、Apple 开发者账号、微信登录、短信签名）
+  - 阿里云 ECS 服务器配置方案（2核4G，Nginx+SSL，systemd 守护进程）
+  - 数据库迁移方案（Supabase → 阿里云 RDS PostgreSQL，含迁移步骤和注意事项）
+  - 后端部署步骤（Railway → 阿里云 ECS，含环境变量迁移和零停机切换流程）
+  - iOS 上线流程（TestFlight 内测 → App Store 正式上架）
+  - Apple 开发者账号对比（个人 vs 公司，两种开通流程均有说明）
+  - 微信登录开通流程
+  - 成本预估（月度 + 年度，含方案A全迁移和方案B仅迁移后端两种方案）
+  - 上线时间线（约 4-6 周，含并行推进建议）
+  - 上线检查清单
+
+### 关键决策和解决方案
+- 后端迁移至阿里云 ECS（2核4G），数据库迁移至阿里云 RDS PostgreSQL
+- 推荐初期采用方案B（仅迁移后端，保留 Supabase 数据库），月均成本约 ¥250-360，节省迁移成本
+- iOS 先 TestFlight 内测验证，再 App Store 正式上架
+- ICP 备案是最长瓶颈（约 20 工作日），需第一时间启动
+- 个人和公司开发者账号均支持付费订阅（IAP），初期个人账号即可
+
+### 使用的技术栈
+- 阿里云 ECS（Ubuntu 22.04 + Nginx + Uvicorn）
+- 阿里云 RDS PostgreSQL 14
+- Apple Developer Program（TestFlight + App Store）
+- Let's Encrypt（免费 SSL 证书）
+
+### 修改的文件
+- `帮助文档/上线配置指南与成本预估.md`（新建）
+- `README.md`（追加本会话总结）

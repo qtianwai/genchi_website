@@ -115,6 +115,20 @@ struct ReviewDetailView: View {
                         .background(Color.blue.opacity(0.08))
                         .cornerRadius(8)
                     }
+
+                    // v14.1 新增：溢出截断来源提示
+                    if item.isOverflow {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.to.line")
+                                .font(.caption)
+                            Text("此视频由系统自动截断保留，需人工添加店铺")
+                                .font(.caption)
+                        }
+                        .foregroundColor(.orange)
+                        .padding(8)
+                        .background(Color.orange.opacity(0.08))
+                        .cornerRadius(8)
+                    }
                 }
 
                 // ── 当前关联店铺（有 restaurant_name 时显示）──

@@ -784,12 +784,14 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
 
             item["has_pending_user_corrections"] = has_pending_correction
             # v14.0：冷启动录入的记录固定为 P1（data_source='cold_start'），
+            # v14.1：溢出截断的记录（data_source='overflow'）与冷启动同级 P1，
             # 即使 restaurant_id 为 NULL 也不归为 P0
-            is_cold_start = item.get("data_source") == "cold_start"
+            data_source = item.get("data_source")
+            is_cold_start_or_overflow = data_source in ("cold_start", "overflow")
             if has_pending_correction:
                 item["_priority_rank"] = 0
-            elif is_cold_start:
-                item["_priority_rank"] = 2  # 冷启动 P1，与普通 P1 同级
+            elif is_cold_start_or_overflow:
+                item["_priority_rank"] = 2  # 冷启动/溢出 P1，与普通 P1 同级
             elif restaurant_id is None:
                 item["_priority_rank"] = 1  # P0
             else:
@@ -798,7 +800,7 @@ def get_review_list(page: int = 1, page_size: int = 20, tab: str = "pending") ->
 
             if has_pending_correction:
                 item["review_priority"] = "P-1"
-            elif is_cold_start:
+            elif is_cold_start_or_overflow:
                 item["review_priority"] = "P1"
             else:
                 item["review_priority"] = "P0" if restaurant_id is None else "P1"

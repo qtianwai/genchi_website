@@ -143,6 +143,18 @@ struct ReviewRowView: View {
                         .cornerRadius(4)
                 }
 
+                // v14.1 新增：溢出截断标签
+                if item.isOverflow {
+                    Text("溢出")
+                        .font(.caption2)
+                        .fontWeight(.bold)
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.orange)
+                        .cornerRadius(4)
+                }
+
                 // 博主名
                 Text(item.authors?.name ?? "未知博主")
                     .font(.caption)

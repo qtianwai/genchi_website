@@ -150,7 +150,7 @@ create table if not exists video_parse_cache (
   error_message   text,                 -- 解析失败时的错误信息
   -- v2.5 新增字段
   parse_reason    text,                 -- 解析说明：AI 判断依据（包括未提取到店名的原因）
-  data_source     text not null default 'user_submit',  -- 数据来源：user_submit/background_scan/auto_check/manual_add/cold_start（v14.0 新增）
+  data_source     text not null default 'user_submit',  -- 数据来源：user_submit/background_scan/auto_check/manual_add/cold_start/overflow（v14.1 新增 overflow：AI 过滤通过但超出 MAX_PARSE_VIDEOS 限制的溢出视频）
   api_cost        numeric(10,6),        -- 本条数据消耗的 JustOneAPI 成本（单位：元）
   api_cost_note   text,                 -- API 成本说明（如：调用了哪些接口、各自消耗多少）
   -- v7.0 新增：视频扩展信息（JSON）

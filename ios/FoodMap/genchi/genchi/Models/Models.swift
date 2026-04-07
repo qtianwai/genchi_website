@@ -281,6 +281,9 @@ struct ReviewItem: Identifiable, Codable {
     // v14.0 新增：冷启动录入的记录
     var isColdStart: Bool { data_source == "cold_start" }
 
+    // v14.1 新增：溢出截断的记录（AI 过滤通过但超出 MAX_PARSE_VIDEOS 限制）
+    var isOverflow: Bool { data_source == "overflow" }
+
     // 抖音视频跳转 URL（与地图卡片 VideoThumbnail 保持一致，用路径格式）
     var douyinAppURL: URL? {
         guard let vid = video_id else { return nil }
