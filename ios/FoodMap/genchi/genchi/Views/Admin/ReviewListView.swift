@@ -158,6 +158,41 @@ struct ReviewRowView: View {
                 }
             }
 
+            // 勘误摘要（有待处理勘误时展示，紧跟标签行）
+            if let corrections = item.user_corrections, !corrections.isEmpty {
+                let pending = corrections.filter { $0.status == "pending" }
+                if !pending.isEmpty {
+                    VStack(alignment: .leading, spacing: 3) {
+                        ForEach(Array(pending.prefix(3))) { c in
+                            HStack(spacing: 4) {
+                                Image(systemName: "exclamationmark.circle.fill")
+                                    .font(.caption2)
+                                    .foregroundColor(.orange)
+                                Text(correctionTypeLabel(c.correction_type))
+                                    .font(.caption2)
+                                    .fontWeight(.medium)
+                                    .foregroundColor(.orange)
+                                if let detail = c.correction_detail, !detail.isEmpty {
+                                    Text("· \(detail)")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(1)
+                                }
+                            }
+                        }
+                        if pending.count > 3 {
+                            Text("还有 \(pending.count - 3) 条勘误...")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(Color.orange.opacity(0.08))
+                    .cornerRadius(6)
+                }
+            }
+
             // AI 解析说明（截取前 60 字）
             Text(item.parse_reason ?? "无解析说明")
                 .font(.subheadline)
@@ -244,7 +279,35 @@ struct ReviewedRowView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
+
+            // 已处理勘误摘要（灰色调，表示已处理）
+            if let corrections = item.user_corrections, !corrections.isEmpty {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    Text("勘误已处理 · \(corrections.count) 条")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                    if let first = corrections.first {
+                        Text("(\(correctionTypeLabel(first.correction_type)))")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
         }
         .padding(.vertical, 4)
+    }
+}
+
+// ── 勘误类型中文映射（供 ReviewRowView / ReviewedRowView 使用）──
+private func correctionTypeLabel(_ type: String) -> String {
+    switch type {
+    case "wrong_restaurant": return "店铺识别错误"
+    case "wrong_address":    return "地址/位置不对"
+    case "closed":           return "店铺已关闭"
+    case "duplicate":        return "重复店铺"
+    default:                 return "其他问题"
     }
 }
