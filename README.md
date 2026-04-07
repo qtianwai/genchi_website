@@ -114,12 +114,12 @@
 3. 选择你的仓库，Railway 会自动识别 `Procfile` 并部署
 4. 部署完成后，进入「Variables」添加环境变量：
    ```
-   DASHSCOPE_API_KEY=sk-2c6e706e26524eb696026f1b4c9a57ad
-   AMAP_API_KEY=ed74b2610dc920e300ae8e54838e659c
-   SUPABASE_URL=https://ygsxhvsmivcckmjmjmhr.supabase.co
-   SUPABASE_ANON_KEY=sb_publishable_gQdKpwmrgSIQOV2G45mghg_uWiIRnrd
-   SUPABASE_SERVICE_ROLE_KEY=sb_secret_dZmLQbc1r3vmHMt7k770eA_90VW8JtN
-   JUSTONEAPI_TOKEN=2UJdMdkQiP4xaOIS
+   DASHSCOPE_API_KEY=[通义千问 API Key]
+   AMAP_API_KEY=[高德地图 API Key]
+   SUPABASE_URL=[Supabase 项目 URL]
+   SUPABASE_ANON_KEY=[Supabase 公开 Key]
+   SUPABASE_SERVICE_ROLE_KEY=[Supabase Service Role Key]
+   JUSTONEAPI_TOKEN=[JustOneAPI Token]
    ```
 5. 复制 Railway 给你的域名（如 `https://xxx.railway.app`）
 
